@@ -9,3 +9,8 @@ if (!function_exists('localAPI')) {
 }
 
 require_once __DIR__ . '/../vendor/autoload.php';
+
+// Ensure Mockery expectations are verified after each test
+register_shutdown_function(function () {
+    \Mockery::close();
+});
