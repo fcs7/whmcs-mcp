@@ -37,11 +37,19 @@ class ServiceTools
     }
 
     #[McpTool(name: 'whmcs_upgrade_service', description: 'Faz upgrade de plano de um serviço')]
-    public function upgradeService(int $serviceid, int $newproductid): string
-    {
+    public function upgradeService(
+        int $serviceid,
+        int $newproductid,
+        string $paymentmethod,
+        string $newproductbillingcycle = 'monthly',
+        string $type = 'product'
+    ): string {
         return json_encode($this->api->call('UpgradeProduct', [
             'serviceid' => $serviceid,
+            'type' => $type,
             'newproductid' => $newproductid,
+            'newproductbillingcycle' => $newproductbillingcycle,
+            'paymentmethod' => $paymentmethod,
         ]), JSON_PRETTY_PRINT);
     }
 }
