@@ -1,3 +1,4 @@
 /modules/addons/nt_mcp/vendor/
 /modules/addons/nt_mcp/.phpunit.cache/
 *.env
+/.security-hardening/

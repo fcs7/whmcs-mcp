@@ -7,31 +7,65 @@ use PHPUnit\Framework\TestCase;
 
 class BearerAuthTest extends TestCase
 {
+    /** A 64-char hex token (matches bin2hex(random_bytes(32)) format). */
+    private const TOKEN = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2';
+
+    /** SHA-256 hash of the above token — what gets stored in DB. */
+    private string $tokenHash;
+
+    protected function setUp(): void
+    {
+        $this->tokenHash = hash('sha256', self::TOKEN);
+    }
+
     public function test_validates_correct_token(): void
     {
-        $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer valid-token-123';
-        $auth = new BearerAuth('valid-token-123');
+        $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . self::TOKEN;
+        $auth = new BearerAuth($this->tokenHash);
         $this->assertTrue($auth->isValid());
     }
 
     public function test_rejects_wrong_token(): void
     {
-        $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer wrong-token';
-        $auth = new BearerAuth('valid-token-123');
+        $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . str_repeat('ff', 32);
+        $auth = new BearerAuth($this->tokenHash);
         $this->assertFalse($auth->isValid());
     }
 
     public function test_rejects_missing_header(): void
     {
         unset($_SERVER['HTTP_AUTHORIZATION']);
-        $auth = new BearerAuth('valid-token-123');
+        $auth = new BearerAuth($this->tokenHash);
         $this->assertFalse($auth->isValid());
     }
 
     public function test_rejects_non_bearer_scheme(): void
     {
         $_SERVER['HTTP_AUTHORIZATION'] = 'Basic dXNlcjpwYXNz';
-        $auth = new BearerAuth('valid-token-123');
+        $auth = new BearerAuth($this->tokenHash);
+        $this->assertFalse($auth->isValid());
+    }
+
+    // --- Security hardening tests (F1, F17) ---
+
+    public function test_rejects_empty_stored_token(): void
+    {
+        $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ';
+        $auth = new BearerAuth('');
+        $this->assertFalse($auth->isValid());
+    }
+
+    public function test_rejects_short_stored_hash(): void
+    {
+        $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . self::TOKEN;
+        $auth = new BearerAuth('tooshort');
+        $this->assertFalse($auth->isValid());
+    }
+
+    public function test_rejects_short_presented_token(): void
+    {
+        $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer abc';
+        $auth = new BearerAuth($this->tokenHash);
         $this->assertFalse($auth->isValid());
     }
 }

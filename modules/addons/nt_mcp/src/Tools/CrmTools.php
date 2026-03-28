@@ -48,10 +48,35 @@ class CrmTools
         return json_encode(['result' => 'success', 'id' => $id], JSON_PRETTY_PRINT);
     }
 
+    /**
+     * SECURITY FIX (F5 -- CVSS 8.1): Replace open-ended array $fields with
+     * explicit named parameters.  The previous signature allowed callers to
+     * write to arbitrary database columns (e.g. id, created, type) that
+     * should not be mutable through the MCP interface.
+     */
     #[McpTool(name: 'whmcs_crm_update_contact', description: 'Atualiza dados de um contato CRM')]
-    public function updateContact(int $id, array $fields): string
-    {
-        $count = $this->capsule->update(self::TABLE_CONTACTS, ['id' => $id], $fields);
+    public function updateContact(
+        int $id,
+        string $name = '',
+        string $email = '',
+        string $phone = '',
+        string $company = '',
+        string $notes = '',
+        string $status = '',
+        string $stage = ''
+    ): string {
+        $data = [];
+        foreach (['name', 'email', 'phone', 'company', 'notes', 'status', 'stage'] as $field) {
+            if ($$field !== '') {
+                $data[$field] = $$field;
+            }
+        }
+
+        if ($data === []) {
+            return json_encode(['result' => 'error', 'message' => 'No fields provided for update.'], JSON_PRETTY_PRINT);
+        }
+
+        $count = $this->capsule->update(self::TABLE_CONTACTS, ['id' => $id], $data);
         return json_encode(['result' => 'success', 'rows_affected' => $count], JSON_PRETTY_PRINT);
     }
 

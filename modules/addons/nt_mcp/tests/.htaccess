@@ -1,0 +1,15 @@
+# NT MCP — tests/ directory protection
+# Infrastructure Security Control (9.1)
+#
+# Test files must never be accessible via web. They may expose internal
+# logic, mock data, or bootstrap files that could aid an attacker.
+
+<IfModule mod_authz_core.c>
+    # Apache 2.4+
+    Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+    # Apache 2.2
+    Order deny,allow
+    Deny from all
+</IfModule>

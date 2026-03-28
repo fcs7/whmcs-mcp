@@ -1,0 +1,57 @@
+# NT MCP Addon — Root .htaccess
+# Infrastructure Security Control (9.1)
+#
+# Only mcp.php and nt_mcp.php are web-accessible.
+# All other files (composer.json, composer.lock, phpunit.xml, .gitignore,
+# source code, vendor libraries, tests, caches) are blocked.
+
+# ---------------------------------------------------------------
+# Deny access to sensitive files by extension / name
+# ---------------------------------------------------------------
+<FilesMatch "\.(json|lock|xml|yml|yaml|md|txt|dist|bak|orig|swp|env|log|ini|sh|neon)$">
+    <IfModule mod_authz_core.c>
+        # Apache 2.4+
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        # Apache 2.2
+        Order deny,allow
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# Block dotfiles (.gitignore, .env, .htpasswd, etc.)
+<FilesMatch "^\.">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order deny,allow
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# ---------------------------------------------------------------
+# Deny direct access to protected directories
+# ---------------------------------------------------------------
+# These are enforced by per-directory .htaccess as well (defense-in-depth),
+# but we add a RewriteRule layer here as a belt-and-suspenders measure.
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Block direct access to src/, vendor/, tests/, .phpunit.cache/
+    RewriteRule ^(src|vendor|tests|\.phpunit\.cache)(/|$) - [F,L]
+</IfModule>
+
+# ---------------------------------------------------------------
+# Disable directory listings
+# ---------------------------------------------------------------
+Options -Indexes
+
+# ---------------------------------------------------------------
+# Prevent execution of PHP in upload/cache directories (future-proofing)
+# ---------------------------------------------------------------
+# If a cache or temp directory is ever added, this blocks PHP execution there.
+<IfModule mod_rewrite.c>
+    RewriteRule ^(cache|tmp|temp)/.*\.php$ - [F,L]
+</IfModule>
