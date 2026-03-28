@@ -1,0 +1,24 @@
+{
+    "name": "ntweb/whmcs-mcp-server",
+    "description": "WHMCS MCP Server Addon — NT Web",
+    "type": "library",
+    "license": "proprietary",
+    "require": {
+        "php": ">=8.1",
+        "php-mcp/server": "^1.0"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.0",
+        "mockery/mockery": "^1.6"
+    },
+    "autoload": {
+        "psr-4": {
+            "NtMcp\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "NtMcp\\Tests\\": "tests/"
+        }
+    }
+}
