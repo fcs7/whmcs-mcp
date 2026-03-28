@@ -58,10 +58,41 @@ class ClientTools
         )), JSON_PRETTY_PRINT);
     }
 
+    /**
+     * SECURITY FIX (F3 -- CVSS 9.1): Replace open-ended array $fields with
+     * explicit named parameters.  The previous signature allowed callers to
+     * set security-sensitive fields such as password2, credit, status,
+     * securityqans, and permissions through mass-assignment.
+     */
     #[McpTool(name: 'whmcs_update_client', description: 'Atualiza dados de um cliente existente')]
-    public function updateClient(int $clientid, array $fields = []): string
-    {
-        return json_encode($this->api->call('UpdateClient', array_merge(['clientid' => $clientid], $fields)), JSON_PRETTY_PRINT);
+    public function updateClient(
+        int $clientid,
+        string $firstname = '',
+        string $lastname = '',
+        string $email = '',
+        string $address1 = '',
+        string $address2 = '',
+        string $city = '',
+        string $state = '',
+        string $postcode = '',
+        string $country = '',
+        string $phonenumber = '',
+        string $companyname = ''
+    ): string {
+        $params = ['clientid' => $clientid];
+
+        // Only include parameters that were explicitly provided (non-empty).
+        foreach ([
+            'firstname', 'lastname', 'email',
+            'address1', 'address2', 'city', 'state', 'postcode',
+            'country', 'phonenumber', 'companyname',
+        ] as $field) {
+            if ($$field !== '') {
+                $params[$field] = $$field;
+            }
+        }
+
+        return json_encode($this->api->call('UpdateClient', $params), JSON_PRETTY_PRINT);
     }
 
     #[McpTool(name: 'whmcs_close_client', description: 'Fecha/cancela a conta de um cliente')]

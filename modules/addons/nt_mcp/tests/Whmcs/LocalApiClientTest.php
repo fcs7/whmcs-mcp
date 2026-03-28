@@ -26,7 +26,19 @@ class LocalApiClientTest extends TestCase
         });
 
         $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('Client not found');
+        $this->expectExceptionMessage('The requested operation (GetClientsDetails) could not be completed.');
         $client->call('GetClientsDetails', ['clientid' => 999]);
+    }
+
+    public function test_call_rejects_unlisted_command(): void
+    {
+        $client = new LocalApiClient('testadmin');
+        $client->setCallable(function () {
+            return ['result' => 'success'];
+        });
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('not in the allowed list');
+        $client->call('AddAdmin', ['username' => 'hacker']);
     }
 }
