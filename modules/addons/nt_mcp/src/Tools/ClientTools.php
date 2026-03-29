@@ -38,7 +38,7 @@ class ClientTools
 
     #[McpTool(
         name: 'whmcs_create_client',
-        description: 'Cria um novo cliente no WHMCS'
+        description: 'Cria um novo cliente no WHMCS. Aceita customfields como JSON string: {"4":"CPF/CNPJ","134":"Número","135":"RG"}'
     )]
     public function createClient(
         string $firstname,
@@ -50,12 +50,19 @@ class ClientTools
         string $state = '',
         string $postcode = '',
         string $country = 'BR',
-        string $phonenumber = ''
+        string $phonenumber = '',
+        string $customfields = ''
     ): string {
-        return json_encode($this->api->call('AddClient', compact(
-            'firstname', 'lastname', 'email', 'password2',
-            'address1', 'city', 'state', 'postcode', 'country', 'phonenumber'
-        )), JSON_PRETTY_PRINT);
+        $params = compact('firstname', 'lastname', 'email', 'password2');
+        foreach (['address1', 'city', 'state', 'postcode', 'country', 'phonenumber'] as $field) {
+            if ($$field !== '') {
+                $params[$field] = $$field;
+            }
+        }
+        if ($customfields !== '') {
+            $params['customfields'] = base64_encode(serialize(json_decode($customfields, true)));
+        }
+        return json_encode($this->api->call('AddClient', $params), JSON_PRETTY_PRINT);
     }
 
     /**
@@ -104,7 +111,14 @@ class ClientTools
     #[McpTool(name: 'whmcs_get_client_products', description: 'Lista produtos/serviços ativos de um cliente')]
     public function getClientProducts(int $clientid): string
     {
-        return json_encode($this->api->call('GetClientsProducts', ['clientid' => $clientid]), JSON_PRETTY_PRINT);
+        $result = $this->api->call('GetClientsProducts', ['clientid' => $clientid]);
+        if (isset($result['products']['product'])) {
+            foreach ($result['products']['product'] as &$p) {
+                unset($p['password']);
+            }
+            unset($p);
+        }
+        return json_encode($result, JSON_PRETTY_PRINT);
     }
 
     #[McpTool(name: 'whmcs_get_client_domains', description: 'Lista domínios de um cliente')]
