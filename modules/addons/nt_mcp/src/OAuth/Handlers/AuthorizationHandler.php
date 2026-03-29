@@ -64,16 +64,23 @@ final class AuthorizationHandler
         $requestId = bin2hex(random_bytes(16));
 
         // SECURITY FIX (S2A-01): Store code as SHA-256 hash
-        Capsule::table('mod_nt_mcp_oauth_codes')->insert([
-            'code'           => hash('sha256', 'pending_' . $requestId),
-            'client_id'      => $clientId,
-            'code_challenge'  => $codeChallenge,
-            'redirect_uri'   => $redirectUri,
-            'state'          => $state,
-            'expires_at'     => time() + 600, // 10 minutes
-            'used'           => false,
-            'created_at'     => date('Y-m-d H:i:s'),
-        ]);
+        // SECURITY FIX (F-12): Wrap DB insert (pattern from TokenHandler.php)
+        try {
+            Capsule::table('mod_nt_mcp_oauth_codes')->insert([
+                'code'           => hash('sha256', 'pending_' . $requestId),
+                'client_id'      => $clientId,
+                'code_challenge'  => $codeChallenge,
+                'redirect_uri'   => $redirectUri,
+                'state'          => $state,
+                'expires_at'     => time() + 600, // 10 minutes
+                'used'           => false,
+                'created_at'     => date('Y-m-d H:i:s'),
+            ]);
+        } catch (\Throwable $e) {
+            error_log('NT MCP: Failed to create authorization request: ' . $e->getMessage());
+            OAuthHelper::error(500, 'server_error', 'Failed to create authorization request');
+            return;
+        }
 
         // Redirect to WHMCS admin panel for approval
         http_response_code(302);

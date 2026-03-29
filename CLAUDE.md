@@ -19,15 +19,18 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 
 ## Architecture
 
-- `nt_mcp.php` — Entry point WHMCS (_config/_activate/_output)
-- `oauth.php` — OAuth 2.1 endpoint (register, authorize, token, metadata discovery)
-- `mcp.php` — Endpoint HTTP: init.php → BearerAuth → Server::run()
-- `src/Server.php` — Bootstrap php-mcp/server, DI via CompatContainer
-- `src/Auth/BearerAuth.php` — Bearer token auth: `authenticate(): ?string` returns admin username (static + OAuth), per-token admin binding
-- `src/Whmcs/LocalApiClient.php` — Wrapper localAPI(), throws RuntimeException on error
-- `src/Whmcs/CapsuleClient.php` — Direct DB via Capsule ORM (select/insert/update/delete)
-- `src/Whmcs/CompatContainer.php` — PSR-11 container com auto-wiring (bridge PSR v1/v2)
+- `mcp.php` — Slim entry: TLS → CORS → IP allowlist → headers → rate limit → BearerAuth → Server::run()
+- `oauth.php` — Slim entry: TLS → headers → CORS → OAuthMigration → OAuthRouter::dispatch()
+- `nt_mcp.php` — WHMCS addon entry (_config/_activate/_output → AdminController/OAuthApprovalController)
+- `src/Server.php` — Bootstrap php-mcp/server, DI via CompatContainer, global LOCK_EX
+- `src/Auth/BearerAuth.php` — Bearer token auth: `authenticate(): ?string` (static + OAuth), per-token admin binding
+- `src/Security/` — CsrfProtection (HMAC nonce), RateLimiter (TransientData + file fallback)
+- `src/Http/` — IpResolver, IpAllowlist, TlsEnforcer, SecurityHeaders, CorsHandler
+- `src/OAuth/` — OAuthRouter, OAuthMigration, OAuthHelper, Handlers/{Token,Authorization,Registration,Metadata}Handler
+- `src/Admin/` — AdminController (auth dashboard), OAuthApprovalController (5-layer approval)
+- `src/Whmcs/` — LocalApiClient (42 cmd allowlist), CapsuleClient (3 table allowlist), CompatContainer, SystemUrl
 - `src/Tools/*.php` — 9 classes com #[McpTool] para auto-discovery
+- `templates/admin/` — dashboard.php, oauth-approve.php (output escapado via htmlspecialchars)
 
 ### Admin Binding Flow
 
@@ -42,7 +45,7 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 - `oauth.php` roda com `define('CLIENTAREA', true)` — NÃO tem acesso à sessão admin
 - Cookies admin WHMCS são path-scoped a `/admin/` — nunca enviados para `/modules/`
 - Authorization: oauth.php cria pending request no DB → redireciona para `/admin/addonmodules.php?module=nt_mcp&authorize=REQUEST_ID`
-- A aprovação ocorre em `nt_mcp_output()` (contexto admin autenticado), não em oauth.php
+- A aprovação ocorre em `OAuthApprovalController` (via `nt_mcp_output()`), não em oauth.php
 - `addonmodules.php` = output page (`_output()`); `configaddonmods.php` = config page (activate/deactivate)
 - Addon precisa de permissão no role group: Configuration > Addon Modules > NT MCP > Access Control
 - DB tables: `mod_nt_mcp_oauth_clients`, `mod_nt_mcp_oauth_codes`, `mod_nt_mcp_oauth_tokens`
@@ -65,7 +68,7 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 - CSRF: HMAC-SHA256 nonce em todos os forms admin
 - Command allowlist: 42 comandos em `LocalApiClient::ALLOWED_COMMANDS`
 - Table/column allowlist: 3 tabelas CRM em `CapsuleClient::ALLOWED_TABLES/COLUMNS`
-- Trusted proxy IP: `_ntMcpGetClientIp()` (mcp.php), `_oauthGetClientIp()` (oauth.php)
+- Trusted proxy IP: `IpResolver::resolve()` — rightmost-untrusted from X-Forwarded-For behind configured proxies
 - Content-Length guard: Server.php rejeita >1MB
 - customfields: json_encode (sem serialize), max 50 fields, 8KB, scalar-only
 - Passwords stripped de responses (ClientTools, ServiceTools)
@@ -93,4 +96,5 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 - **Audit fix IDs** — comentários `// SECURITY FIX (F1)` a `(F8)` + `(M-02)` referenciam findings da auditoria de production readiness; não remover
 - **Excluir do deploy**: `.full-review/`, `.security-hardening*/`, `.phpunit.cache/`, `data/` (runtime state)
 - **property_exists() guard** — colunas novas (`admin_user`, `approved_by`, `last_used_at`) podem não existir em DBs pré-migration; usar `property_exists($row, 'col')` antes de acessar
-- **Pending audit findings** — F-05 (proxy silent), F-06 (IP fail-open), F-07 (rate limiter silent), F-10 (migration try-catch), F-11/F-12 (DB insert try-catch), F-14 (localhost fallback) — em `mcp.php` e `oauth.php`, a resolver futuramente
+- **Pending audit findings** — F-05, F-10, F-12 resolvidos. Resolvidos no refactor: F-07 (RateLimiter), F-11 (TokenHandler). Mitigados: F-06 (IpAllowlist), F-14 (SystemUrl — intencional)
+- **Semgrep PHP parser** — não suporta constructor promotion com `readonly` (PHP 8.2); RateLimiter gera PartialParsing warning, findings nesse arquivo podem ser incompletos

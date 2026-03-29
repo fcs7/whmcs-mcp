@@ -100,16 +100,18 @@ class BearerAuth
                 return null;
             }
 
-            // Update last_used_at for audit tracking (best-effort)
-            try {
-                Capsule::table('mod_nt_mcp_oauth_tokens')
-                    ->where('id', $row->id)
-                    ->update(['last_used_at' => time()]);
-            } catch (\Throwable $e) {
-                error_log('NT MCP BearerAuth: last_used_at update failed for token ID ' . $row->id . ': ' . $e->getMessage());
+            // Update last_used_at for audit tracking (best-effort, guard pre-migration DBs)
+            if (Capsule::schema()->hasColumn('mod_nt_mcp_oauth_tokens', 'last_used_at')) {
+                try {
+                    Capsule::table('mod_nt_mcp_oauth_tokens')
+                        ->where('id', $row->id)
+                        ->update(['last_used_at' => time()]);
+                } catch (\Throwable $e) {
+                    error_log('NT MCP BearerAuth: last_used_at update failed for token ID ' . $row->id . ': ' . $e->getMessage());
+                }
             }
 
-            $admin = trim($row->admin_user ?? '');
+            $admin = property_exists($row, 'admin_user') ? trim($row->admin_user ?? '') : '';
             return $admin !== '' ? $admin : $this->getFallbackAdmin();
         } catch (\Throwable $e) {
             // SECURITY FIX (F4 -- audit): Log DB failures instead of silently

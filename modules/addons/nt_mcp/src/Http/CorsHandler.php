@@ -15,10 +15,10 @@ final class CorsHandler
      *
      * @param string[] $exposeHeaders Additional headers to expose
      */
-    public static function handle(array $exposeHeaders = []): bool
+    public static function handle(array $exposeHeaders = [], string $methods = 'GET, POST, OPTIONS'): bool
     {
         header('Access-Control-Allow-Origin: *');
-        header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
+        header('Access-Control-Allow-Methods: ' . $methods);
         header('Access-Control-Allow-Headers: Content-Type, Authorization, MCP-Protocol-Version, MCP-Session-Id');
 
         if ($exposeHeaders !== []) {

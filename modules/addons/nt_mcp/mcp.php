@@ -26,7 +26,7 @@ use NtMcp\Whmcs\SystemUrl;
 TlsEnforcer::enforce();
 
 // CORS headers for browser-based MCP clients (Claude.ai Custom Connectors)
-if (CorsHandler::handle(['MCP-Session-Id'])) {
+if (CorsHandler::handle(['MCP-Session-Id'], 'POST, OPTIONS')) {
     exit;
 }
 

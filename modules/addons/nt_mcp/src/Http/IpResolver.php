@@ -32,7 +32,8 @@ final class IpResolver
                 );
             }
         } catch (\Throwable $e) {
-            // Setting not available
+            // SECURITY FIX (F-05): Log config load failures
+            error_log('NT MCP: Failed to load nt_mcp_trusted_proxies: ' . $e->getMessage());
         }
 
         if (!in_array($remoteAddr, $trustedProxies, true)) {
