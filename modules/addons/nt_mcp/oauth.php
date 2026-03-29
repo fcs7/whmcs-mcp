@@ -170,7 +170,29 @@ $issuerUrl = $systemUrl;
             $t->string('token_hash', 64)->unique();
             $t->string('client_id', 64);
             $t->integer('expires_at');
+            $t->string('admin_user', 255)->nullable();
+            $t->integer('last_used_at')->nullable();
             $t->timestamp('created_at')->useCurrent();
+        });
+    } else {
+        // Idempotent migration for existing installations
+        if (!$schema->hasColumn('mod_nt_mcp_oauth_tokens', 'admin_user')) {
+            $schema->table('mod_nt_mcp_oauth_tokens', function ($t) {
+                $t->string('admin_user', 255)->nullable()->after('expires_at');
+            });
+        }
+        if (!$schema->hasColumn('mod_nt_mcp_oauth_tokens', 'last_used_at')) {
+            $schema->table('mod_nt_mcp_oauth_tokens', function ($t) {
+                $t->integer('last_used_at')->nullable()->after('admin_user');
+            });
+        }
+    }
+
+    // Add approved_by to codes table (for propagating admin to tokens)
+    if ($schema->hasTable('mod_nt_mcp_oauth_codes')
+        && !$schema->hasColumn('mod_nt_mcp_oauth_codes', 'approved_by')) {
+        $schema->table('mod_nt_mcp_oauth_codes', function ($t) {
+            $t->string('approved_by', 255)->nullable()->after('used');
         });
     }
 
@@ -546,12 +568,20 @@ function handleToken(string $oauthUrl): void
     // receive a token that does not exist in the database — every subsequent
     // MCP request would return 401.
     try {
-        Capsule::table('mod_nt_mcp_oauth_tokens')->insert([
+        $tokenData = [
             'token_hash'  => $tokenHash,
             'client_id'   => $codeRow->client_id,
             'expires_at'  => time() + $expiresIn,
             'created_at'  => date('Y-m-d H:i:s'),
-        ]);
+        ];
+        // Propagate admin_user from the approving admin (post-migration)
+        if (Capsule::schema()->hasColumn('mod_nt_mcp_oauth_tokens', 'admin_user')) {
+            // SECURITY (F-13 fix): Guard against undefined property on pre-migration DBs
+            $tokenData['admin_user'] = property_exists($codeRow, 'approved_by')
+                ? ($codeRow->approved_by ?? null)
+                : null;
+        }
+        Capsule::table('mod_nt_mcp_oauth_tokens')->insert($tokenData);
     } catch (\Throwable $dbEx) {
         error_log('NT MCP: Failed to insert OAuth token: ' . $dbEx->getMessage());
         oauthError(500, 'server_error', 'Failed to persist access token');

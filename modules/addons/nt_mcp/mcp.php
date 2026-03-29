@@ -304,7 +304,8 @@ use NtMcp\Auth\BearerAuth;
 $storedHash = \WHMCS\Config\Setting::getValue('nt_mcp_bearer_token') ?? '';
 $auth = new BearerAuth($storedHash);
 
-if (!$auth->isValid()) {
+$_authenticatedAdmin = $auth->authenticate();
+if ($_authenticatedAdmin === null) {
     // Build resource_metadata URL for OAuth discovery (RFC 9728)
     $_mcpSystemUrl = rtrim(\WHMCS\Config\Setting::getValue('SystemURL') ?? '', '/');
     if ($_mcpSystemUrl === '') {
@@ -325,5 +326,5 @@ if (!$auth->isValid()) {
     BearerAuth::denyAndExit($_resourceMetadataUrl);
 }
 
-// 4. Iniciar MCP Server
-NtMcp\Server::run();
+// 4. Iniciar MCP Server com o admin vinculado ao token
+NtMcp\Server::run($_authenticatedAdmin);

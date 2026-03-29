@@ -18,6 +18,8 @@ class BearerAuthTest extends TestCase
         $this->tokenHash = hash('sha256', self::TOKEN);
     }
 
+    // --- isValid() backward compat tests ---
+
     public function test_validates_correct_token(): void
     {
         $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . self::TOKEN;
@@ -67,5 +69,53 @@ class BearerAuthTest extends TestCase
         $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer abc';
         $auth = new BearerAuth($this->tokenHash);
         $this->assertFalse($auth->isValid());
+    }
+
+    // --- authenticate() tests ---
+
+    public function test_authenticate_returns_string_for_valid_static_token(): void
+    {
+        $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . self::TOKEN;
+        $auth = new BearerAuth($this->tokenHash);
+        $result = $auth->authenticate();
+        $this->assertIsString($result);
+        // Without WHMCS config, falls back to 'admin'
+        $this->assertSame('admin', $result);
+    }
+
+    public function test_authenticate_returns_null_for_invalid_token(): void
+    {
+        $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . str_repeat('ff', 32);
+        $auth = new BearerAuth($this->tokenHash);
+        $this->assertNull($auth->authenticate());
+    }
+
+    public function test_authenticate_returns_null_for_missing_header(): void
+    {
+        unset($_SERVER['HTTP_AUTHORIZATION']);
+        $auth = new BearerAuth($this->tokenHash);
+        $this->assertNull($auth->authenticate());
+    }
+
+    public function test_authenticate_returns_null_for_short_token(): void
+    {
+        $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer abc';
+        $auth = new BearerAuth($this->tokenHash);
+        $this->assertNull($auth->authenticate());
+    }
+
+    public function test_authenticate_returns_null_for_empty_hash(): void
+    {
+        $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . self::TOKEN;
+        $auth = new BearerAuth('');
+        $this->assertNull($auth->authenticate());
+    }
+
+    public function test_isValid_wraps_authenticate(): void
+    {
+        $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . self::TOKEN;
+        $auth = new BearerAuth($this->tokenHash);
+        // isValid() should return true when authenticate() returns non-null
+        $this->assertSame($auth->authenticate() !== null, $auth->isValid());
     }
 }

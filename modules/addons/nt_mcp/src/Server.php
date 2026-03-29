@@ -16,21 +16,22 @@ use NtMcp\Whmcs\CapsuleClient;
 
 class Server
 {
-    public static function run(): void
+    public static function run(string $adminUser = ''): void
     {
         // ------------------------------------------------------------------
-        // SECURITY (F10): Read the admin username from WHMCS configuration
-        // instead of using a hardcoded value.  Falls back to 'admin' when
-        // the setting has not been configured yet.
+        // Admin user resolution: prefer per-token admin from authenticate(),
+        // fall back to global config, then hardcoded 'admin'.
         // ------------------------------------------------------------------
-        $adminUser = 'admin';
-        try {
-            $configured = trim(\WHMCS\Config\Setting::getValue('nt_mcp_admin_user') ?? '');
-            if ($configured !== '') {
-                $adminUser = $configured;
+        if ($adminUser === '') {
+            $adminUser = 'admin';
+            try {
+                $configured = trim(\WHMCS\Config\Setting::getValue('nt_mcp_admin_user') ?? '');
+                if ($configured !== '') {
+                    $adminUser = $configured;
+                }
+            } catch (\Throwable $_ex) {
+                // Setting not available — use default
             }
-        } catch (\Throwable $_ex) {
-            // Setting not available — use default
         }
 
         // ------------------------------------------------------------------
