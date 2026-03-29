@@ -28,7 +28,7 @@ scp -r modules/addons/nt_mcp/ usuario@servidor:httpdocs/modules/addons/nt_mcp/
 2. Navegue ate `httpdocs/modules/addons/`
 3. Crie a pasta `nt_mcp`
 4. Faca upload dos arquivos e pastas: `mcp.php`, `nt_mcp.php`, `oauth.php`, `composer.json`, `composer.lock`, `src/`, `.well-known/`
-5. **Nao envie** as pastas `vendor/`, `tests/`, `.security-hardening/` ou `deploy/`
+5. **Nao envie** as pastas `vendor/`, `tests/`, `.full-review/`, `.security-hardening/`, `data/` ou `deploy/`
 
 A estrutura final deve ser:
 
@@ -199,9 +199,30 @@ Suporta IPs individuais, CIDR IPv4 e IPv6. Se vazio, todos os IPs sao aceitos.
 
 O endpoint rejeita HTTP automaticamente (421). A deteccao considera `$_SERVER['HTTPS']`, porta 443 e header `X-Forwarded-Proto`.
 
+### Trusted Proxies (Plesk/nginx)
+
+Se o WHMCS roda atras de um reverse proxy (ex: Plesk com nginx), configure os IPs do proxy para que o rate limiting e IP allowlist usem o IP real do cliente:
+
+```sql
+INSERT INTO tblconfiguration (setting, value)
+VALUES ('nt_mcp_trusted_proxies', '127.0.0.1,::1')
+ON DUPLICATE KEY UPDATE value = VALUES(value);
+```
+
+Sem esta configuracao, todos os requests aparecem como `127.0.0.1` e compartilham o mesmo bucket de rate limiting.
+
 ### Rate Limiting
 
-60 requisicoes por minuto por IP. Ao exceder, retorna `429 Too Many Requests` com header `Retry-After`.
+Rate limiting por IP em todos os endpoints:
+
+| Endpoint | Limite | Periodo |
+|----------|:------:|---------|
+| MCP (`mcp.php`) | 60 req | 1 minuto |
+| OAuth Register | 20 req | 1 hora |
+| OAuth Authorize | 20 req | 1 minuto |
+| OAuth Token | 30 req | 1 minuto |
+
+Ao exceder, retorna `429 Too Many Requests` com header `Retry-After`.
 
 ## Ferramentas Disponiveis
 
@@ -236,11 +257,10 @@ Controles adicionais: security headers (HSTS, CSP, X-Frame-Options), rate limiti
 1. Verifique se o admin user configurado existe em `tbladmins`
 2. Verifique se as rewrite rules do OAuth estao no `.htaccess` raiz
 3. Use `claude --debug-file /tmp/claude_mcp.log` para ver erros detalhados
-4. Verifique o log do servidor: `cat /tmp/nt_mcp_debug.log` (se disponivel)
 
 ### "Client not initialized" em tools/call
 
-O servidor PHP-FPM perde estado entre requests. O workaround esta implementado em `Server.php`. Se persistir, verifique que o arquivo `/tmp/nt_mcp_cache/mcp_state.json` existe e tem permissoes de escrita.
+O servidor PHP-FPM perde estado entre requests. O workaround esta implementado em `Server.php`. Se persistir, verifique que o diretorio `data/` dentro do addon existe e tem permissoes de escrita (criado automaticamente com permissao 0700).
 
 ### "No matching admin user found"
 

@@ -8,6 +8,10 @@ if (!function_exists('localAPI')) {
     }
 }
 
+if (!function_exists('logActivity')) {
+    function logActivity(string $msg): void {}
+}
+
 require_once __DIR__ . '/../vendor/autoload.php';
 
 // Ensure Mockery expectations are verified after each test
