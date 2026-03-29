@@ -8,7 +8,7 @@ Repo: `git@github.com:fcs7/whmcs-mcp.git`
 ```bash
 cd modules/addons/nt_mcp
 composer install --ignore-platform-req=ext-iconv
-./vendor/bin/phpunit --testdox                    # 41 tests, 66 assertions
+./vendor/bin/phpunit --testdox                    # 47 tests, 73 assertions
 composer audit                                    # check dependency CVEs
 grep -c '#\[McpTool\]' src/Tools/*.php   # 54 tools total
 # Deploy via FTP (senha interativa — from modules/addons/nt_mcp/)
@@ -23,11 +23,19 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 - `oauth.php` — OAuth 2.1 endpoint (register, authorize, token, metadata discovery)
 - `mcp.php` — Endpoint HTTP: init.php → BearerAuth → Server::run()
 - `src/Server.php` — Bootstrap php-mcp/server, DI via CompatContainer
-- `src/Auth/BearerAuth.php` — Bearer token validation (static hash + OAuth tokens via SHA-256)
+- `src/Auth/BearerAuth.php` — Bearer token auth: `authenticate(): ?string` returns admin username (static + OAuth), per-token admin binding
 - `src/Whmcs/LocalApiClient.php` — Wrapper localAPI(), throws RuntimeException on error
 - `src/Whmcs/CapsuleClient.php` — Direct DB via Capsule ORM (select/insert/update/delete)
 - `src/Whmcs/CompatContainer.php` — PSR-11 container com auto-wiring (bridge PSR v1/v2)
 - `src/Tools/*.php` — 9 classes com #[McpTool] para auto-discovery
+
+### Admin Binding Flow
+
+- `mcp.php` chama `BearerAuth::authenticate()` → retorna admin username vinculado ao token
+- Admin propagado para `Server::run($adminUser)` → usado em todas as LocalAPI calls
+- Fallback chain: per-token admin_user → global `nt_mcp_admin_user` config → hardcoded 'admin'
+- Static token: admin lido de `nt_mcp_bearer_token_admin` (tblconfiguration)
+- OAuth token: admin lido de `mod_nt_mcp_oauth_tokens.admin_user` (propagado de `approved_by` na aprovação)
 
 ## OAuth 2.1 Flow
 
@@ -38,6 +46,8 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 - `addonmodules.php` = output page (`_output()`); `configaddonmods.php` = config page (activate/deactivate)
 - Addon precisa de permissão no role group: Configuration > Addon Modules > NT MCP > Access Control
 - DB tables: `mod_nt_mcp_oauth_clients`, `mod_nt_mcp_oauth_codes`, `mod_nt_mcp_oauth_tokens`
+- DB columns adicionais (migration lazy via hasColumn): `tokens.admin_user`, `tokens.last_used_at`, `codes.approved_by`
+- Admin auto-detect na UI: `$_SESSION['adminid']` → `tbladmins.username` (confiável — cookies admin path-scoped)
 
 ## Conventions
 
@@ -60,6 +70,8 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 - customfields: json_encode (sem serialize), max 50 fields, 8KB, scalar-only
 - Passwords stripped de responses (ClientTools, ServiceTools)
 - Audit log: API calls logados com params sensíveis redactados
+- Admin action audit: logActivity() em regenerate_token, revoke_token, remove_client (ações destrutivas UI)
+- Per-token admin binding: cada token registra qual admin o criou/aprovou
 
 ## Gotchas
 
@@ -80,3 +92,5 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 - **Global lock serializa requests** — Server.php usa LOCK_EX em `data/nt_mcp_global.lock`; aceitável para 1-3 admins, gargalo para 5+
 - **Audit fix IDs** — comentários `// SECURITY FIX (F1)` a `(F8)` + `(M-02)` referenciam findings da auditoria de production readiness; não remover
 - **Excluir do deploy**: `.full-review/`, `.security-hardening*/`, `.phpunit.cache/`, `data/` (runtime state)
+- **property_exists() guard** — colunas novas (`admin_user`, `approved_by`, `last_used_at`) podem não existir em DBs pré-migration; usar `property_exists($row, 'col')` antes de acessar
+- **Pending audit findings** — F-05 (proxy silent), F-06 (IP fail-open), F-07 (rate limiter silent), F-10 (migration try-catch), F-11/F-12 (DB insert try-catch), F-14 (localhost fallback) — em `mcp.php` e `oauth.php`, a resolver futuramente
