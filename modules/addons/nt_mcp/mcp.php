@@ -14,316 +14,40 @@ require_once __DIR__ . '/../../../init.php';
 // 2. Autoload do Composer (depois do WHMCS para evitar conflitos)
 require_once __DIR__ . '/vendor/autoload.php';
 
-// ---------------------------------------------------------------
-// SECURITY CONTROL (9.2 -- F13): TLS enforcement.
-// Reject plain HTTP requests to prevent credential exposure in transit.
-// The Bearer token and all MCP payloads MUST travel over TLS.
-//
-// Override: Set environment variable NT_MCP_ALLOW_HTTP=1 for local dev.
-// ---------------------------------------------------------------
-(function () {
-    $isHttps = (
-        (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
-        || (isset($_SERVER['SERVER_PORT']) && (int)$_SERVER['SERVER_PORT'] === 443)
-        || (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower($_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https')
-    );
+use NtMcp\Auth\BearerAuth;
+use NtMcp\Http\TlsEnforcer;
+use NtMcp\Http\SecurityHeaders;
+use NtMcp\Http\CorsHandler;
+use NtMcp\Http\IpAllowlist;
+use NtMcp\Security\RateLimiter;
+use NtMcp\Whmcs\SystemUrl;
 
-    $allowHttp = (
-        getenv('NT_MCP_ALLOW_HTTP') === '1'
-        || (isset($_ENV['NT_MCP_ALLOW_HTTP']) && $_ENV['NT_MCP_ALLOW_HTTP'] === '1')
-    );
+// SECURITY CONTROL (9.2 -- F13): TLS enforcement
+TlsEnforcer::enforce();
 
-    if (!$isHttps && !$allowHttp) {
-        http_response_code(421); // Misdirected Request
-        header('Content-Type: application/json');
-        echo json_encode([
-            'error' => 'TLS required. Plain HTTP requests are rejected for security.',
-        ]);
-        exit;
-    }
-})();
-
-// ---------------------------------------------------------------
-// CORS headers for browser-based MCP clients (Claude.ai Custom Connectors).
-// OPTIONS preflight must be handled before auth (no Authorization header).
-// ---------------------------------------------------------------
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: POST, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, Authorization, MCP-Protocol-Version, MCP-Session-Id');
-header('Access-Control-Expose-Headers: MCP-Session-Id');
-
-if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') {
-    http_response_code(204);
+// CORS headers for browser-based MCP clients (Claude.ai Custom Connectors)
+if (CorsHandler::handle(['MCP-Session-Id'])) {
     exit;
 }
 
-/**
- * SECURITY FIX (M-01): Resolve the real client IP behind reverse proxies.
- *
- * When REMOTE_ADDR is a loopback address or matches a configured trusted
- * proxy, the rightmost untrusted IP from X-Forwarded-For is used instead.
- * This prevents rate-limit bypass and ensures IP allowlists work correctly
- * behind Plesk/nginx reverse proxies.
- */
-function _ntMcpGetClientIp(): string
-{
-    $remoteAddr = $_SERVER['REMOTE_ADDR'] ?? '';
-    if ($remoteAddr === '') {
-        return '0.0.0.0';
-    }
+// SECURITY CONTROL (9.4): Optional IP allowlist
+IpAllowlist::enforce();
 
-    // Check if REMOTE_ADDR is a trusted proxy (loopback or configured list)
-    $trustedProxies = ['127.0.0.1', '::1'];
-    try {
-        $configured = \WHMCS\Config\Setting::getValue('nt_mcp_trusted_proxies') ?? '';
-        if ($configured !== '') {
-            $trustedProxies = array_merge(
-                $trustedProxies,
-                array_filter(array_map('trim', explode(',', $configured)))
-            );
-        }
-    } catch (\Throwable $e) {
-        // Setting not available
-    }
+// SECURITY FIX (F9 -- HIGH): Security response headers
+SecurityHeaders::emit();
 
-    if (!in_array($remoteAddr, $trustedProxies, true)) {
-        return $remoteAddr;
-    }
-
-    // Use rightmost untrusted IP from X-Forwarded-For
-    $xff = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? '';
-    if ($xff === '') {
-        return $remoteAddr;
-    }
-
-    $ips = array_map('trim', explode(',', $xff));
-    // Walk from right to left, return first IP not in trusted list
-    for ($i = count($ips) - 1; $i >= 0; $i--) {
-        $ip = $ips[$i];
-        if ($ip !== '' && filter_var($ip, FILTER_VALIDATE_IP) && !in_array($ip, $trustedProxies, true)) {
-            return $ip;
-        }
-    }
-
-    return $remoteAddr;
-}
-
-// ---------------------------------------------------------------
-// SECURITY CONTROL (9.4): Optional IP allowlist.
-// If nt_mcp_allowed_ips is configured in WHMCS settings, only
-// requests from those IPs are accepted.  Empty = allow all.
-// Supports comma-separated IPs and CIDR notation.
-// ---------------------------------------------------------------
-(function () {
-    $allowedIpsRaw = '';
-    try {
-        $allowedIpsRaw = \WHMCS\Config\Setting::getValue('nt_mcp_allowed_ips') ?? '';
-    } catch (\Throwable $e) {
-        // Setting doesn't exist yet — allow all
-        return;
-    }
-
-    $allowedIpsRaw = trim($allowedIpsRaw);
-    if ($allowedIpsRaw === '') {
-        return; // No allowlist configured — allow all (backwards compatible)
-    }
-
-    $clientIp = _ntMcpGetClientIp();
-    if ($clientIp === '' || $clientIp === '0.0.0.0') {
-        http_response_code(403);
-        header('Content-Type: application/json');
-        echo json_encode(['error' => 'Forbidden: unable to determine client IP.']);
-        exit;
-    }
-
-    $allowedEntries = array_filter(array_map('trim', explode(',', $allowedIpsRaw)));
-
-    foreach ($allowedEntries as $entry) {
-        // Exact IP match
-        if ($entry === $clientIp) {
-            return;
-        }
-        // CIDR match
-        if (strpos($entry, '/') !== false && _ntMcpIpInCidr($clientIp, $entry)) {
-            return;
-        }
-    }
-
-    http_response_code(403);
-    header('Content-Type: application/json');
-    echo json_encode(['error' => 'Forbidden: IP address not in allowlist.']);
-    exit;
-})();
-
-/**
- * Check if an IP address falls within a CIDR range.
- * Supports both IPv4 and IPv6.
- */
-function _ntMcpIpInCidr(string $ip, string $cidr): bool
-{
-    $parts = explode('/', $cidr, 2);
-    if (count($parts) !== 2) {
-        return false;
-    }
-    [$subnet, $bits] = $parts;
-    $bits = (int) $bits;
-
-    $ipBin = @inet_pton($ip);
-    $subnetBin = @inet_pton($subnet);
-
-    if ($ipBin === false || $subnetBin === false) {
-        return false;
-    }
-    // Both must be the same address family (same byte length)
-    if (strlen($ipBin) !== strlen($subnetBin)) {
-        return false;
-    }
-
-    $totalBits = strlen($ipBin) * 8; // 32 for IPv4, 128 for IPv6
-    if ($bits < 0 || $bits > $totalBits) {
-        return false;
-    }
-
-    // Build the bitmask
-    $mask = str_repeat("\xff", (int)($bits / 8));
-    if ($bits % 8 !== 0) {
-        $mask .= chr(0xff << (8 - ($bits % 8)) & 0xff);
-    }
-    $mask = str_pad($mask, strlen($ipBin), "\x00");
-
-    return ($ipBin & $mask) === ($subnetBin & $mask);
-}
-
-// ---------------------------------------------------------------
-// SECURITY FIX (F9 -- HIGH): Emit security response headers BEFORE
-// any output.  These headers apply defence-in-depth against XSS,
-// click-jacking, MIME sniffing, and cache-based data leakage.
-// ---------------------------------------------------------------
-header('X-Content-Type-Options: nosniff');
-header('X-Frame-Options: DENY');
-header("Content-Security-Policy: default-src 'none'");
-header('Cache-Control: no-store, no-cache, must-revalidate');
-header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
-header('X-Permitted-Cross-Domain-Policies: none');
-header('Referrer-Policy: no-referrer');
-
-// ---------------------------------------------------------------
-// SECURITY FIX (F7 -- HIGH): IP-based rate limiting.
-// Uses WHMCS transient cache (tblconfiguration with expiring keys)
-// to enforce a maximum of 60 requests per minute per IP address.
-// Falls back to file-based locking when transients are unavailable.
-// ---------------------------------------------------------------
-(function () {
-    // SECURITY FIX (H-05): Use private data directory instead of world-writable /tmp
-    $dataDir = __DIR__ . '/data/rate';
-    if (!is_dir($dataDir)) {
-        @mkdir($dataDir, 0700, true);
-    }
-
-    $maxRequests = 60;
-    $windowSeconds = 60;
-    $clientIp = _ntMcpGetClientIp();
-    // Normalise the IP to a safe cache key (preserve colons for IPv6)
-    $safeIp = preg_replace('/[^a-f0-9.:]/', '_', $clientIp);
-    $cacheKey = 'nt_mcp_rl_' . $safeIp;
-
-    // Try WHMCS transient cache first (DB-backed, shared across workers)
-    try {
-        if (class_exists('\WHMCS\TransientData')) {
-            $data = \WHMCS\TransientData::getInstance()->retrieve($cacheKey);
-            if ($data === false || $data === null || $data === '') {
-                // First request in this window
-                \WHMCS\TransientData::getInstance()->store($cacheKey, json_encode([
-                    'count' => 1,
-                    'window_start' => time(),
-                ]), $windowSeconds);
-                return; // within limits
-            }
-
-            $state = json_decode($data, true);
-            if (!is_array($state) || (time() - ($state['window_start'] ?? 0)) > $windowSeconds) {
-                // Window expired — reset
-                \WHMCS\TransientData::getInstance()->store($cacheKey, json_encode([
-                    'count' => 1,
-                    'window_start' => time(),
-                ]), $windowSeconds);
-                return;
-            }
-
-            $state['count'] = ($state['count'] ?? 0) + 1;
-            if ($state['count'] > $maxRequests) {
-                http_response_code(429);
-                header('Retry-After: ' . $windowSeconds);
-                header('Content-Type: application/json');
-                echo json_encode(['error' => 'Rate limit exceeded. Try again later.']);
-                exit;
-            }
-
-            \WHMCS\TransientData::getInstance()->store(
-                $cacheKey,
-                json_encode($state),
-                max(1, $windowSeconds - (time() - $state['window_start']))
-            );
-            return;
-        }
-    } catch (\Throwable $e) {
-        // Fall through to file-based limiter
-    }
-
-    // Fallback: file-based rate limiter
-    $rateFile = $dataDir . '/' . $safeIp . '.json';
-
-    $state = ['count' => 0, 'window_start' => time()];
-    if (file_exists($rateFile)) {
-        $raw = @file_get_contents($rateFile);
-        $decoded = $raw ? json_decode($raw, true) : null;
-        if (is_array($decoded) && (time() - ($decoded['window_start'] ?? 0)) <= $windowSeconds) {
-            $state = $decoded;
-        }
-    }
-
-    $state['count']++;
-    if ($state['count'] > $maxRequests) {
-        http_response_code(429);
-        header('Retry-After: ' . $windowSeconds);
-        header('Content-Type: application/json');
-        echo json_encode(['error' => 'Rate limit exceeded. Try again later.']);
-        exit;
-    }
-
-    @file_put_contents($rateFile, json_encode($state), LOCK_EX);
-})();
+// SECURITY FIX (F7 -- HIGH): IP-based rate limiting (60 req/min)
+(new RateLimiter('nt_mcp_rl_', 60, 60))->enforce();
 
 // 3. Autenticar ANTES de qualquer coisa
-use NtMcp\Auth\BearerAuth;
-
-// SECURITY (F17): The stored value is now a SHA-256 hash, not the plaintext
-// token.  BearerAuth::isValid() hashes the presented Bearer value before
-// comparing, so the plaintext token never needs to be stored.
+// SECURITY (F17): The stored value is a SHA-256 hash, not the plaintext token.
 // Also accepts OAuth-issued tokens from mod_nt_mcp_oauth_tokens.
 $storedHash = \WHMCS\Config\Setting::getValue('nt_mcp_bearer_token') ?? '';
 $auth = new BearerAuth($storedHash);
 
 $_authenticatedAdmin = $auth->authenticate();
 if ($_authenticatedAdmin === null) {
-    // Build resource_metadata URL for OAuth discovery (RFC 9728)
-    $_mcpSystemUrl = rtrim(\WHMCS\Config\Setting::getValue('SystemURL') ?? '', '/');
-    if ($_mcpSystemUrl === '') {
-        try { $_mcpSystemUrl = rtrim(\App::getSystemURL(), '/'); } catch (\Throwable $_e) { $_mcpSystemUrl = ''; }
-    }
-    // Upgrade http→https when request arrived over TLS
-    $_isTls = (
-        (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
-        || (isset($_SERVER['SERVER_PORT']) && (int)$_SERVER['SERVER_PORT'] === 443)
-        || (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower($_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https')
-    );
-    if ($_isTls && str_starts_with($_mcpSystemUrl, 'http://')) {
-        $_mcpSystemUrl = 'https://' . substr($_mcpSystemUrl, 7);
-    }
-    $_resourceMetadataUrl = $_mcpSystemUrl !== ''
-        ? $_mcpSystemUrl . '/modules/addons/nt_mcp/oauth.php/resource-metadata'
-        : '';
-    BearerAuth::denyAndExit($_resourceMetadataUrl);
+    BearerAuth::denyAndExit(SystemUrl::resourceMetadataUrl());
 }
 
 // 4. Iniciar MCP Server com o admin vinculado ao token
