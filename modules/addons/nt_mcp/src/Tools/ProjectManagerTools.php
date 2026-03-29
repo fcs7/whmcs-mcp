@@ -71,9 +71,9 @@ class ProjectManagerTools
         int $adminid,
         bool $completed = false
     ): string {
-        return json_encode($this->api->call('AddProjectTask', compact(
-            'projectid', 'task', 'duedate', 'adminid', 'completed'
-        )), JSON_PRETTY_PRINT);
+        $params = compact('projectid', 'task', 'duedate', 'adminid');
+        if ($completed) $params['completed'] = true;
+        return json_encode($this->api->call('AddProjectTask', $params), JSON_PRETTY_PRINT);
     }
 
     #[McpTool(name: 'whmcs_update_project_task', description: 'Atualiza uma tarefa de projeto')]

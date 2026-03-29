@@ -30,9 +30,11 @@ class TicketTools
     }
 
     #[McpTool(name: 'whmcs_reply_ticket', description: 'Adiciona resposta a um ticket existente')]
-    public function replyTicket(int $ticketid, string $message, string $status = 'Customer-Reply'): string
+    public function replyTicket(int $ticketid, string $message, string $status = 'Customer-Reply', int $adminid = 0): string
     {
-        return json_encode($this->api->call('AddTicketReply', compact('ticketid', 'message', 'status')), JSON_PRETTY_PRINT);
+        $params = compact('ticketid', 'message', 'status');
+        if ($adminid > 0) $params['adminid'] = $adminid;
+        return json_encode($this->api->call('AddTicketReply', $params), JSON_PRETTY_PRINT);
     }
 
     #[McpTool(name: 'whmcs_update_ticket', description: 'Atualiza status, prioridade ou departamento de um ticket')]

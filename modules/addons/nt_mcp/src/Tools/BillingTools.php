@@ -27,12 +27,14 @@ class BillingTools
     #[McpTool(name: 'whmcs_create_invoice', description: 'Cria uma nova fatura manualmente')]
     public function createInvoice(int $userid, string $date, array $itemdescription, array $itemamount): string
     {
-        return json_encode($this->api->call('CreateInvoice', [
-            'userid' => $userid,
-            'date'   => $date,
-            'itemdescription' => $itemdescription,
-            'itemamount'      => $itemamount,
-        ]), JSON_PRETTY_PRINT);
+        $params = ['userid' => $userid, 'date' => $date];
+        foreach ($itemdescription as $i => $desc) {
+            $params["itemdescription[{$i}]"] = (string) $desc;
+        }
+        foreach ($itemamount as $i => $amount) {
+            $params["itemamount[{$i}]"] = (float) $amount;
+        }
+        return json_encode($this->api->call('CreateInvoice', $params), JSON_PRETTY_PRINT);
     }
 
     #[McpTool(name: 'whmcs_add_payment', description: 'Registra pagamento em uma fatura')]
