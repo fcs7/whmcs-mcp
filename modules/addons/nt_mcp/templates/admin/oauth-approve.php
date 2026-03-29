@@ -31,13 +31,13 @@
             </tr>
             <tr>
                 <td><strong>Admin</strong></td>
-                <td>ID #<?= $adminId ?> (voce)</td>
+                <td>ID #<?= $adminId ?> (você)</td>
             </tr>
         </table>
 
         <div class="alert alert-warning">
-            <strong>Atencao:</strong> Ao aprovar, o cliente podera executar ferramentas de
-            gerenciamento WHMCS (listar clientes, faturas, tickets, servicos, etc.) via MCP.
+            <strong>Atenção:</strong> Ao aprovar, o cliente poderá executar ferramentas de
+            gerenciamento WHMCS (listar clientes, faturas, tickets, serviços, etc.) via MCP.
         </div>
 
         <form method="POST" class="text-center">

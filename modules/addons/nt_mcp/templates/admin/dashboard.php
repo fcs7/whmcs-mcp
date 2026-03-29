@@ -23,7 +23,7 @@ if ($tokenHash !== '') {
         $staticInfo .= ' (criado em ' . $e($tokenCreated) . ')';
     }
 } else {
-    $staticInfo = '<span class="text-danger">Nao configurado</span>';
+    $staticInfo = '<span class="text-danger">Não configurado</span>';
 }
 
 // Token display after regeneration
@@ -32,7 +32,7 @@ if ($flashPlaintext !== '') {
     $tokenSection = '<div class="alert alert-warning">'
         . '<strong>Novo Bearer Token (exibido apenas uma vez):</strong><br>'
         . '<code>' . $e($flashPlaintext) . '</code></div>'
-        . '<h5>Configuracao Claude Code (~/.claude.json)</h5>'
+        . '<h5>Configuração Claude Code (~/.claude.json)</h5>'
         . '<pre>' . $e(json_encode([
             'mcpServers' => [
                 'whmcs-ntweb' => [
@@ -75,6 +75,7 @@ foreach ($oauthTokens as $tok) {
             . '<input type="hidden" name="_csrf_token" value="' . $escapedCsrf . '">'
             . '<input type="hidden" name="token_id" value="' . (int)$tok->id . '">'
             . '<button type="submit" name="revoke_oauth_token" class="btn btn-xs btn-danger"'
+            . ' title="Revogar este token OAuth"'
             . ' onclick="return confirm(\'Revogar este token?\');">Revogar</button></form>';
     }
     $tokensRows .= "<tr><td>{$clientName}</td><td>{$adminCol}</td><td>{$createdCol}</td>"
@@ -97,6 +98,7 @@ foreach ($oauthClients as $cli) {
         . '<input type="hidden" name="_csrf_token" value="' . $escapedCsrf . '">'
         . '<input type="hidden" name="client_id_remove" value="' . $cliId . '">'
         . '<button type="submit" name="remove_oauth_client" class="btn btn-xs btn-danger"'
+        . ' title="Remover este client e revogar seus tokens"'
         . ' onclick="return confirm(\'Remover este client e todos os seus tokens?\');">Remover</button>'
         . '</form></td></tr>';
 }
@@ -113,7 +115,7 @@ $revokeAllBtn = $activeCount > 0
 ?>
 <div class="panel panel-default">
     <div class="panel-heading">
-        <h3 class="panel-title">NT MCP Server &mdash; Gestao de Autenticacao</h3>
+        <h3 class="panel-title">NT MCP Server &mdash; Gestão de Autenticação</h3>
     </div>
     <div class="panel-body">
         <?= $flashHtml ?>
@@ -121,22 +123,21 @@ $revokeAllBtn = $activeCount > 0
         <div class="alert alert-info" style="margin-bottom:20px;">
             <i class="fas fa-user-shield"></i>
             <strong>Administrador logado:</strong> <?= $e($currentAdminName) ?> (ID #<?= $currentAdminId ?>)
-            <span class="text-muted">&mdash; auto-detectado</span>
         </div>
 
         <h4>Endpoint MCP</h4>
         <pre><?= $escapedUrl ?></pre>
 
         <hr>
-        <h4>Bearer Token Estatico</h4>
+        <h4>Bearer Token Estático</h4>
         <p><?= $staticInfo ?></p>
-        <p class="text-muted"><small>O hash SHA-256 e armazenado no banco. O token plaintext e exibido apenas uma vez ao regenerar.</small></p>
+        <p class="text-muted"><small>O hash SHA-256 é armazenado no banco. O token plaintext é exibido apenas uma vez ao regenerar.</small></p>
         <?= $tokenSection ?>
         <form method="post" style="margin-bottom:20px;">
             <input type="hidden" name="_csrf_token" value="<?= $escapedCsrf ?>">
             <button type="submit" name="regenerate_token" class="btn btn-warning"
-                    onclick="return confirm('Tem certeza? O token atual sera invalidado e o novo sera vinculado a sua conta (' + <?= json_encode($currentAdminName) ?> + ').');">
-                Regenerar Token (vincular a <?= $e($currentAdminName) ?>)
+                    onclick="return confirm('Tem certeza? O token atual será invalidado.');">
+                Regenerar Token
             </button>
         </form>
 
@@ -149,9 +150,9 @@ $revokeAllBtn = $activeCount > 0
                     <th>Admin</th>
                     <th>Criado em</th>
                     <th>Expira em</th>
-                    <th>Ultimo uso</th>
+                    <th>Último uso</th>
                     <th>Status</th>
-                    <th>Acoes</th>
+                    <th>Ações</th>
                 </tr>
             </thead>
             <tbody><?= $tokensRows ?></tbody>
@@ -166,7 +167,7 @@ $revokeAllBtn = $activeCount > 0
                     <th>Nome</th>
                     <th>Redirect URIs</th>
                     <th>Criado em</th>
-                    <th>Acoes</th>
+                    <th>Ações</th>
                 </tr>
             </thead>
             <tbody><?= $clientsRows ?></tbody>
