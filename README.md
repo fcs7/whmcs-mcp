@@ -416,17 +416,19 @@ O plugin inclui:
 - Deteccao automatica de contexto WHMCS
 
 ```
-┌──────────────────────────────┐      ┌─────────────────────────────┐
-│  whmcs-mcp (este repo)       │      │  whmcs-mcp-plugin (publico) │
-│                              │      │                             │
-│  Addon WHMCS (PHP):          │      │  Plugin Claude Code:        │
-│  • mcp.php (endpoint HTTP)   │ ──── │  • SKILL.md (referencia)    │
-│  • oauth.php (OAuth 2.1)     │ MCP  │  • hooks.json (seguranca)   │
-│  • src/Tools/ (54 tools)     │      │  • plugin.json (metadados)  │
-│                              │      │                             │
-│  Roda em: Servidor WHMCS     │      │  Roda em: Claude Code CLI   │
-│           PHP 8.2+           │      │           Claude Desktop    │
-└──────────────────────────────┘      └─────────────────────────────┘
+┌──────────────────────────────┐      ┌──────────────────────────────┐
+│  whmcs-mcp  ← este repo     │      │  whmcs-mcp-plugin            │
+│  github.com/fcs7/whmcs-mcp  │      │  github.com/fcs7/            │
+│                              │      │  whmcs-mcp-plugin            │
+│  Addon WHMCS (PHP):          │      │                              │
+│  • mcp.php (endpoint HTTP)   │      │  Plugin Claude Code:         │
+│  • oauth.php (OAuth 2.1)     │ ──── │  • SKILL.md (referencia)     │
+│  • src/Tools/ (54 tools)     │ MCP  │  • hooks.json (seguranca)    │
+│  • src/Auth/ (Bearer+OAuth)  │      │  • plugin.json (metadados)   │
+│                              │      │                              │
+│  Roda em: Servidor WHMCS     │      │  Roda em: Claude Code CLI    │
+│           PHP 8.2+           │      │           Claude Desktop     │
+└──────────────────────────────┘      └──────────────────────────────┘
 ```
 
 ## Licenca
