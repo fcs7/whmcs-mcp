@@ -44,6 +44,20 @@ require_once __DIR__ . '/vendor/autoload.php';
 })();
 
 // ---------------------------------------------------------------
+// CORS headers for browser-based MCP clients (Claude.ai Custom Connectors).
+// OPTIONS preflight must be handled before auth (no Authorization header).
+// ---------------------------------------------------------------
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Methods: POST, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type, Authorization, MCP-Protocol-Version, MCP-Session-Id');
+header('Access-Control-Expose-Headers: MCP-Session-Id');
+
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') {
+    http_response_code(204);
+    exit;
+}
+
+// ---------------------------------------------------------------
 // SECURITY CONTROL (9.4): Optional IP allowlist.
 // If nt_mcp_allowed_ips is configured in WHMCS settings, only
 // requests from those IPs are accepted.  Empty = allow all.
@@ -233,11 +247,29 @@ use NtMcp\Auth\BearerAuth;
 // SECURITY (F17): The stored value is now a SHA-256 hash, not the plaintext
 // token.  BearerAuth::isValid() hashes the presented Bearer value before
 // comparing, so the plaintext token never needs to be stored.
+// Also accepts OAuth-issued tokens from mod_nt_mcp_oauth_tokens.
 $storedHash = \WHMCS\Config\Setting::getValue('nt_mcp_bearer_token') ?? '';
 $auth = new BearerAuth($storedHash);
 
 if (!$auth->isValid()) {
-    BearerAuth::denyAndExit();
+    // Build resource_metadata URL for OAuth discovery (RFC 9728)
+    $_mcpSystemUrl = rtrim(\WHMCS\Config\Setting::getValue('SystemURL') ?? '', '/');
+    if ($_mcpSystemUrl === '') {
+        try { $_mcpSystemUrl = rtrim(\App::getSystemURL(), '/'); } catch (\Throwable $_e) { $_mcpSystemUrl = ''; }
+    }
+    // Upgrade http→https when request arrived over TLS
+    $_isTls = (
+        (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+        || (isset($_SERVER['SERVER_PORT']) && (int)$_SERVER['SERVER_PORT'] === 443)
+        || (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower($_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https')
+    );
+    if ($_isTls && str_starts_with($_mcpSystemUrl, 'http://')) {
+        $_mcpSystemUrl = 'https://' . substr($_mcpSystemUrl, 7);
+    }
+    $_resourceMetadataUrl = $_mcpSystemUrl !== ''
+        ? $_mcpSystemUrl . '/modules/addons/nt_mcp/oauth.php/resource-metadata'
+        : '';
+    BearerAuth::denyAndExit($_resourceMetadataUrl);
 }
 
 // 4. Iniciar MCP Server

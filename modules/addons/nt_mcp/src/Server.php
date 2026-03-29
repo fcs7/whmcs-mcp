@@ -4,8 +4,13 @@ namespace NtMcp;
 
 use PhpMcp\Server\Server as McpServer;
 use PhpMcp\Server\Defaults\ArrayConfigurationRepository;
-use PhpMcp\Server\Defaults\BasicContainer;
+use PhpMcp\Server\Defaults\FileCache;
+use Psr\Log\NullLogger;
 use PhpMcp\Server\Transports\HttpTransportHandler;
+use PhpMcp\Server\Contracts\ConfigurationRepositoryInterface;
+use Psr\SimpleCache\CacheInterface;
+use Psr\Log\LoggerInterface;
+use NtMcp\Whmcs\CompatContainer;
 use NtMcp\Whmcs\LocalApiClient;
 use NtMcp\Whmcs\CapsuleClient;
 
@@ -28,104 +33,179 @@ class Server
             // Setting not available — use default
         }
 
-        $localApi = new LocalApiClient($adminUser);
-        $capsule  = new CapsuleClient();
-
-        // Build server with custom config
-        $config = new ArrayConfigurationRepository([
-            'mcp' => [
-                'server' => ['name' => 'NT Web WHMCS MCP Server', 'version' => '1.0.0'],
-                'protocol_versions' => ['2024-11-05'],
-                'pagination_limit' => 50,
-                'capabilities' => [
-                    'tools' => ['enabled' => true, 'listChanged' => true],
-                    'resources' => ['enabled' => false],
-                    'prompts' => ['enabled' => false],
-                    'logging' => ['enabled' => false],
-                ],
-                'cache' => ['key' => 'mcp.elements.cache', 'ttl' => 3600, 'prefix' => 'mcp_state_'],
-                'runtime' => ['log_level' => 'info'],
-            ],
-        ]);
-
-        $server = McpServer::make()
-            ->withConfig($config)
-            ->withBasePath(__DIR__)
-            ->withScanDirectories(['Tools']);
-
-        // Register service instances into the container for tool constructor injection
-        $container = $server->getContainer();
-        if ($container instanceof BasicContainer) {
-            $container->set(LocalApiClient::class, $localApi);
-            $container->set(CapsuleClient::class, $capsule);
-        }
-
-        // Discover tools annotated with #[McpTool]
-        $server->discover();
-
-        // Handle the HTTP request via Streamable HTTP (stateless per-request)
-        $transport = new HttpTransportHandler($server);
+        // ------------------------------------------------------------------
+        // 1. Parse the HTTP request FIRST — we need clientId before setup
+        // ------------------------------------------------------------------
         $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
-        // ---------------------------------------------------------------
-        // SECURITY FIX (F14 -- MEDIUM): Validate MCP-Session-Id header.
-        //
-        // The raw HTTP_MCP_SESSION_ID was accepted without any validation,
-        // allowing CRLF injection (header splitting) or arbitrary values.
-        // Now we enforce strict hex format (16-64 chars) and fall back to
-        // a cryptographically random ID when the header is absent or invalid.
-        // ---------------------------------------------------------------
         $rawSessionId = $_SERVER['HTTP_MCP_SESSION_ID'] ?? '';
-        $clientId = preg_match('/^[a-f0-9]{16,64}$/i', $rawSessionId)
+        $clientId = preg_match('/^[a-zA-Z0-9._\-]{8,128}$/', $rawSessionId)
             ? $rawSessionId
-            : (session_id() ?: bin2hex(random_bytes(16)));
+            : bin2hex(random_bytes(16));
 
-        if ($method === 'POST') {
-            $input = file_get_contents('php://input');
-            $transport->handleInput($input, $clientId);
+        $input = ($method === 'POST') ? file_get_contents('php://input') : '';
+        $decoded = json_decode($input, true);
 
-            // Send queued response
-            $state = $transport->getTransportState();
-            $messages = $state->getQueuedMessages($clientId);
+        // Temporary debug log — remove after confirming Claude Code works
+        @file_put_contents(
+            sys_get_temp_dir() . '/nt_mcp_debug.log',
+            date('H:i:s') . " {$method} sid={$clientId}"
+                . " method=" . ($decoded['method'] ?? 'N/A')
+                . " id=" . ($decoded['id'] ?? 'none')
+                . "\n",
+            FILE_APPEND | LOCK_EX
+        );
 
+        // ------------------------------------------------------------------
+        // 2. Handle GET (405) and other methods early — no server needed
+        // ------------------------------------------------------------------
+        if ($method === 'GET') {
+            http_response_code(405);
+            header('Allow: POST');
             header('Content-Type: application/json');
-            header('Mcp-Session-Id: ' . $clientId);
-
-            foreach ($messages as $message) {
-                echo json_encode($message, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-            }
-        } elseif ($method === 'GET') {
-            // SSE endpoint for server-initiated messages
-            header('Content-Type: text/event-stream');
-            header('Cache-Control: no-cache');
-            header('Connection: keep-alive');
-            header('Mcp-Session-Id: ' . $clientId);
-
-            // ---------------------------------------------------------------
-            // SECURITY FIX (9.3 -- F11): Host header injection prevention.
-            // $_SERVER['HTTP_HOST'] is attacker-controlled.  Derive the
-            // SSE post-back endpoint from the WHMCS-configured System URL.
-            // ---------------------------------------------------------------
-            $systemUrl = rtrim(\WHMCS\Config\Setting::getValue('SystemURL') ?? '', '/');
-            if ($systemUrl === '') {
-                try {
-                    $systemUrl = rtrim(\App::getSystemURL(), '/');
-                } catch (\Throwable $e) {
-                    // Last resort: reconstruct from validated server vars
-                    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-                    $host = preg_replace('/[^a-zA-Z0-9.\-:]/', '', $_SERVER['HTTP_HOST'] ?? 'localhost');
-                    $systemUrl = $scheme . '://' . $host;
-                }
-            }
-            $requestUri = $_SERVER['REQUEST_URI'] ?? '/modules/addons/nt_mcp/mcp.php';
-            // Strip any injected characters from REQUEST_URI
-            $requestUri = parse_url($requestUri, PHP_URL_PATH) ?: '/modules/addons/nt_mcp/mcp.php';
-            $postEndpoint = $systemUrl . $requestUri;
-            $transport->handleSseConnection($clientId, $postEndpoint);
-        } else {
+            echo json_encode(['error' => 'SSE not supported; use POST']);
+            return;
+        }
+        if ($method !== 'POST') {
             http_response_code(405);
             header('Allow: GET, POST');
             echo json_encode(['error' => 'Method not allowed']);
+            return;
+        }
+
+        // ------------------------------------------------------------------
+        // 3. Acquire GLOBAL lock before ANY cache access.
+        //    The FileCache stores ALL sessions in one JSON file. Without a
+        //    global lock, concurrent workers do read-modify-write cycles that
+        //    overwrite each other's data (TOCTOU race), causing "Client not
+        //    initialized" errors on tools/list.
+        // ------------------------------------------------------------------
+        $lockFile = sys_get_temp_dir() . '/nt_mcp_global.lock';
+        $lock = fopen($lockFile, 'c');
+        flock($lock, LOCK_EX);
+
+        try {
+            // ------------------------------------------------------------------
+            // 4. Build the MCP server (inside the lock — cache access is safe)
+            // ------------------------------------------------------------------
+            $localApi = new LocalApiClient($adminUser);
+            $capsule  = new CapsuleClient();
+
+            $config = new ArrayConfigurationRepository([
+                'mcp' => [
+                    'server' => ['name' => 'NT Web WHMCS MCP Server', 'version' => '1.0.0'],
+                    'protocol_version' => '2024-11-05',
+                    'pagination_limit' => 200,
+                    'capabilities' => [
+                        'tools' => ['enabled' => true, 'listChanged' => false],
+                        'resources' => ['enabled' => false],
+                        'prompts' => ['enabled' => false],
+                        'logging' => ['enabled' => false],
+                    ],
+                    'cache' => ['key' => 'mcp.elements.cache', 'ttl' => 3600, 'prefix' => 'mcp_state_'],
+                    'runtime' => ['log_level' => 'info'],
+                ],
+            ]);
+
+            $container = new CompatContainer();
+            $container->set(LocalApiClient::class, $localApi);
+            $container->set(CapsuleClient::class, $capsule);
+
+            $cacheDir = sys_get_temp_dir() . '/nt_mcp_cache';
+            $container->set(CacheInterface::class, new FileCache($cacheDir . '/mcp_state.json'));
+            $container->set(LoggerInterface::class, new NullLogger());
+            $container->set(ConfigurationRepositoryInterface::class, $config);
+
+            $server = McpServer::make()
+                ->withContainer($container)
+                ->withConfig($config)
+                ->withBasePath(__DIR__)
+                ->withScanDirectories(['Tools']);
+
+            $server->discover();
+
+            // ------------------------------------------------------------------
+            // PHP-FPM workaround: The library's Registry constructor calls
+            // loadElementsFromCache() which re-registers all 54 tools, each
+            // triggering queueMessageForAll(). This massive read/write storm
+            // on the single-file cache can corrupt session state.
+            // Pre-seed the initialization flag so tools/call never fails.
+            // ------------------------------------------------------------------
+            $mcpMethod = $decoded['method'] ?? '';
+            if ($mcpMethod !== 'initialize' && $mcpMethod !== 'notifications/initialized') {
+                $cache = $container->get(CacheInterface::class);
+                $prefix = 'mcp_state_';
+                $initKey = $prefix . 'initialized_' . $clientId;
+                if (!$cache->has($initKey)) {
+                    $cache->set($initKey, true, 3600);
+
+                    // Also register as active client so future requests work
+                    $activeKey = $prefix . 'active_clients';
+                    $active = $cache->get($activeKey, []);
+                    $active[$clientId] = time();
+                    $cache->set($activeKey, $active, 3600);
+                }
+            }
+
+            $transport = new HttpTransportHandler($server);
+
+            // ------------------------------------------------------------------
+            // 5. Process the request and collect response
+            // ------------------------------------------------------------------
+            $transport->handleInput($input, $clientId);
+
+            $state = $transport->getTransportState();
+            $messages = $state->getQueuedMessages($clientId);
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+
+        // ------------------------------------------------------------------
+        // 6. Send the HTTP response (outside lock — no cache access needed)
+        // ------------------------------------------------------------------
+        $requestId = $decoded['id'] ?? null;
+
+        // Debug: log response details
+        $msgIds = array_map(fn($m) => $m['id'] ?? 'notif', $messages);
+        @file_put_contents(
+            sys_get_temp_dir() . '/nt_mcp_debug.log',
+            date('H:i:s') . "   -> msgs=" . count($messages)
+                . " ids=" . implode(',', $msgIds) . " reqId={$requestId}\n",
+            FILE_APPEND | LOCK_EX
+        );
+
+        header('Mcp-Session-Id: ' . $clientId);
+
+        if ($requestId !== null) {
+            header('Content-Type: application/json');
+
+            foreach ($messages as $message) {
+                if (isset($message['id']) && $message['id'] === $requestId) {
+                    $json = json_encode($message, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+                    // Fix PHP empty array [] → empty object {} for JSON Schema
+                    // properties fields. PHP json_encode([]) produces [] but
+                    // JSON Schema requires properties to be an object {}.
+                    $json = str_replace('"properties":[]', '"properties":{}', $json);
+                    echo $json;
+
+                    @file_put_contents(
+                        sys_get_temp_dir() . '/nt_mcp_debug.log',
+                        date('H:i:s') . "   -> SENT " . strlen($json) . " bytes\n",
+                        FILE_APPEND | LOCK_EX
+                    );
+                    return;
+                }
+            }
+
+            // No matching message found
+            @file_put_contents(
+                sys_get_temp_dir() . '/nt_mcp_debug.log',
+                date('H:i:s') . "   -> NO MATCH for id={$requestId}\n",
+                FILE_APPEND | LOCK_EX
+            );
+        } else {
+            http_response_code(202);
         }
     }
 }

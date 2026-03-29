@@ -2,6 +2,8 @@
 // src/Auth/BearerAuth.php
 namespace NtMcp\Auth;
 
+use Illuminate\Database\Capsule\Manager as Capsule;
+
 class BearerAuth
 {
     /**
@@ -21,13 +23,6 @@ class BearerAuth
 
     public function isValid(): bool
     {
-        // SECURITY FIX (F1 -- CVSS 10.0): Reject stored hashes that are
-        // missing or too short.  When the addon is deactivated the persisted
-        // value is set to '' which would make any comparison trivially true.
-        if (strlen($this->expectedHash) < self::MIN_TOKEN_LENGTH) {
-            return false;
-        }
-
         $header = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
         if (!str_starts_with($header, 'Bearer ')) {
             return false;
@@ -39,25 +34,51 @@ class BearerAuth
             return false;
         }
 
-        // ------------------------------------------------------------------
-        // SECURITY FIX (F17 -- HIGH): Token hashing.
-        //
-        // The database stores only a SHA-256 hash of the bearer token.  We
-        // hash the presented token with the same algorithm and then compare
-        // the two hashes in constant time via hash_equals().
-        //
-        // This ensures that a database leak (SQL injection, backup exposure,
-        // etc.) does not directly reveal a usable credential.
-        // ------------------------------------------------------------------
         $presentedHash = hash('sha256', $presentedToken);
 
-        return hash_equals($this->expectedHash, $presentedHash);
+        // Check 1: Static token from tblconfiguration (original auth)
+        if (strlen($this->expectedHash) >= self::MIN_TOKEN_LENGTH
+            && hash_equals($this->expectedHash, $presentedHash)) {
+            return true;
+        }
+
+        // Check 2: OAuth-issued token from mod_nt_mcp_oauth_tokens
+        return $this->isValidOAuthToken($presentedHash);
     }
 
-    public static function denyAndExit(): never
+    private function isValidOAuthToken(string $tokenHash): bool
+    {
+        try {
+            if (!Capsule::schema()->hasTable('mod_nt_mcp_oauth_tokens')) {
+                return false;
+            }
+
+            $row = Capsule::table('mod_nt_mcp_oauth_tokens')
+                ->where('token_hash', $tokenHash)
+                ->where('expires_at', '>', time())
+                ->first();
+
+            return $row !== null;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
+     * @param string $resourceMetadataUrl  Full URL to the Protected Resource
+     *                                     Metadata endpoint (RFC 9728).
+     */
+    public static function denyAndExit(string $resourceMetadataUrl = ''): never
     {
         http_response_code(401);
-        header('WWW-Authenticate: Bearer realm="WHMCS MCP"');
+
+        if ($resourceMetadataUrl !== '') {
+            header('WWW-Authenticate: Bearer resource_metadata="' . $resourceMetadataUrl . '"');
+        } else {
+            header('WWW-Authenticate: Bearer realm="WHMCS MCP"');
+        }
+
+        header('Content-Type: application/json');
         echo json_encode(['error' => 'Unauthorized']);
         exit;
     }
