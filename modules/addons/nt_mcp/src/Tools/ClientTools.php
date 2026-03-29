@@ -38,7 +38,7 @@ class ClientTools
 
     #[McpTool(
         name: 'whmcs_create_client',
-        description: 'Cria um novo cliente no WHMCS. Aceita customfields como JSON string: {"4":"CPF/CNPJ","134":"Número","135":"RG"}'
+        description: 'Cria um novo cliente no WHMCS. Aceita customfields como JSON object mapeando field ID ao valor, ex: {"4":"valor","134":"valor"}'
     )]
     public function createClient(
         string $firstname,
@@ -60,7 +60,13 @@ class ClientTools
             }
         }
         if ($customfields !== '') {
-            $params['customfields'] = base64_encode(serialize(json_decode($customfields, true)));
+            $decoded = json_decode($customfields, true);
+            if (!is_array($decoded)) {
+                throw new \InvalidArgumentException(
+                    'customfields must be a valid JSON object, got: ' . json_last_error_msg()
+                );
+            }
+            $params['customfields'] = base64_encode(serialize($decoded));
         }
         return json_encode($this->api->call('AddClient', $params), JSON_PRETTY_PRINT);
     }
