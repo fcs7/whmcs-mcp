@@ -8,7 +8,7 @@ Repo: `git@github.com:fcs7/whmcs-mcp.git`
 ```bash
 cd modules/addons/nt_mcp
 composer install --ignore-platform-req=ext-iconv
-./vendor/bin/phpunit --testdox
+./vendor/bin/phpunit --testdox                    # 41 tests, 66 assertions
 composer audit                                    # check dependency CVEs
 grep -c '#\[McpTool\]' src/Tools/*.php   # 54 tools total
 # Deploy via FTP (senha interativa — from modules/addons/nt_mcp/)
@@ -22,10 +22,11 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 - `nt_mcp.php` — Entry point WHMCS (_config/_activate/_output)
 - `oauth.php` — OAuth 2.1 endpoint (register, authorize, token, metadata discovery)
 - `mcp.php` — Endpoint HTTP: init.php → BearerAuth → Server::run()
-- `src/Server.php` — Bootstrap php-mcp/server, DI via BasicContainer
+- `src/Server.php` — Bootstrap php-mcp/server, DI via CompatContainer
 - `src/Auth/BearerAuth.php` — Bearer token validation (static hash + OAuth tokens via SHA-256)
 - `src/Whmcs/LocalApiClient.php` — Wrapper localAPI(), throws RuntimeException on error
 - `src/Whmcs/CapsuleClient.php` — Direct DB via Capsule ORM (select/insert/update/delete)
+- `src/Whmcs/CompatContainer.php` — PSR-11 container com auto-wiring (bridge PSR v1/v2)
 - `src/Tools/*.php` — 9 classes com #[McpTool] para auto-discovery
 
 ## OAuth 2.1 Flow
@@ -52,7 +53,7 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 - Bearer token: SHA-256 hash + `hash_equals()` timing-safe
 - OAuth codes: SHA-256 hash no DB, consumo atômico (`$affected === 0`)
 - CSRF: HMAC-SHA256 nonce em todos os forms admin
-- Command allowlist: 37 comandos em `LocalApiClient::ALLOWED_COMMANDS`
+- Command allowlist: 42 comandos em `LocalApiClient::ALLOWED_COMMANDS`
 - Table/column allowlist: 3 tabelas CRM em `CapsuleClient::ALLOWED_TABLES/COLUMNS`
 - Trusted proxy IP: `_ntMcpGetClientIp()` (mcp.php), `_oauthGetClientIp()` (oauth.php)
 - Content-Length guard: Server.php rejeita >1MB
@@ -69,11 +70,13 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 - **Não commitar debug logs** — nunca usar `@file_put_contents('/tmp/...')` em código; usar logging estruturado
 - **CRM table names são placeholders** (`mod_mgcrm_*` em CrmTools.php) — verificar no banco real
 - **mcp.php** requer `__DIR__ . '/../../../init.php'` (3 níveis até raiz WHMCS)
-- **php-mcp/server API real** difere da documentação web: usar HttpTransportHandler, BasicContainer, ArrayConfigurationRepository
+- **php-mcp/server API real** difere da documentação web: usar HttpTransportHandler, CompatContainer, ArrayConfigurationRepository
 - **ext-iconv** pode não estar habilitada — usar `--ignore-platform-req=ext-iconv` no composer
 - **Bearer Token** armazenado em tblconfiguration, gerado na ativação do addon
 - **Nunca criar debug/token files no servidor** — `debug-log.php` e `mcp-make-token.php` são backdoors; usar WHMCS Activity Log
 - **Sempre comparar git vs prod** antes e depois de deploy — servidor pode ter arquivos extras ou versões antigas
 - **lftp requer senha interativa** — sem senha, falha silenciosamente ("assume anonymous login")
 - **php-mcp/server pinado em ^1.0** (atual 1.1.0) — v3.x é breaking change, não atualizar sem branch dedicada
+- **Global lock serializa requests** — Server.php usa LOCK_EX em `data/nt_mcp_global.lock`; aceitável para 1-3 admins, gargalo para 5+
+- **Audit fix IDs** — comentários `// SECURITY FIX (F1)` a `(F8)` + `(M-02)` referenciam findings da auditoria de production readiness; não remover
 - **Excluir do deploy**: `.full-review/`, `.security-hardening*/`, `.phpunit.cache/`, `data/` (runtime state)
