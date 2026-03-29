@@ -20,6 +20,46 @@ require_once __DIR__ . '/../../../init.php';
 use Illuminate\Database\Capsule\Manager as Capsule;
 
 // ---------------------------------------------------------------------------
+// SECURITY FIX (F1 -- audit): TLS enforcement.
+// OAuth 2.1 (RFC 6749 §3.1) requires TLS on ALL endpoints.
+// Reject plain HTTP to prevent credential exposure in transit.
+// Override: Set environment variable NT_MCP_ALLOW_HTTP=1 for local dev.
+// ---------------------------------------------------------------------------
+(function () {
+    $isHttps = (
+        (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+        || (isset($_SERVER['SERVER_PORT']) && (int)$_SERVER['SERVER_PORT'] === 443)
+        || (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower($_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https')
+    );
+
+    $allowHttp = (
+        getenv('NT_MCP_ALLOW_HTTP') === '1'
+        || (isset($_ENV['NT_MCP_ALLOW_HTTP']) && $_ENV['NT_MCP_ALLOW_HTTP'] === '1')
+    );
+
+    if (!$isHttps && !$allowHttp) {
+        http_response_code(421);
+        header('Content-Type: application/json');
+        echo json_encode([
+            'error' => 'TLS required. Plain HTTP requests are rejected for security.',
+        ]);
+        exit;
+    }
+})();
+
+// ---------------------------------------------------------------------------
+// SECURITY FIX (F2 -- audit): Security response headers.
+// Defence-in-depth against XSS, clickjacking, MIME sniffing, cache leaks.
+// ---------------------------------------------------------------------------
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: DENY');
+header("Content-Security-Policy: default-src 'none'");
+header('Cache-Control: no-store, no-cache, must-revalidate');
+header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
+header('X-Permitted-Cross-Domain-Policies: none');
+header('Referrer-Policy: no-referrer');
+
+// ---------------------------------------------------------------------------
 // SECURITY FIX (S2A-03): Resolve real client IP behind reverse proxies.
 // Mirrors _ntMcpGetClientIp() from mcp.php to ensure consistent IP resolution
 // across all endpoints.  Without this, oauth.php rate limiters see the proxy
@@ -501,20 +541,34 @@ function handleToken(string $oauthUrl): void
     $tokenHash   = hash('sha256', $accessToken);
     $expiresIn   = 86400; // 24 hours
 
-    Capsule::table('mod_nt_mcp_oauth_tokens')->insert([
-        'token_hash'  => $tokenHash,
-        'client_id'   => $codeRow->client_id,
-        'expires_at'  => time() + $expiresIn,
-        'created_at'  => date('Y-m-d H:i:s'),
-    ]);
+    // SECURITY FIX (F7 -- audit): Wrap token insert in try/catch.  The auth
+    // code is already consumed above; if the insert fails, the client would
+    // receive a token that does not exist in the database — every subsequent
+    // MCP request would return 401.
+    try {
+        Capsule::table('mod_nt_mcp_oauth_tokens')->insert([
+            'token_hash'  => $tokenHash,
+            'client_id'   => $codeRow->client_id,
+            'expires_at'  => time() + $expiresIn,
+            'created_at'  => date('Y-m-d H:i:s'),
+        ]);
+    } catch (\Throwable $dbEx) {
+        error_log('NT MCP: Failed to insert OAuth token: ' . $dbEx->getMessage());
+        oauthError(500, 'server_error', 'Failed to persist access token');
+        return;
+    }
 
     // SECURITY FIX (L-03 -- LOW): Audit logging for token issuance
     try { logActivity("NT MCP: OAuth token issued for client '{$codeRow->client_id}' from IP " . (_oauthGetClientIp())); } catch (\Throwable $e) {}
 
     // Cleanup expired tokens
-    Capsule::table('mod_nt_mcp_oauth_tokens')
-        ->where('expires_at', '<', time())
-        ->delete();
+    try {
+        Capsule::table('mod_nt_mcp_oauth_tokens')
+            ->where('expires_at', '<', time())
+            ->delete();
+    } catch (\Throwable $e) {
+        // Non-critical: cleanup failure should not block token issuance
+    }
 
     echo json_encode([
         'access_token' => $accessToken,

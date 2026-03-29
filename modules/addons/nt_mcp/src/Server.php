@@ -84,8 +84,24 @@ class Server
             @mkdir($dataDir, 0700, true);
         }
         $lockFile = $dataDir . '/nt_mcp_global.lock';
-        $lock = fopen($lockFile, 'c');
-        flock($lock, LOCK_EX);
+        $lock = @fopen($lockFile, 'c');
+        if ($lock === false) {
+            // SECURITY FIX (F5 -- audit): Fail visibly if the lock file cannot
+            // be opened, instead of proceeding without concurrency protection.
+            error_log('NT MCP Server: Cannot open lock file: ' . $lockFile);
+            http_response_code(500);
+            header('Content-Type: application/json');
+            echo json_encode(['error' => 'Internal server error: lock acquisition failed']);
+            return;
+        }
+        if (!flock($lock, LOCK_EX)) {
+            error_log('NT MCP Server: Cannot acquire exclusive lock: ' . $lockFile);
+            fclose($lock);
+            http_response_code(500);
+            header('Content-Type: application/json');
+            echo json_encode(['error' => 'Internal server error: lock acquisition failed']);
+            return;
+        }
 
         try {
             // ------------------------------------------------------------------
@@ -186,6 +202,19 @@ class Server
                     return;
                 }
             }
+
+            // SECURITY FIX (F6 -- audit): Return a JSON-RPC error instead of
+            // an empty HTTP 200 when the request ID has no matching response.
+            // An empty success response misleads MCP clients into thinking
+            // the request was processed when it was silently dropped.
+            echo json_encode([
+                'jsonrpc' => '2.0',
+                'id'      => $requestId,
+                'error'   => [
+                    'code'    => -32603,
+                    'message' => 'Internal error: no response generated for this request',
+                ],
+            ], JSON_UNESCAPED_SLASHES);
 
         } else {
             http_response_code(202);

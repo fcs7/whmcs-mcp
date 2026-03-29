@@ -337,9 +337,12 @@ function nt_mcp_handle_oauth_authorize(array $vars): void
         $redirectUri = $pending->redirect_uri;
         $state       = $pending->state;
 
+        // SECURITY FIX (F3 -- audit): Use proxy-aware IP for forensic value
+        $clientIp = function_exists('_oauthGetClientIp') ? _oauthGetClientIp() : ($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+
         if ($_POST['authorize_action'] !== 'approve') {
             // DENIED
-            logActivity("NT MCP: OAuth authorization DENIED for client '{$clientName}' by admin ID {$adminId} from IP {$_SERVER['REMOTE_ADDR']}");
+            logActivity("NT MCP: OAuth authorization DENIED for client '{$clientName}' by admin ID {$adminId} from IP {$clientIp}");
 
             $params = http_build_query(array_filter([
                 'error'             => 'access_denied',
@@ -358,19 +361,27 @@ function nt_mcp_handle_oauth_authorize(array $vars): void
 
         // SECURITY FIX (S2A-01): Store hash, not plaintext — $authCode sent to
         // client via redirect, only the hash is persisted in the database.
-        Capsule::table('mod_nt_mcp_oauth_codes')->insert([
-            'code'           => hash('sha256', $authCode),
-            'client_id'      => $pending->client_id,
-            'code_challenge'  => $pending->code_challenge,
-            'redirect_uri'   => $redirectUri,
-            'state'          => $state,
-            'expires_at'     => time() + 300, // 5 minutes
-            'used'           => false,
-            'created_at'     => date('Y-m-d H:i:s'),
-        ]);
+        // SECURITY FIX (F7 -- audit): Wrap in try/catch so a DB failure after
+        // consuming the pending request does not leave the flow silently broken.
+        try {
+            Capsule::table('mod_nt_mcp_oauth_codes')->insert([
+                'code'           => hash('sha256', $authCode),
+                'client_id'      => $pending->client_id,
+                'code_challenge'  => $pending->code_challenge,
+                'redirect_uri'   => $redirectUri,
+                'state'          => $state,
+                'expires_at'     => time() + 300, // 5 minutes
+                'used'           => false,
+                'created_at'     => date('Y-m-d H:i:s'),
+            ]);
+        } catch (\Throwable $dbEx) {
+            error_log('NT MCP: Failed to insert authorization code: ' . $dbEx->getMessage());
+            echo '<div class="alert alert-danger">Erro interno ao gerar codigo de autorizacao. Tente novamente.</div>';
+            return;
+        }
 
         // Layer 5: Audit trail
-        logActivity("NT MCP: OAuth authorization APPROVED for client '{$clientName}' (client_id: {$pending->client_id}) by admin ID {$adminId} from IP {$_SERVER['REMOTE_ADDR']}");
+        logActivity("NT MCP: OAuth authorization APPROVED for client '{$clientName}' (client_id: {$pending->client_id}) by admin ID {$adminId} from IP {$clientIp}");
 
         $params = http_build_query(array_filter([
             'code'  => $authCode,

@@ -60,6 +60,10 @@ class BearerAuth
 
             return $row !== null;
         } catch (\Throwable $e) {
+            // SECURITY FIX (F4 -- audit): Log DB failures instead of silently
+            // returning false.  A database outage should not masquerade as an
+            // authentication failure with zero diagnostic information.
+            error_log('NT MCP BearerAuth: OAuth token validation failed: ' . $e->getMessage());
             return false;
         }
     }
