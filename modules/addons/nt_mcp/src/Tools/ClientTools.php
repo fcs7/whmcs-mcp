@@ -66,7 +66,20 @@ class ClientTools
                     'customfields must be a valid JSON object, got: ' . json_last_error_msg()
                 );
             }
-            $params['customfields'] = base64_encode(serialize($decoded));
+            // SECURITY FIX (S2A-02): Validate custom fields to prevent oversized
+            // payloads and non-scalar values.  Use json_encode instead of serialize
+            // to avoid latent deserialization surface in the WHMCS processing pipeline.
+            if (count($decoded) > 50 || strlen($customfields) > 8192) {
+                throw new \InvalidArgumentException('customfields exceeds size limits (max 50 fields, 8KB)');
+            }
+            foreach ($decoded as $key => $value) {
+                if (!is_scalar($value) && $value !== null) {
+                    throw new \InvalidArgumentException(
+                        'customfields values must be scalars, got non-scalar for key: ' . $key
+                    );
+                }
+            }
+            $params['customfields'] = base64_encode(json_encode($decoded));
         }
         return json_encode($this->api->call('AddClient', $params), JSON_PRETTY_PRINT);
     }

@@ -20,6 +20,52 @@ require_once __DIR__ . '/../../../init.php';
 use Illuminate\Database\Capsule\Manager as Capsule;
 
 // ---------------------------------------------------------------------------
+// SECURITY FIX (S2A-03): Resolve real client IP behind reverse proxies.
+// Mirrors _ntMcpGetClientIp() from mcp.php to ensure consistent IP resolution
+// across all endpoints.  Without this, oauth.php rate limiters see the proxy
+// IP (127.0.0.1 on Plesk), sharing one bucket for all clients.
+// ---------------------------------------------------------------------------
+function _oauthGetClientIp(): string
+{
+    $remoteAddr = $_SERVER['REMOTE_ADDR'] ?? '';
+    if ($remoteAddr === '') {
+        return '0.0.0.0';
+    }
+
+    $trustedProxies = ['127.0.0.1', '::1'];
+    try {
+        $configured = \WHMCS\Config\Setting::getValue('nt_mcp_trusted_proxies') ?? '';
+        if ($configured !== '') {
+            $trustedProxies = array_merge(
+                $trustedProxies,
+                array_filter(array_map('trim', explode(',', $configured)))
+            );
+        }
+    } catch (\Throwable $e) {
+        // Setting not available
+    }
+
+    if (!in_array($remoteAddr, $trustedProxies, true)) {
+        return $remoteAddr;
+    }
+
+    $xff = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? '';
+    if ($xff === '') {
+        return $remoteAddr;
+    }
+
+    $ips = array_map('trim', explode(',', $xff));
+    for ($i = count($ips) - 1; $i >= 0; $i--) {
+        $ip = $ips[$i];
+        if ($ip !== '' && filter_var($ip, FILTER_VALIDATE_IP) && !in_array($ip, $trustedProxies, true)) {
+            return $ip;
+        }
+    }
+
+    return $remoteAddr;
+}
+
+// ---------------------------------------------------------------------------
 // Base URL derivation (from WHMCS System URL, never from Host header)
 // ---------------------------------------------------------------------------
 $systemUrl = rtrim(\WHMCS\Config\Setting::getValue('SystemURL') ?? '', '/');
@@ -314,8 +360,11 @@ function handleAuthorizeGet(): void
     // Create pending authorization request (to be approved in admin panel)
     $requestId = bin2hex(random_bytes(16));
 
+    // SECURITY FIX (S2A-01): Store code as SHA-256 hash to match the protection
+    // model used for Bearer tokens and OAuth access tokens.  The plaintext
+    // $requestId is passed to the admin panel via URL; only the hash is persisted.
     Capsule::table('mod_nt_mcp_oauth_codes')->insert([
-        'code'           => 'pending_' . $requestId,
+        'code'           => hash('sha256', 'pending_' . $requestId),
         'client_id'      => $clientId,
         'code_challenge'  => $codeChallenge,
         'redirect_uri'   => $redirectUri,
@@ -390,25 +439,26 @@ function handleToken(string $oauthUrl): void
 
     if ($grantType !== 'authorization_code') {
         oauthError(400, 'unsupported_grant_type', 'Only authorization_code is supported');
-        try { logActivity("NT MCP: Token exchange FAILED from IP " . ($_SERVER['REMOTE_ADDR'] ?? 'unknown') . ": unsupported grant_type"); } catch (\Throwable $e) {}
+        try { logActivity("NT MCP: Token exchange FAILED from IP " . (_oauthGetClientIp()) . ": unsupported grant_type"); } catch (\Throwable $e) {}
         return;
     }
 
     if ($code === '' || $codeVerifier === '') {
         oauthError(400, 'invalid_request', 'code and code_verifier are required');
-        try { logActivity("NT MCP: Token exchange FAILED from IP " . ($_SERVER['REMOTE_ADDR'] ?? 'unknown') . ": missing code or code_verifier"); } catch (\Throwable $e) {}
+        try { logActivity("NT MCP: Token exchange FAILED from IP " . (_oauthGetClientIp()) . ": missing code or code_verifier"); } catch (\Throwable $e) {}
         return;
     }
 
+    // SECURITY FIX (S2A-01): Compare hash of presented code, not plaintext
     $codeRow = Capsule::table('mod_nt_mcp_oauth_codes')
-        ->where('code', $code)
+        ->where('code', hash('sha256', $code))
         ->where('used', false)
         ->where('expires_at', '>', time())
         ->first();
 
     if (!$codeRow) {
         oauthError(400, 'invalid_grant', 'Invalid, expired, or already used authorization code');
-        try { logActivity("NT MCP: Token exchange FAILED from IP " . ($_SERVER['REMOTE_ADDR'] ?? 'unknown') . ": invalid or expired authorization code"); } catch (\Throwable $e) {}
+        try { logActivity("NT MCP: Token exchange FAILED from IP " . (_oauthGetClientIp()) . ": invalid or expired authorization code"); } catch (\Throwable $e) {}
         return;
     }
 
@@ -420,21 +470,21 @@ function handleToken(string $oauthUrl): void
 
     if ($affected === 0) {
         oauthError(400, 'invalid_grant', 'Authorization code already consumed');
-        try { logActivity("NT MCP: Token exchange FAILED from IP " . ($_SERVER['REMOTE_ADDR'] ?? 'unknown') . ": authorization code already consumed (race condition)"); } catch (\Throwable $e) {}
+        try { logActivity("NT MCP: Token exchange FAILED from IP " . (_oauthGetClientIp()) . ": authorization code already consumed (race condition)"); } catch (\Throwable $e) {}
         return;
     }
 
     // Validate client_id
     if ($clientId !== '' && $clientId !== $codeRow->client_id) {
         oauthError(400, 'invalid_grant', 'client_id mismatch');
-        try { logActivity("NT MCP: Token exchange FAILED from IP " . ($_SERVER['REMOTE_ADDR'] ?? 'unknown') . ": client_id mismatch"); } catch (\Throwable $e) {}
+        try { logActivity("NT MCP: Token exchange FAILED from IP " . (_oauthGetClientIp()) . ": client_id mismatch"); } catch (\Throwable $e) {}
         return;
     }
 
     // Validate redirect_uri
     if ($redirectUri !== '' && $redirectUri !== $codeRow->redirect_uri) {
         oauthError(400, 'invalid_grant', 'redirect_uri mismatch');
-        try { logActivity("NT MCP: Token exchange FAILED from IP " . ($_SERVER['REMOTE_ADDR'] ?? 'unknown') . ": redirect_uri mismatch"); } catch (\Throwable $e) {}
+        try { logActivity("NT MCP: Token exchange FAILED from IP " . (_oauthGetClientIp()) . ": redirect_uri mismatch"); } catch (\Throwable $e) {}
         return;
     }
 
@@ -442,7 +492,7 @@ function handleToken(string $oauthUrl): void
     $computedChallenge = rtrim(strtr(base64_encode(hash('sha256', $codeVerifier, true)), '+/', '-_'), '=');
     if (!hash_equals($codeRow->code_challenge, $computedChallenge)) {
         oauthError(400, 'invalid_grant', 'PKCE code_verifier verification failed');
-        try { logActivity("NT MCP: Token exchange FAILED from IP " . ($_SERVER['REMOTE_ADDR'] ?? 'unknown') . ": PKCE verification failed"); } catch (\Throwable $e) {}
+        try { logActivity("NT MCP: Token exchange FAILED from IP " . (_oauthGetClientIp()) . ": PKCE verification failed"); } catch (\Throwable $e) {}
         return;
     }
 
@@ -459,7 +509,7 @@ function handleToken(string $oauthUrl): void
     ]);
 
     // SECURITY FIX (L-03 -- LOW): Audit logging for token issuance
-    try { logActivity("NT MCP: OAuth token issued for client '{$codeRow->client_id}' from IP " . ($_SERVER['REMOTE_ADDR'] ?? 'unknown')); } catch (\Throwable $e) {}
+    try { logActivity("NT MCP: OAuth token issued for client '{$codeRow->client_id}' from IP " . (_oauthGetClientIp())); } catch (\Throwable $e) {}
 
     // Cleanup expired tokens
     Capsule::table('mod_nt_mcp_oauth_tokens')
@@ -489,7 +539,7 @@ function enforceAuthorizeRateLimit(): void
 {
     $maxRequests    = 20;
     $windowSeconds  = 60; // 1 minute
-    $clientIp       = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+    $clientIp       = _oauthGetClientIp();
     $safeIp         = preg_replace('/[^a-f0-9.:]/', '_', $clientIp);
     $cacheKey       = 'nt_mcp_auth_rl_' . $safeIp;
 
@@ -579,7 +629,7 @@ function enforceTokenRateLimit(): void
 {
     $maxRequests    = 30;
     $windowSeconds  = 60; // 1 minute
-    $clientIp       = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+    $clientIp       = _oauthGetClientIp();
     $safeIp         = preg_replace('/[^a-f0-9.:]/', '_', $clientIp);
     $cacheKey       = 'nt_mcp_tok_rl_' . $safeIp;
 
@@ -669,7 +719,7 @@ function enforceRegistrationRateLimit(): void
 {
     $maxRegistrations = 20;
     $windowSeconds    = 3600; // 1 hour
-    $clientIp         = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+    $clientIp         = _oauthGetClientIp();
     $safeIp           = preg_replace('/[^a-f0-9.:]/', '_', $clientIp);
     $cacheKey          = 'nt_mcp_reg_rl_' . $safeIp;
 

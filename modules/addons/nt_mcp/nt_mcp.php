@@ -290,8 +290,9 @@ function nt_mcp_handle_oauth_authorize(array $vars): void
     }
 
     // Load pending authorization request
+    // SECURITY FIX (S2A-01): Lookup by hash — codes are stored hashed
     $pending = Capsule::table('mod_nt_mcp_oauth_codes')
-        ->where('code', 'pending_' . $requestId)
+        ->where('code', hash('sha256', 'pending_' . $requestId))
         ->where('used', false)
         ->where('expires_at', '>', time())
         ->first();
@@ -355,8 +356,10 @@ function nt_mcp_handle_oauth_authorize(array $vars): void
         // APPROVED — generate authorization code
         $authCode = bin2hex(random_bytes(32));
 
+        // SECURITY FIX (S2A-01): Store hash, not plaintext — $authCode sent to
+        // client via redirect, only the hash is persisted in the database.
         Capsule::table('mod_nt_mcp_oauth_codes')->insert([
-            'code'           => $authCode,
+            'code'           => hash('sha256', $authCode),
             'client_id'      => $pending->client_id,
             'code_challenge'  => $pending->code_challenge,
             'redirect_uri'   => $redirectUri,
