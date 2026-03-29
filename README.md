@@ -1,8 +1,17 @@
 # NT MCP Server — WHMCS Addon
 
-Servidor MCP (Model Context Protocol) que expoe operacoes WHMCS como ferramentas para Claude Code e Claude.ai. Permite que o assistente AI gerencie clientes, faturas, tickets, servicos, dominios, pedidos, projetos e CRM diretamente via conversacao.
+Servidor MCP (Model Context Protocol) que expoe 54 operacoes WHMCS como ferramentas para o Claude. Funciona como **Conector** — conecta o Claude ao seu WHMCS para gerenciar clientes, faturas, tickets, servicos, dominios, pedidos, projetos e CRM via conversacao.
 
-> **Plugin Claude Code:** Instale a skill que ensina o Claude a usar este servidor → **[fcs7/whmcs-mcp-plugin](https://github.com/fcs7/whmcs-mcp-plugin)**
+> **Para a experiencia completa**, combine este Conector com a **Habilidade** (Skill) que ensina o Claude a usar os 54 tools → **[fcs7/whmcs-mcp-plugin](https://github.com/fcs7/whmcs-mcp-plugin)**
+
+### Como os componentes se encaixam
+
+| Conceito | O que faz | Repositorio |
+|----------|-----------|-------------|
+| **Conector** (este repo) | Expoe 54 tools MCP via HTTP — o Claude *pode* usar | Voce esta aqui |
+| **Habilidade** ([plugin repo](https://github.com/fcs7/whmcs-mcp-plugin)) | Ensina o Claude *como* usar os tools — parametros, workflows, boas praticas | [fcs7/whmcs-mcp-plugin](https://github.com/fcs7/whmcs-mcp-plugin) |
+
+> Sem a Habilidade o Claude tem acesso aos tools mas pode errar parametros ou nao saber a melhor sequencia de operacoes. Sem o Conector, a Habilidade nao tem como executar nada.
 
 ## Requisitos
 
@@ -107,13 +116,32 @@ Estas regras redirecionam a discovery OAuth padrao para o endpoint do addon. Sem
 
 > O arquivo `deploy/htaccess-well-known.conf` contem estas regras prontas para copiar.
 
-### 5. Conectar ao Claude Code (CLI)
+### 5. Conectar ao Claude
 
-O Claude Code CLI suporta MCP HTTP nativamente.
+Apos instalar o addon, conecte o Claude ao servidor. O processo depende de qual cliente voce usa.
 
-**Metodo recomendado — OAuth automatico:**
+---
 
-Adicione ao `~/.claude.json`:
+#### 5a. Claude Code (recomendado — experiencia completa)
+
+> Claude Code = CLI, Desktop app, Web app, IDE extensions.
+
+**Metodo 1 — Plugin (recomendado, automatiza tudo):**
+
+O plugin **[fcs7/whmcs-mcp-plugin](https://github.com/fcs7/whmcs-mcp-plugin)** configura Conector + Habilidade + Hooks de uma vez.
+
+```bash
+# 1. Configure a variavel com sua URL
+export WHMCS_MCP_URL="https://seu-whmcs.com/modules/addons/nt_mcp/mcp.php"
+
+# 2. Instale o plugin (via /plugin no chat, ou manualmente no settings.json)
+```
+
+Veja instrucoes detalhadas no **[README do plugin](https://github.com/fcs7/whmcs-mcp-plugin)**.
+
+**Metodo 2 — So o Conector (sem plugin):**
+
+Se nao quiser o plugin, adicione so o Conector. Adicione ao `~/.claude.json`:
 
 ```json
 {
@@ -126,18 +154,13 @@ Adicione ao `~/.claude.json`:
 }
 ```
 
-Na primeira conexao, o Claude Code ira:
-1. Receber 401 com header `WWW-Authenticate: Bearer resource_metadata=...`
-2. Descobrir o servidor OAuth automaticamente via RFC 8414
-3. Registrar um client via Dynamic Client Registration (RFC 7591)
-4. Abrir o navegador para autorizacao — voce deve aprovar no painel admin do WHMCS
-5. Obter um token OAuth 2.1 com PKCE (S256) valido por 24 horas
+Na primeira conexao, o fluxo OAuth inicia automaticamente:
+1. Descobre o servidor OAuth via RFC 8414
+2. Registra um client via Dynamic Client Registration (RFC 7591)
+3. Abre o navegador para autorizacao — aprove no painel admin do WHMCS
+4. Obtem um token OAuth 2.1 com PKCE (S256) valido por 24 horas (renovado automaticamente)
 
-O token e renovado automaticamente quando expira.
-
-**Metodo alternativo — Token estatico:**
-
-Se preferir autenticacao direta (sem fluxo OAuth):
+**Metodo alternativo — Token estatico (sem OAuth):**
 
 ```json
 {
@@ -162,9 +185,9 @@ claude        # iniciar o Claude Code
 /mcp          # ver status dos servidores MCP
 ```
 
-O servidor deve aparecer como `connected` com 54 tools disponiveis. Teste rapido: pergunte "liste meus clientes do WHMCS".
+O servidor deve aparecer como `connected` com 54 tools disponiveis.
 
-**Debug (se nao conectar):**
+**Debug:**
 
 ```bash
 claude --debug-file /tmp/claude_mcp.log
@@ -172,74 +195,67 @@ claude --debug-file /tmp/claude_mcp.log
 tail -f /tmp/claude_mcp.log
 ```
 
-### 6. Conectar ao Claude Desktop
+---
 
-O Claude Desktop usa transporte `stdio` para servidores MCP. Para conectar a um servidor HTTP remoto, utilize o bridge [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) que converte stdio para HTTP.
+#### 5b. Claude Desktop
 
-**Pre-requisito:** [Node.js](https://nodejs.org/) >= 18 instalado.
+> Claude Desktop = app standalone da Anthropic. Nao suporta plugins, mas suporta Habilidades e Conectores separadamente.
 
-**Metodo recomendado — OAuth automatico:**
+No Claude Desktop voce configura **2 partes** manualmente:
 
-Edite o arquivo de configuracao do Claude Desktop:
+**Parte 1 — Conector (obrigatorio):**
 
-- **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
-- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
-- **Linux:** `~/.config/Claude/claude_desktop_config.json`
+Va em **Settings > Conectores** e adicione a URL do seu servidor:
 
-```json
-{
-  "mcpServers": {
-    "whmcs": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "mcp-remote",
-        "https://seu-whmcs.com/modules/addons/nt_mcp/mcp.php"
-      ]
-    }
-  }
-}
+```
+https://seu-whmcs.com/modules/addons/nt_mcp/mcp.php
 ```
 
-Na primeira execucao, o `mcp-remote`:
-1. Baixa automaticamente (flag `-y` do npx)
-2. Descobre o servidor OAuth via RFC 8414
-3. Abre o navegador para autorizacao — aprove no painel admin do WHMCS
-4. Salva o token em cache local (renovado automaticamente)
+O OAuth e iniciado automaticamente na primeira chamada de tool.
 
-**Metodo alternativo — Token estatico:**
+> **Alternativa via arquivo de configuracao:** Edite `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude/`, Linux: `~/.config/Claude/`):
+>
+> ```json
+> {
+>   "mcpServers": {
+>     "whmcs": {
+>       "url": "https://seu-whmcs.com/modules/addons/nt_mcp/mcp.php"
+>     }
+>   }
+> }
+> ```
 
-```json
-{
-  "mcpServers": {
-    "whmcs": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "mcp-remote",
-        "https://seu-whmcs.com/modules/addons/nt_mcp/mcp.php",
-        "--header",
-        "Authorization: Bearer SEU_TOKEN_AQUI"
-      ]
-    }
-  }
-}
-```
+**Parte 2 — Habilidade (recomendado):**
 
-**Verificar conexao:**
+Va em **Settings > Habilidades** e crie uma **habilidade pessoal** com o conteudo do arquivo [`SKILL.md` do plugin](https://github.com/fcs7/whmcs-mcp-plugin/blob/main/skills/whmcs-mcp/SKILL.md).
 
-1. Reinicie o Claude Desktop apos editar o config
-2. Clique no icone de ferramentas (martelo) no campo de mensagem
-3. As 54 tools do WHMCS devem aparecer na lista
-4. Teste: pergunte "liste meus clientes do WHMCS"
+Sem a Habilidade, o Claude tem acesso aos 54 tools mas nao sabe os parametros de cabeca — pode errar nomes de campo ou esquecer parametros obrigatorios.
+
+**Verificar:**
+
+1. Reinicie o Claude Desktop
+2. As 54 tools do WHMCS devem aparecer na lista de ferramentas
+3. Teste: pergunte "liste meus clientes do WHMCS"
 
 **Troubleshooting Claude Desktop:**
 
-- **Tools nao aparecem:** Verifique se Node.js esta no PATH do sistema. Reinicie o Claude Desktop
-- **Erro de certificado:** Se usa certificado auto-assinado, execute com `NODE_TLS_REJECT_UNAUTHORIZED=0` (apenas desenvolvimento)
-- **Timeout na autorizacao:** Verifique se as rewrite rules do passo 4 estao no `.htaccess` raiz
+- **Tools nao aparecem:** Reinicie o Claude Desktop. Verifique se a URL esta correta
+- **Timeout na autorizacao:** Verifique se as rewrite rules do passo 4 estao no `.htaccess` raiz do WHMCS
+- **Erro de certificado:** Certificado SSL invalido ou auto-assinado
 
-### 7. Verificar tudo
+---
+
+#### Resumo: o que voce precisa em cada cenario
+
+| Cenario | Conector | Habilidade | Hooks |
+|---------|:--------:|:----------:|:-----:|
+| Claude Code + plugin | Auto (`.mcp.json`) | Auto (SKILL.md) | Auto (`hooks.json`) |
+| Claude Code sem plugin | Manual (`~/.claude.json`) | — | — |
+| Claude Desktop | Manual (Settings > Conectores) | Manual (Settings > Habilidades) | N/A |
+
+---
+
+### 6. Verificar tudo
 
 Apos configurar qualquer cliente, confirme que:
 
@@ -397,37 +413,31 @@ scp -r . usuario@servidor:httpdocs/modules/addons/nt_mcp/
 # 6. Testar: /mcp no Claude Code
 ```
 
-## Plugin Claude Code
+## Habilidade (Skill) — Ensinar o Claude a Usar os Tools
 
-Este servidor expoe 54 tools via MCP. Para que o Claude saiba **como** usa-los de forma eficiente, instale o plugin companion:
+Este servidor (Conector) expoe 54 tools via MCP. A **Habilidade** ensina o Claude *como* usa-los — parametros, workflows, boas praticas.
 
-**[fcs7/whmcs-mcp-plugin](https://github.com/fcs7/whmcs-mcp-plugin)** — Skill + hooks de seguranca para Claude Code
+**[fcs7/whmcs-mcp-plugin](https://github.com/fcs7/whmcs-mcp-plugin)** — Conector + Habilidade + Hooks de seguranca
 
-```bash
-# Instalacao rapida
-mkdir -p ~/.claude/skills
-git clone https://github.com/fcs7/whmcs-mcp-plugin.git ~/.claude/skills/whmcs-mcp
-```
-
-O plugin inclui:
-- Guia de referencia completo dos 54 tools com parametros e workflows
-- Decision framework (quando usar API vs Chrome MCP)
-- Hooks de seguranca (confirmacao para operacoes destrutivas)
-- Deteccao automatica de contexto WHMCS
+| Cliente | Como instalar a Habilidade |
+|---------|---------------------------|
+| **Claude Code** | Instale o plugin → tudo automatico (ver passo 5a) |
+| **Claude Desktop** | Crie habilidade pessoal com o conteudo do SKILL.md (ver passo 5b) |
 
 ```
 ┌──────────────────────────────┐      ┌──────────────────────────────┐
 │  whmcs-mcp  ← este repo     │      │  whmcs-mcp-plugin            │
-│  github.com/fcs7/whmcs-mcp  │      │  github.com/fcs7/            │
-│                              │      │  whmcs-mcp-plugin            │
-│  Addon WHMCS (PHP):          │      │                              │
-│  • mcp.php (endpoint HTTP)   │      │  Plugin Claude Code:         │
-│  • oauth.php (OAuth 2.1)     │ ──── │  • SKILL.md (referencia)     │
-│  • src/Tools/ (54 tools)     │ MCP  │  • hooks.json (seguranca)    │
-│  • src/Auth/ (Bearer+OAuth)  │      │  • plugin.json (metadados)   │
+│  CONECTOR                    │      │  HABILIDADE + HOOKS          │
 │                              │      │                              │
-│  Roda em: Servidor WHMCS     │      │  Roda em: Claude Code CLI    │
-│           PHP 8.2+           │      │           Claude Desktop     │
+│  Addon WHMCS (PHP):          │      │  Claude Code: Plugin auto    │
+│  • mcp.php (endpoint HTTP)   │      │  Claude Desktop: SKILL.md    │
+│  • oauth.php (OAuth 2.1)     │ ──── │                              │
+│  • src/Tools/ (54 tools)     │ MCP  │  • SKILL.md (referencia)     │
+│  • src/Auth/ (Bearer+OAuth)  │      │  • .mcp.json (conector auto) │
+│                              │      │  • hooks.json (seguranca)    │
+│  Roda em: Servidor WHMCS     │      │                              │
+│           PHP 8.2+           │      │  github.com/fcs7/            │
+│                              │      │  whmcs-mcp-plugin            │
 └──────────────────────────────┘      └──────────────────────────────┘
 ```
 
