@@ -105,7 +105,9 @@ Estas regras redirecionam a discovery OAuth padrao para o endpoint do addon. Sem
 
 > O arquivo `deploy/htaccess-well-known.conf` contem estas regras prontas para copiar.
 
-### 5. Configurar o Claude Code
+### 5. Conectar ao Claude Code (CLI)
+
+O Claude Code CLI suporta MCP HTTP nativamente.
 
 **Metodo recomendado — OAuth automatico:**
 
@@ -124,9 +126,12 @@ Adicione ao `~/.claude.json`:
 
 Na primeira conexao, o Claude Code ira:
 1. Receber 401 com header `WWW-Authenticate: Bearer resource_metadata=...`
-2. Descobrir o servidor OAuth automaticamente
-3. Abrir o navegador para autorizacao
-4. Obter um token OAuth 2.1 com PKCE
+2. Descobrir o servidor OAuth automaticamente via RFC 8414
+3. Registrar um client via Dynamic Client Registration (RFC 7591)
+4. Abrir o navegador para autorizacao — voce deve aprovar no painel admin do WHMCS
+5. Obter um token OAuth 2.1 com PKCE (S256) valido por 24 horas
+
+O token e renovado automaticamente quando expira.
 
 **Metodo alternativo — Token estatico:**
 
@@ -146,13 +151,99 @@ Se preferir autenticacao direta (sem fluxo OAuth):
 }
 ```
 
-Use o token copiado na etapa 3.
+Use o token copiado na etapa 3 (ativacao do addon). Este token nao expira ate ser regenerado manualmente.
 
-### 6. Verificar conexao
+**Verificar conexao:**
 
-No Claude Code, execute `/mcp`. O servidor deve aparecer como `connected` com 54 tools disponiveis.
+```bash
+claude        # iniciar o Claude Code
+/mcp          # ver status dos servidores MCP
+```
 
-Teste rapido: pergunte ao Claude "liste meus clientes do WHMCS".
+O servidor deve aparecer como `connected` com 54 tools disponiveis. Teste rapido: pergunte "liste meus clientes do WHMCS".
+
+**Debug (se nao conectar):**
+
+```bash
+claude --debug-file /tmp/claude_mcp.log
+# Em outro terminal:
+tail -f /tmp/claude_mcp.log
+```
+
+### 6. Conectar ao Claude Desktop
+
+O Claude Desktop usa transporte `stdio` para servidores MCP. Para conectar a um servidor HTTP remoto, utilize o bridge [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) que converte stdio para HTTP.
+
+**Pre-requisito:** [Node.js](https://nodejs.org/) >= 18 instalado.
+
+**Metodo recomendado — OAuth automatico:**
+
+Edite o arquivo de configuracao do Claude Desktop:
+
+- **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+- **Linux:** `~/.config/Claude/claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "whmcs": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://seu-whmcs.com/modules/addons/nt_mcp/mcp.php"
+      ]
+    }
+  }
+}
+```
+
+Na primeira execucao, o `mcp-remote`:
+1. Baixa automaticamente (flag `-y` do npx)
+2. Descobre o servidor OAuth via RFC 8414
+3. Abre o navegador para autorizacao — aprove no painel admin do WHMCS
+4. Salva o token em cache local (renovado automaticamente)
+
+**Metodo alternativo — Token estatico:**
+
+```json
+{
+  "mcpServers": {
+    "whmcs": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://seu-whmcs.com/modules/addons/nt_mcp/mcp.php",
+        "--header",
+        "Authorization: Bearer SEU_TOKEN_AQUI"
+      ]
+    }
+  }
+}
+```
+
+**Verificar conexao:**
+
+1. Reinicie o Claude Desktop apos editar o config
+2. Clique no icone de ferramentas (martelo) no campo de mensagem
+3. As 54 tools do WHMCS devem aparecer na lista
+4. Teste: pergunte "liste meus clientes do WHMCS"
+
+**Troubleshooting Claude Desktop:**
+
+- **Tools nao aparecem:** Verifique se Node.js esta no PATH do sistema. Reinicie o Claude Desktop
+- **Erro de certificado:** Se usa certificado auto-assinado, execute com `NODE_TLS_REJECT_UNAUTHORIZED=0` (apenas desenvolvimento)
+- **Timeout na autorizacao:** Verifique se as rewrite rules do passo 4 estao no `.htaccess` raiz
+
+### 7. Verificar tudo
+
+Apos configurar qualquer cliente, confirme que:
+
+1. **Conexao** — o cliente mostra o servidor como conectado
+2. **Tools** — 54 ferramentas visiveis na lista
+3. **Execucao** — pergunte "liste os clientes do WHMCS" e confirme que retorna dados reais
 
 ## Autenticacao
 
