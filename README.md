@@ -2,6 +2,8 @@
 
 Servidor MCP (Model Context Protocol) que expoe operacoes WHMCS como ferramentas para Claude Code e Claude.ai. Permite que o assistente AI gerencie clientes, faturas, tickets, servicos, dominios, pedidos, projetos e CRM diretamente via conversacao.
 
+> **Plugin Claude Code:** Instale a skill que ensina o Claude a usar este servidor → **[fcs7/whmcs-mcp-plugin](https://github.com/fcs7/whmcs-mcp-plugin)**
+
 ## Requisitos
 
 - **PHP** >= 8.2
@@ -393,6 +395,38 @@ scp -r . usuario@servidor:httpdocs/modules/addons/nt_mcp/
 # 5. Configurar ~/.claude.json com URL do endpoint
 
 # 6. Testar: /mcp no Claude Code
+```
+
+## Plugin Claude Code
+
+Este servidor expoe 54 tools via MCP. Para que o Claude saiba **como** usa-los de forma eficiente, instale o plugin companion:
+
+**[fcs7/whmcs-mcp-plugin](https://github.com/fcs7/whmcs-mcp-plugin)** — Skill + hooks de seguranca para Claude Code
+
+```bash
+# Instalacao rapida
+mkdir -p ~/.claude/skills
+git clone https://github.com/fcs7/whmcs-mcp-plugin.git ~/.claude/skills/whmcs-mcp
+```
+
+O plugin inclui:
+- Guia de referencia completo dos 54 tools com parametros e workflows
+- Decision framework (quando usar API vs Chrome MCP)
+- Hooks de seguranca (confirmacao para operacoes destrutivas)
+- Deteccao automatica de contexto WHMCS
+
+```
+┌──────────────────────────────┐      ┌─────────────────────────────┐
+│  whmcs-mcp (este repo)       │      │  whmcs-mcp-plugin (publico) │
+│                              │      │                             │
+│  Addon WHMCS (PHP):          │      │  Plugin Claude Code:        │
+│  • mcp.php (endpoint HTTP)   │ ──── │  • SKILL.md (referencia)    │
+│  • oauth.php (OAuth 2.1)     │ MCP  │  • hooks.json (seguranca)   │
+│  • src/Tools/ (54 tools)     │      │  • plugin.json (metadados)  │
+│                              │      │                             │
+│  Roda em: Servidor WHMCS     │      │  Roda em: Claude Code CLI   │
+│           PHP 8.2+           │      │           Claude Desktop    │
+└──────────────────────────────┘      └─────────────────────────────┘
 ```
 
 ## Licenca
