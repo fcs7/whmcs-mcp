@@ -39,8 +39,8 @@
 <IfModule mod_rewrite.c>
     RewriteEngine On
 
-    # Block direct access to src/, vendor/, tests/, .phpunit.cache/
-    RewriteRule ^(src|vendor|tests|\.phpunit\.cache)(/|$) - [F,L]
+    # Block direct access to src/, vendor/, tests/, data/, .phpunit.cache/
+    RewriteRule ^(src|vendor|tests|data|\.phpunit\.cache)(/|$) - [F,L]
 </IfModule>
 
 # ---------------------------------------------------------------

@@ -18,16 +18,16 @@ class LocalApiClientTest extends TestCase
         $this->assertEquals('success', $result['result']);
     }
 
-    public function test_call_throws_on_error(): void
+    public function test_call_returns_error_response(): void
     {
         $client = new LocalApiClient('testadmin');
         $client->setCallable(function () {
             return ['result' => 'error', 'message' => 'Client not found'];
         });
 
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('The requested operation (GetClientsDetails) could not be completed.');
-        $client->call('GetClientsDetails', ['clientid' => 999]);
+        $result = $client->call('GetClientsDetails', ['clientid' => 999]);
+        $this->assertEquals('error', $result['result']);
+        $this->assertEquals('Client not found', $result['message']);
     }
 
     public function test_call_rejects_unlisted_command(): void

@@ -1,0 +1,4 @@
+# Ignore runtime data files; only .htaccess and .gitignore are tracked
+*
+!.htaccess
+!.gitignore

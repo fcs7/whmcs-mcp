@@ -7,6 +7,8 @@
 
 if (!defined('WHMCS')) die('Direct access denied.');
 
+use Illuminate\Database\Capsule\Manager as Capsule;
+
 /**
  * Metadados e configuracoes do addon
  */
@@ -91,6 +93,16 @@ function nt_mcp_csrf_verify(string $submitted): bool
  */
 function nt_mcp_output(array $vars): void
 {
+    // ------------------------------------------------------------------
+    // OAuth Authorization approval — if ?authorize=REQUEST_ID is present,
+    // show the OAuth approval form instead of the normal admin UI.
+    // This runs INSIDE the WHMCS admin panel, so admin session is guaranteed.
+    // ------------------------------------------------------------------
+    if (isset($_GET['authorize']) && $_GET['authorize'] !== '') {
+        nt_mcp_handle_oauth_authorize($vars);
+        return;
+    }
+
     // ------------------------------------------------------------------
     // Escape helper — shorthand for htmlspecialchars (F12 XSS fix).
     // ------------------------------------------------------------------
@@ -236,6 +248,192 @@ function nt_mcp_output(array $vars): void
                 Usuario WHMCS admin utilizado nas chamadas <code>localAPI()</code>.
                 Deve corresponder a um administrador ativo.
             </p>
+        </div>
+    </div>
+    HTML;
+}
+
+// =========================================================================
+// OAuth Authorization Approval (runs inside WHMCS admin panel)
+// =========================================================================
+
+/**
+ * Handle OAuth authorization approval inside the WHMCS admin panel.
+ *
+ * SECURITY (V-03 fix — CRITICAL CVSS 9.1): This function runs ONLY inside
+ * the WHMCS admin panel where admin session is guaranteed by WHMCS itself.
+ *
+ * Defense in depth (5 layers):
+ *  1. WHMCS requires admin login to access configaddonmods.php (native)
+ *  2. Explicit $_SESSION['adminid'] verification (belt-and-suspenders)
+ *  3. CSRF token tied to admin session via HMAC (anti-forgery)
+ *  4. Pending request expires in 10 minutes (temporal window)
+ *  5. Admin ID + IP logged in WHMCS activity log (audit trail)
+ */
+function nt_mcp_handle_oauth_authorize(array $vars): void
+{
+    $e = static fn(string $v): string => htmlspecialchars($v, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+
+    // Layer 2: Explicit admin session check (belt-and-suspenders)
+    if (empty($_SESSION['adminid']) || !is_numeric($_SESSION['adminid'])) {
+        echo '<div class="alert alert-danger">';
+        echo '<strong>Acesso negado.</strong> Sessao de administrador invalida.';
+        echo '</div>';
+        return;
+    }
+    $adminId = (int) $_SESSION['adminid'];
+
+    $requestId = $_GET['authorize'] ?? '';
+    if (!preg_match('/^[a-f0-9]{32}$/', $requestId)) {
+        echo '<div class="alert alert-danger">Request ID invalido.</div>';
+        return;
+    }
+
+    // Load pending authorization request
+    $pending = Capsule::table('mod_nt_mcp_oauth_codes')
+        ->where('code', 'pending_' . $requestId)
+        ->where('used', false)
+        ->where('expires_at', '>', time())
+        ->first();
+
+    if (!$pending) {
+        echo '<div class="alert alert-danger">';
+        echo 'Solicitacao de autorizacao nao encontrada, expirada ou ja processada.';
+        echo '</div>';
+        return;
+    }
+
+    // Load client info
+    $client = Capsule::table('mod_nt_mcp_oauth_clients')
+        ->where('client_id', $pending->client_id)
+        ->first();
+
+    $clientName = $client->client_name ?? 'MCP Client';
+
+    // ------------------------------------------------------------------
+    // Handle POST: admin clicked Approve or Deny
+    // ------------------------------------------------------------------
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['authorize_action'])) {
+        // Layer 3: CSRF validation
+        if (!nt_mcp_csrf_verify($_POST['_csrf_token'] ?? '')) {
+            echo '<div class="alert alert-danger">';
+            echo 'Token CSRF invalido. Recarregue a pagina e tente novamente.';
+            echo '</div>';
+            return;
+        }
+
+        // Mark pending request as used (V-04 atomic: WHERE used=0)
+        $affected = Capsule::table('mod_nt_mcp_oauth_codes')
+            ->where('id', $pending->id)
+            ->where('used', false)
+            ->update(['used' => true]);
+
+        if ($affected === 0) {
+            echo '<div class="alert alert-danger">Solicitacao ja foi processada.</div>';
+            return;
+        }
+
+        $redirectUri = $pending->redirect_uri;
+        $state       = $pending->state;
+
+        if ($_POST['authorize_action'] !== 'approve') {
+            // DENIED
+            logActivity("NT MCP: OAuth authorization DENIED for client '{$clientName}' by admin ID {$adminId} from IP {$_SERVER['REMOTE_ADDR']}");
+
+            $params = http_build_query(array_filter([
+                'error'             => 'access_denied',
+                'error_description' => 'Administrator denied the authorization request',
+                'state'             => $state,
+            ]));
+            $url = $redirectUri . '?' . $params;
+            echo '<script>window.location.href=' . json_encode($url, JSON_UNESCAPED_SLASHES) . ';</script>';
+            echo '<noscript><div class="alert alert-warning">Autorizacao negada. ';
+            echo '<a href="' . $e($url) . '">Clique aqui para continuar</a>.</div></noscript>';
+            return;
+        }
+
+        // APPROVED — generate authorization code
+        $authCode = bin2hex(random_bytes(32));
+
+        Capsule::table('mod_nt_mcp_oauth_codes')->insert([
+            'code'           => $authCode,
+            'client_id'      => $pending->client_id,
+            'code_challenge'  => $pending->code_challenge,
+            'redirect_uri'   => $redirectUri,
+            'state'          => $state,
+            'expires_at'     => time() + 300, // 5 minutes
+            'used'           => false,
+            'created_at'     => date('Y-m-d H:i:s'),
+        ]);
+
+        // Layer 5: Audit trail
+        logActivity("NT MCP: OAuth authorization APPROVED for client '{$clientName}' (client_id: {$pending->client_id}) by admin ID {$adminId} from IP {$_SERVER['REMOTE_ADDR']}");
+
+        $params = http_build_query(array_filter([
+            'code'  => $authCode,
+            'state' => $state,
+        ]));
+        $url = $redirectUri . '?' . $params;
+        echo '<script>window.location.href=' . json_encode($url, JSON_UNESCAPED_SLASHES) . ';</script>';
+        echo '<noscript><div class="alert alert-success">Autorizacao aprovada. ';
+        echo '<a href="' . $e($url) . '">Clique aqui para continuar</a>.</div></noscript>';
+        return;
+    }
+
+    // ------------------------------------------------------------------
+    // Render approval form
+    // ------------------------------------------------------------------
+    $csrf = nt_mcp_csrf_token();
+    $timeLeft = $pending->expires_at - time();
+    $minutesLeft = max(1, (int) ceil($timeLeft / 60));
+
+    echo <<<HTML
+    <div class="panel panel-primary">
+        <div class="panel-heading">
+            <h3 class="panel-title">Autorizar Acesso OAuth MCP</h3>
+        </div>
+        <div class="panel-body">
+            <div class="alert alert-info">
+                <i class="fas fa-shield-alt"></i>
+                <strong>{$e($clientName)}</strong> solicita acesso ao WHMCS MCP Server.
+            </div>
+
+            <table class="table table-bordered table-striped">
+                <tr>
+                    <td style="width:150px"><strong>Client ID</strong></td>
+                    <td><code>{$e($pending->client_id)}</code></td>
+                </tr>
+                <tr>
+                    <td><strong>Redirect URI</strong></td>
+                    <td><code>{$e($pending->redirect_uri)}</code></td>
+                </tr>
+                <tr>
+                    <td><strong>Expira em</strong></td>
+                    <td><span class="label label-warning">{$minutesLeft} minuto(s)</span></td>
+                </tr>
+                <tr>
+                    <td><strong>Admin</strong></td>
+                    <td>ID #{$adminId} (voce)</td>
+                </tr>
+            </table>
+
+            <div class="alert alert-warning">
+                <strong>Atencao:</strong> Ao aprovar, o cliente podera executar ferramentas de
+                gerenciamento WHMCS (listar clientes, faturas, tickets, servicos, etc.) via MCP.
+            </div>
+
+            <form method="POST" class="text-center">
+                <input type="hidden" name="_csrf_token" value="{$e($csrf)}">
+                <input type="hidden" name="authorize_action" value="">
+                <button type="submit" name="authorize_action" value="deny"
+                        class="btn btn-default btn-lg" style="margin-right:15px;">
+                    Negar
+                </button>
+                <button type="submit" name="authorize_action" value="approve"
+                        class="btn btn-success btn-lg">
+                    Aprovar Acesso MCP
+                </button>
+            </form>
         </div>
     </div>
     HTML;

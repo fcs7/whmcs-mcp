@@ -57,6 +57,57 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') {
     exit;
 }
 
+/**
+ * SECURITY FIX (M-01): Resolve the real client IP behind reverse proxies.
+ *
+ * When REMOTE_ADDR is a loopback address or matches a configured trusted
+ * proxy, the rightmost untrusted IP from X-Forwarded-For is used instead.
+ * This prevents rate-limit bypass and ensures IP allowlists work correctly
+ * behind Plesk/nginx reverse proxies.
+ */
+function _ntMcpGetClientIp(): string
+{
+    $remoteAddr = $_SERVER['REMOTE_ADDR'] ?? '';
+    if ($remoteAddr === '') {
+        return '0.0.0.0';
+    }
+
+    // Check if REMOTE_ADDR is a trusted proxy (loopback or configured list)
+    $trustedProxies = ['127.0.0.1', '::1'];
+    try {
+        $configured = \WHMCS\Config\Setting::getValue('nt_mcp_trusted_proxies') ?? '';
+        if ($configured !== '') {
+            $trustedProxies = array_merge(
+                $trustedProxies,
+                array_filter(array_map('trim', explode(',', $configured)))
+            );
+        }
+    } catch (\Throwable $e) {
+        // Setting not available
+    }
+
+    if (!in_array($remoteAddr, $trustedProxies, true)) {
+        return $remoteAddr;
+    }
+
+    // Use rightmost untrusted IP from X-Forwarded-For
+    $xff = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? '';
+    if ($xff === '') {
+        return $remoteAddr;
+    }
+
+    $ips = array_map('trim', explode(',', $xff));
+    // Walk from right to left, return first IP not in trusted list
+    for ($i = count($ips) - 1; $i >= 0; $i--) {
+        $ip = $ips[$i];
+        if ($ip !== '' && filter_var($ip, FILTER_VALIDATE_IP) && !in_array($ip, $trustedProxies, true)) {
+            return $ip;
+        }
+    }
+
+    return $remoteAddr;
+}
+
 // ---------------------------------------------------------------
 // SECURITY CONTROL (9.4): Optional IP allowlist.
 // If nt_mcp_allowed_ips is configured in WHMCS settings, only
@@ -77,8 +128,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') {
         return; // No allowlist configured — allow all (backwards compatible)
     }
 
-    $clientIp = $_SERVER['REMOTE_ADDR'] ?? '';
-    if ($clientIp === '') {
+    $clientIp = _ntMcpGetClientIp();
+    if ($clientIp === '' || $clientIp === '0.0.0.0') {
         http_response_code(403);
         header('Content-Type: application/json');
         echo json_encode(['error' => 'Forbidden: unable to determine client IP.']);
@@ -163,11 +214,17 @@ header('Referrer-Policy: no-referrer');
 // Falls back to file-based locking when transients are unavailable.
 // ---------------------------------------------------------------
 (function () {
+    // SECURITY FIX (H-05): Use private data directory instead of world-writable /tmp
+    $dataDir = __DIR__ . '/data/rate';
+    if (!is_dir($dataDir)) {
+        @mkdir($dataDir, 0700, true);
+    }
+
     $maxRequests = 60;
     $windowSeconds = 60;
-    $clientIp = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
-    // Normalise the IP to a safe cache key (strip colons for IPv6)
-    $safeIp = preg_replace('/[^a-f0-9.]/', '_', $clientIp);
+    $clientIp = _ntMcpGetClientIp();
+    // Normalise the IP to a safe cache key (preserve colons for IPv6)
+    $safeIp = preg_replace('/[^a-f0-9.:]/', '_', $clientIp);
     $cacheKey = 'nt_mcp_rl_' . $safeIp;
 
     // Try WHMCS transient cache first (DB-backed, shared across workers)
@@ -205,7 +262,7 @@ header('Referrer-Policy: no-referrer');
             \WHMCS\TransientData::getInstance()->store(
                 $cacheKey,
                 json_encode($state),
-                $windowSeconds - (time() - $state['window_start'])
+                max(1, $windowSeconds - (time() - $state['window_start']))
             );
             return;
         }
@@ -214,11 +271,7 @@ header('Referrer-Policy: no-referrer');
     }
 
     // Fallback: file-based rate limiter
-    $rateDir = sys_get_temp_dir() . '/nt_mcp_rate';
-    if (!is_dir($rateDir)) {
-        @mkdir($rateDir, 0700, true);
-    }
-    $rateFile = $rateDir . '/' . $safeIp . '.json';
+    $rateFile = $dataDir . '/' . $safeIp . '.json';
 
     $state = ['count' => 0, 'window_start' => time()];
     if (file_exists($rateFile)) {

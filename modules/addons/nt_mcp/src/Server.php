@@ -43,19 +43,6 @@ class Server
             ? $rawSessionId
             : bin2hex(random_bytes(16));
 
-        $input = ($method === 'POST') ? file_get_contents('php://input') : '';
-        $decoded = json_decode($input, true);
-
-        // Temporary debug log — remove after confirming Claude Code works
-        @file_put_contents(
-            sys_get_temp_dir() . '/nt_mcp_debug.log',
-            date('H:i:s') . " {$method} sid={$clientId}"
-                . " method=" . ($decoded['method'] ?? 'N/A')
-                . " id=" . ($decoded['id'] ?? 'none')
-                . "\n",
-            FILE_APPEND | LOCK_EX
-        );
-
         // ------------------------------------------------------------------
         // 2. Handle GET (405) and other methods early — no server needed
         // ------------------------------------------------------------------
@@ -73,6 +60,18 @@ class Server
             return;
         }
 
+        // SECURITY FIX (M-02): Reject oversized POST bodies before reading
+        $contentLength = (int) ($_SERVER['CONTENT_LENGTH'] ?? 0);
+        if ($contentLength > 1048576) { // 1 MB
+            http_response_code(413);
+            header('Content-Type: application/json');
+            echo json_encode(['error' => 'Request body too large (max 1 MB)']);
+            return;
+        }
+
+        $input = file_get_contents('php://input');
+        $decoded = json_decode($input, true);
+
         // ------------------------------------------------------------------
         // 3. Acquire GLOBAL lock before ANY cache access.
         //    The FileCache stores ALL sessions in one JSON file. Without a
@@ -80,7 +79,11 @@ class Server
         //    overwrite each other's data (TOCTOU race), causing "Client not
         //    initialized" errors on tools/list.
         // ------------------------------------------------------------------
-        $lockFile = sys_get_temp_dir() . '/nt_mcp_global.lock';
+        $dataDir = __DIR__ . '/../data';
+        if (!is_dir($dataDir)) {
+            @mkdir($dataDir, 0700, true);
+        }
+        $lockFile = $dataDir . '/nt_mcp_global.lock';
         $lock = fopen($lockFile, 'c');
         flock($lock, LOCK_EX);
 
@@ -111,7 +114,7 @@ class Server
             $container->set(LocalApiClient::class, $localApi);
             $container->set(CapsuleClient::class, $capsule);
 
-            $cacheDir = sys_get_temp_dir() . '/nt_mcp_cache';
+            $cacheDir = __DIR__ . '/../data/cache';
             $container->set(CacheInterface::class, new FileCache($cacheDir . '/mcp_state.json'));
             $container->set(LoggerInterface::class, new NullLogger());
             $container->set(ConfigurationRepositoryInterface::class, $config);
@@ -166,15 +169,6 @@ class Server
         // ------------------------------------------------------------------
         $requestId = $decoded['id'] ?? null;
 
-        // Debug: log response details
-        $msgIds = array_map(fn($m) => $m['id'] ?? 'notif', $messages);
-        @file_put_contents(
-            sys_get_temp_dir() . '/nt_mcp_debug.log',
-            date('H:i:s') . "   -> msgs=" . count($messages)
-                . " ids=" . implode(',', $msgIds) . " reqId={$requestId}\n",
-            FILE_APPEND | LOCK_EX
-        );
-
         header('Mcp-Session-Id: ' . $clientId);
 
         if ($requestId !== null) {
@@ -183,27 +177,16 @@ class Server
             foreach ($messages as $message) {
                 if (isset($message['id']) && $message['id'] === $requestId) {
                     $json = json_encode($message, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-                    // Fix PHP empty array [] → empty object {} for JSON Schema
-                    // properties fields. PHP json_encode([]) produces [] but
-                    // JSON Schema requires properties to be an object {}.
+                    // Fix: PHP json_encode([]) produces [] but MCP JSON Schema
+                    // requires "properties" to be an object {}.  A targeted
+                    // str_replace is safe here because "properties" only appears
+                    // as a schema keyword, never as user data in tool responses.
                     $json = str_replace('"properties":[]', '"properties":{}', $json);
                     echo $json;
-
-                    @file_put_contents(
-                        sys_get_temp_dir() . '/nt_mcp_debug.log',
-                        date('H:i:s') . "   -> SENT " . strlen($json) . " bytes\n",
-                        FILE_APPEND | LOCK_EX
-                    );
                     return;
                 }
             }
 
-            // No matching message found
-            @file_put_contents(
-                sys_get_temp_dir() . '/nt_mcp_debug.log',
-                date('H:i:s') . "   -> NO MATCH for id={$requestId}\n",
-                FILE_APPEND | LOCK_EX
-            );
         } else {
             http_response_code(202);
         }

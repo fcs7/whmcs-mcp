@@ -140,7 +140,7 @@ switch (true) {
     default:
         http_response_code(404);
         header('Content-Type: application/json');
-        echo json_encode(['error' => 'not_found', 'error_description' => 'Unknown OAuth endpoint: ' . $pathInfo]);
+        echo json_encode(['error' => 'not_found', 'error_description' => 'Unknown OAuth endpoint']);
         break;
 }
 exit;
@@ -180,6 +180,23 @@ function handleServerMetadata(string $oauthUrl, string $issuerUrl): void
 /** Dynamic Client Registration (RFC 7591) */
 function handleRegister(): void
 {
+    // ------------------------------------------------------------------
+    // SECURITY FIX (V-02 -- HIGH CVSS 7.5): Rate limit, validate URIs,
+    // enforce max client count to prevent resource exhaustion and
+    // redirect URI poisoning from unauthenticated registration.
+    // ------------------------------------------------------------------
+
+    // Rate limit: max 20 registrations per hour per IP
+    enforceRegistrationRateLimit();
+
+    // Max client count: prevent DB exhaustion
+    $maxClients = 50;
+    $clientCount = Capsule::table('mod_nt_mcp_oauth_clients')->count();
+    if ($clientCount >= $maxClients) {
+        oauthError(429, 'too_many_clients', 'Maximum number of registered clients reached (' . $maxClients . ')');
+        return;
+    }
+
     $input = json_decode(file_get_contents('php://input'), true);
     if (!is_array($input)) {
         oauthError(400, 'invalid_request', 'Invalid JSON body');
@@ -192,8 +209,34 @@ function handleRegister(): void
         return;
     }
 
+    // Validate redirect URIs
+    foreach ($redirectUris as $uri) {
+        if (!is_string($uri) || $uri === '') {
+            oauthError(400, 'invalid_redirect_uri', 'Each redirect_uri must be a non-empty string');
+            return;
+        }
+        $parsed = parse_url($uri);
+        if ($parsed === false || !isset($parsed['scheme']) || !isset($parsed['host'])) {
+            oauthError(400, 'invalid_redirect_uri', 'Invalid redirect_uri format: ' . $uri);
+            return;
+        }
+        // Allow http://localhost and http://127.0.0.1 for local development (MCP clients).
+        // All other redirect URIs must use HTTPS.
+        $isLocalhost = in_array($parsed['host'], ['localhost', '127.0.0.1', '[::1]'], true);
+        if ($parsed['scheme'] !== 'https' && !($parsed['scheme'] === 'http' && $isLocalhost)) {
+            oauthError(400, 'invalid_redirect_uri', 'redirect_uri must use HTTPS (except localhost): ' . $uri);
+            return;
+        }
+        // Reject fragments (OAuth 2.1 requirement)
+        if (isset($parsed['fragment'])) {
+            oauthError(400, 'invalid_redirect_uri', 'redirect_uri must not contain a fragment');
+            return;
+        }
+    }
+
     $clientId   = bin2hex(random_bytes(16));
-    $clientName = $input['client_name'] ?? 'MCP Client';
+    // SECURITY FIX (L-01 -- LOW): Sanitize client_name to prevent stored XSS
+    $clientName = strip_tags($input['client_name'] ?? 'MCP Client');
 
     Capsule::table('mod_nt_mcp_oauth_clients')->insert([
         'client_id'     => $clientId,
@@ -212,15 +255,31 @@ function handleRegister(): void
     ]), JSON_UNESCAPED_SLASHES);
 }
 
-/** Authorization GET — render approval page */
+/**
+ * Authorization GET — validate params, create pending request, redirect to admin panel.
+ *
+ * SECURITY FIX (V-03 -- CRITICAL CVSS 9.1): The approval form is rendered
+ * inside the WHMCS admin panel (nt_mcp.php), NOT here. This ensures the
+ * admin must be logged into WHMCS to approve OAuth grants.
+ *
+ * Defense in depth:
+ *  1. WHMCS requires admin login to access configaddonmods.php (native gate)
+ *  2. nt_mcp.php verifies $_SESSION['adminid'] explicitly (second check)
+ *  3. CSRF token tied to admin session (third check)
+ *  4. Pending request expires in 10 minutes (temporal window)
+ *  5. Admin ID logged in WHMCS activity log (audit trail)
+ */
 function handleAuthorizeGet(): void
 {
+    // SECURITY FIX (M-03 -- MEDIUM): Rate limit authorization endpoint
+    enforceAuthorizeRateLimit();
+
     $clientId      = $_GET['client_id'] ?? '';
     $redirectUri   = $_GET['redirect_uri'] ?? '';
     $codeChallenge = $_GET['code_challenge'] ?? '';
     $state         = $_GET['state'] ?? '';
     $responseType  = $_GET['response_type'] ?? '';
-    $scope         = $_GET['scope'] ?? '';
+    $codeChallengeMethod = $_GET['code_challenge_method'] ?? '';
 
     if ($responseType !== 'code') {
         oauthError(400, 'unsupported_response_type', 'Only response_type=code is supported');
@@ -230,13 +289,19 @@ function handleAuthorizeGet(): void
         oauthError(400, 'invalid_request', 'code_challenge is required (PKCE)');
         return;
     }
+    // V-14 fix: require S256
+    if ($codeChallengeMethod !== '' && $codeChallengeMethod !== 'S256') {
+        oauthError(400, 'invalid_request', 'Only code_challenge_method=S256 is supported');
+        return;
+    }
 
     $client = Capsule::table('mod_nt_mcp_oauth_clients')
         ->where('client_id', $clientId)
         ->first();
 
     if (!$client) {
-        oauthError(400, 'invalid_client', 'Unknown client_id');
+        // SECURITY FIX (M-04 -- MEDIUM): Generic error to prevent client_id enumeration
+        oauthError(400, 'invalid_request', 'Invalid request parameters');
         return;
     }
 
@@ -246,13 +311,11 @@ function handleAuthorizeGet(): void
         return;
     }
 
-    // Render approval page
-    $clientName = htmlspecialchars($client->client_name ?? 'MCP Client', ENT_QUOTES, 'UTF-8');
-    $csrfToken  = bin2hex(random_bytes(16));
+    // Create pending authorization request (to be approved in admin panel)
+    $requestId = bin2hex(random_bytes(16));
 
-    // Store CSRF in a short-lived code entry (reuse table, mark as csrf)
     Capsule::table('mod_nt_mcp_oauth_codes')->insert([
-        'code'           => 'csrf_' . $csrfToken,
+        'code'           => 'pending_' . $requestId,
         'client_id'      => $clientId,
         'code_challenge'  => $codeChallenge,
         'redirect_uri'   => $redirectUri,
@@ -262,111 +325,54 @@ function handleAuthorizeGet(): void
         'created_at'     => date('Y-m-d H:i:s'),
     ]);
 
-    header('Content-Type: text/html; charset=utf-8');
-    echo <<<HTML
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Autorizar MCP Client</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f0f2f5; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
-        .card { background: #fff; border-radius: 12px; box-shadow: 0 2px 16px rgba(0,0,0,.1); padding: 2rem; max-width: 420px; width: 100%; }
-        .card h1 { font-size: 1.3rem; color: #1a1a2e; margin-bottom: .5rem; }
-        .card p { color: #555; margin-bottom: 1.5rem; line-height: 1.5; }
-        .client-name { font-weight: 600; color: #2563eb; }
-        .buttons { display: flex; gap: .75rem; }
-        .btn { flex: 1; padding: .75rem 1rem; border: none; border-radius: 8px; font-size: 1rem; cursor: pointer; font-weight: 500; }
-        .btn-approve { background: #2563eb; color: #fff; }
-        .btn-approve:hover { background: #1d4ed8; }
-        .btn-deny { background: #e5e7eb; color: #374151; }
-        .btn-deny:hover { background: #d1d5db; }
-        .icon { font-size: 2.5rem; margin-bottom: 1rem; }
-    </style>
-</head>
-<body>
-    <div class="card">
-        <div class="icon">&#128274;</div>
-        <h1>Autorizar Acesso MCP</h1>
-        <p><span class="client-name">{$clientName}</span> quer acessar o <strong>WHMCS MCP Server</strong>.</p>
-        <p>Isso permitira que o cliente execute ferramentas de gerenciamento via MCP.</p>
-        <form method="POST" action="">
-            <input type="hidden" name="csrf_token" value="{$csrfToken}">
-            <input type="hidden" name="approve" value="1">
-            <div class="buttons">
-                <button type="submit" name="approve" value="0" class="btn btn-deny">Negar</button>
-                <button type="submit" name="approve" value="1" class="btn btn-approve">Aprovar</button>
-            </div>
-        </form>
-    </div>
-</body>
-</html>
-HTML;
+    // Redirect to WHMCS admin panel for approval
+    // The admin panel URL uses the system URL + /admin/ (WHMCS default).
+    // The admin must be logged in to access this page.
+    $systemUrl = rtrim(\WHMCS\Config\Setting::getValue('SystemURL') ?? '', '/');
+    if ($systemUrl === '') {
+        try {
+            $systemUrl = rtrim(\App::getSystemURL(), '/');
+        } catch (\Throwable $e) {
+            oauthError(500, 'server_error', 'Cannot determine WHMCS system URL');
+            return;
+        }
+    }
+    // Upgrade to HTTPS if current request is HTTPS
+    $isHttps = (
+        (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+        || (isset($_SERVER['SERVER_PORT']) && (int)$_SERVER['SERVER_PORT'] === 443)
+        || (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower($_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https')
+    );
+    if ($isHttps && str_starts_with($systemUrl, 'http://')) {
+        $systemUrl = 'https://' . substr($systemUrl, 7);
+    }
+
+    $adminUrl = $systemUrl . '/admin/addonmodules.php?module=nt_mcp&authorize=' . urlencode($requestId);
+
+    http_response_code(302);
+    header('Location: ' . $adminUrl);
+    exit;
 }
 
-/** Authorization POST — process approval, redirect with code */
+/**
+ * Authorization POST — no longer handled here.
+ *
+ * Approval is processed inside the WHMCS admin panel (nt_mcp.php) where
+ * admin session is guaranteed. Direct POST to oauth.php/authorize returns
+ * an error directing the user to use the admin panel.
+ */
 function handleAuthorizePost(): void
 {
-    $csrfToken = $_POST['csrf_token'] ?? '';
-    $approve   = $_POST['approve'] ?? '0';
-
-    $csrfRow = Capsule::table('mod_nt_mcp_oauth_codes')
-        ->where('code', 'csrf_' . $csrfToken)
-        ->where('used', false)
-        ->where('expires_at', '>', time())
-        ->first();
-
-    if (!$csrfRow) {
-        oauthError(400, 'invalid_request', 'Invalid or expired session. Please try again.');
-        return;
-    }
-
-    // Mark CSRF as used
-    Capsule::table('mod_nt_mcp_oauth_codes')
-        ->where('id', $csrfRow->id)
-        ->update(['used' => true]);
-
-    $redirectUri = $csrfRow->redirect_uri;
-    $state       = $csrfRow->state;
-
-    if ($approve !== '1') {
-        $params = http_build_query(array_filter([
-            'error'             => 'access_denied',
-            'error_description' => 'User denied the authorization request',
-            'state'             => $state,
-        ]));
-        header('Location: ' . $redirectUri . '?' . $params);
-        exit;
-    }
-
-    // Generate authorization code
-    $authCode = bin2hex(random_bytes(32));
-
-    Capsule::table('mod_nt_mcp_oauth_codes')->insert([
-        'code'           => $authCode,
-        'client_id'      => $csrfRow->client_id,
-        'code_challenge'  => $csrfRow->code_challenge,
-        'redirect_uri'   => $redirectUri,
-        'state'          => $state,
-        'expires_at'     => time() + 300, // 5 minutes
-        'used'           => false,
-        'created_at'     => date('Y-m-d H:i:s'),
-    ]);
-
-    $params = http_build_query(array_filter([
-        'code'  => $authCode,
-        'state' => $state,
-    ]));
-    header('Location: ' . $redirectUri . '?' . $params);
-    exit;
+    oauthError(400, 'invalid_request', 'Authorization approval must be done via the WHMCS admin panel. Use GET /authorize to start the flow.');
 }
 
 /** Token exchange — authorization_code grant with PKCE */
 function handleToken(string $oauthUrl): void
 {
     header('Content-Type: application/json');
+
+    // SECURITY FIX (H-01 -- HIGH): Rate limit token endpoint
+    enforceTokenRateLimit();
 
     // Accept both form-urlencoded and JSON
     $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
@@ -384,11 +390,13 @@ function handleToken(string $oauthUrl): void
 
     if ($grantType !== 'authorization_code') {
         oauthError(400, 'unsupported_grant_type', 'Only authorization_code is supported');
+        try { logActivity("NT MCP: Token exchange FAILED from IP " . ($_SERVER['REMOTE_ADDR'] ?? 'unknown') . ": unsupported grant_type"); } catch (\Throwable $e) {}
         return;
     }
 
     if ($code === '' || $codeVerifier === '') {
         oauthError(400, 'invalid_request', 'code and code_verifier are required');
+        try { logActivity("NT MCP: Token exchange FAILED from IP " . ($_SERVER['REMOTE_ADDR'] ?? 'unknown') . ": missing code or code_verifier"); } catch (\Throwable $e) {}
         return;
     }
 
@@ -400,23 +408,33 @@ function handleToken(string $oauthUrl): void
 
     if (!$codeRow) {
         oauthError(400, 'invalid_grant', 'Invalid, expired, or already used authorization code');
+        try { logActivity("NT MCP: Token exchange FAILED from IP " . ($_SERVER['REMOTE_ADDR'] ?? 'unknown') . ": invalid or expired authorization code"); } catch (\Throwable $e) {}
         return;
     }
 
-    // Mark code as used immediately
-    Capsule::table('mod_nt_mcp_oauth_codes')
+    // SECURITY FIX (H-04 -- CRITICAL): Atomic code consumption to prevent replay via race condition
+    $affected = Capsule::table('mod_nt_mcp_oauth_codes')
         ->where('id', $codeRow->id)
+        ->where('used', false)
         ->update(['used' => true]);
+
+    if ($affected === 0) {
+        oauthError(400, 'invalid_grant', 'Authorization code already consumed');
+        try { logActivity("NT MCP: Token exchange FAILED from IP " . ($_SERVER['REMOTE_ADDR'] ?? 'unknown') . ": authorization code already consumed (race condition)"); } catch (\Throwable $e) {}
+        return;
+    }
 
     // Validate client_id
     if ($clientId !== '' && $clientId !== $codeRow->client_id) {
         oauthError(400, 'invalid_grant', 'client_id mismatch');
+        try { logActivity("NT MCP: Token exchange FAILED from IP " . ($_SERVER['REMOTE_ADDR'] ?? 'unknown') . ": client_id mismatch"); } catch (\Throwable $e) {}
         return;
     }
 
     // Validate redirect_uri
     if ($redirectUri !== '' && $redirectUri !== $codeRow->redirect_uri) {
         oauthError(400, 'invalid_grant', 'redirect_uri mismatch');
+        try { logActivity("NT MCP: Token exchange FAILED from IP " . ($_SERVER['REMOTE_ADDR'] ?? 'unknown') . ": redirect_uri mismatch"); } catch (\Throwable $e) {}
         return;
     }
 
@@ -424,6 +442,7 @@ function handleToken(string $oauthUrl): void
     $computedChallenge = rtrim(strtr(base64_encode(hash('sha256', $codeVerifier, true)), '+/', '-_'), '=');
     if (!hash_equals($codeRow->code_challenge, $computedChallenge)) {
         oauthError(400, 'invalid_grant', 'PKCE code_verifier verification failed');
+        try { logActivity("NT MCP: Token exchange FAILED from IP " . ($_SERVER['REMOTE_ADDR'] ?? 'unknown') . ": PKCE verification failed"); } catch (\Throwable $e) {}
         return;
     }
 
@@ -438,6 +457,9 @@ function handleToken(string $oauthUrl): void
         'expires_at'  => time() + $expiresIn,
         'created_at'  => date('Y-m-d H:i:s'),
     ]);
+
+    // SECURITY FIX (L-03 -- LOW): Audit logging for token issuance
+    try { logActivity("NT MCP: OAuth token issued for client '{$codeRow->client_id}' from IP " . ($_SERVER['REMOTE_ADDR'] ?? 'unknown')); } catch (\Throwable $e) {}
 
     // Cleanup expired tokens
     Capsule::table('mod_nt_mcp_oauth_tokens')
@@ -455,6 +477,277 @@ function handleToken(string $oauthUrl): void
 // ===========================================================================
 // Helpers
 // ===========================================================================
+
+/**
+ * SECURITY FIX (M-03 -- MEDIUM): Rate limit authorization endpoint.
+ *
+ * Enforces a maximum of 20 requests per minute per IP address using
+ * WHMCS TransientData (DB-backed) with a file-based fallback.
+ * Prevents abuse of the authorization flow.
+ */
+function enforceAuthorizeRateLimit(): void
+{
+    $maxRequests    = 20;
+    $windowSeconds  = 60; // 1 minute
+    $clientIp       = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+    $safeIp         = preg_replace('/[^a-f0-9.:]/', '_', $clientIp);
+    $cacheKey       = 'nt_mcp_auth_rl_' . $safeIp;
+
+    // Try WHMCS TransientData first (DB-backed, shared across workers)
+    try {
+        if (class_exists('\WHMCS\TransientData')) {
+            $data = \WHMCS\TransientData::getInstance()->retrieve($cacheKey);
+            if ($data === false || $data === null || $data === '') {
+                \WHMCS\TransientData::getInstance()->store($cacheKey, json_encode([
+                    'count' => 1,
+                    'window_start' => time(),
+                ]), $windowSeconds);
+                return;
+            }
+
+            $state = json_decode($data, true);
+            if (!is_array($state) || (time() - ($state['window_start'] ?? 0)) > $windowSeconds) {
+                \WHMCS\TransientData::getInstance()->store($cacheKey, json_encode([
+                    'count' => 1,
+                    'window_start' => time(),
+                ]), $windowSeconds);
+                return;
+            }
+
+            $state['count'] = ($state['count'] ?? 0) + 1;
+            if ($state['count'] > $maxRequests) {
+                http_response_code(429);
+                header('Retry-After: ' . $windowSeconds);
+                header('Content-Type: application/json');
+                echo json_encode([
+                    'error'             => 'rate_limit_exceeded',
+                    'error_description' => 'Too many authorization requests. Maximum ' . $maxRequests . ' per minute.',
+                ], JSON_UNESCAPED_SLASHES);
+                exit;
+            }
+
+            \WHMCS\TransientData::getInstance()->store(
+                $cacheKey,
+                json_encode($state),
+                max(1, $windowSeconds - (time() - $state['window_start']))
+            );
+            return;
+        }
+    } catch (\Throwable $e) {
+        // Fall through to file-based limiter
+    }
+
+    // Fallback: file-based rate limiter
+    $rateDir = __DIR__ . '/data/rate';
+    if (!is_dir($rateDir)) {
+        @mkdir($rateDir, 0700, true);
+    }
+    $rateFile = $rateDir . '/auth_' . $safeIp . '.json';
+
+    $state = ['count' => 0, 'window_start' => time()];
+    if (file_exists($rateFile)) {
+        $raw = @file_get_contents($rateFile);
+        $decoded = $raw ? json_decode($raw, true) : null;
+        if (is_array($decoded) && (time() - ($decoded['window_start'] ?? 0)) <= $windowSeconds) {
+            $state = $decoded;
+        }
+    }
+
+    $state['count']++;
+    if ($state['count'] > $maxRequests) {
+        http_response_code(429);
+        header('Retry-After: ' . $windowSeconds);
+        header('Content-Type: application/json');
+        echo json_encode([
+            'error'             => 'rate_limit_exceeded',
+            'error_description' => 'Too many authorization requests. Maximum ' . $maxRequests . ' per minute.',
+        ], JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+
+    @file_put_contents($rateFile, json_encode($state), LOCK_EX);
+}
+
+/**
+ * SECURITY FIX (H-01 -- HIGH): Rate limit token endpoint.
+ *
+ * Enforces a maximum of 30 requests per minute per IP address using
+ * WHMCS TransientData (DB-backed) with a file-based fallback.
+ * Prevents brute-force and replay attacks on /token POST requests.
+ */
+function enforceTokenRateLimit(): void
+{
+    $maxRequests    = 30;
+    $windowSeconds  = 60; // 1 minute
+    $clientIp       = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+    $safeIp         = preg_replace('/[^a-f0-9.:]/', '_', $clientIp);
+    $cacheKey       = 'nt_mcp_tok_rl_' . $safeIp;
+
+    // Try WHMCS TransientData first (DB-backed, shared across workers)
+    try {
+        if (class_exists('\WHMCS\TransientData')) {
+            $data = \WHMCS\TransientData::getInstance()->retrieve($cacheKey);
+            if ($data === false || $data === null || $data === '') {
+                \WHMCS\TransientData::getInstance()->store($cacheKey, json_encode([
+                    'count' => 1,
+                    'window_start' => time(),
+                ]), $windowSeconds);
+                return;
+            }
+
+            $state = json_decode($data, true);
+            if (!is_array($state) || (time() - ($state['window_start'] ?? 0)) > $windowSeconds) {
+                \WHMCS\TransientData::getInstance()->store($cacheKey, json_encode([
+                    'count' => 1,
+                    'window_start' => time(),
+                ]), $windowSeconds);
+                return;
+            }
+
+            $state['count'] = ($state['count'] ?? 0) + 1;
+            if ($state['count'] > $maxRequests) {
+                http_response_code(429);
+                header('Retry-After: ' . $windowSeconds);
+                header('Content-Type: application/json');
+                echo json_encode([
+                    'error'             => 'rate_limit_exceeded',
+                    'error_description' => 'Too many token requests. Maximum ' . $maxRequests . ' per minute.',
+                ], JSON_UNESCAPED_SLASHES);
+                exit;
+            }
+
+            \WHMCS\TransientData::getInstance()->store(
+                $cacheKey,
+                json_encode($state),
+                max(1, $windowSeconds - (time() - $state['window_start']))
+            );
+            return;
+        }
+    } catch (\Throwable $e) {
+        // Fall through to file-based limiter
+    }
+
+    // Fallback: file-based rate limiter
+    $rateDir = __DIR__ . '/data/rate';
+    if (!is_dir($rateDir)) {
+        @mkdir($rateDir, 0700, true);
+    }
+    $rateFile = $rateDir . '/tok_' . $safeIp . '.json';
+
+    $state = ['count' => 0, 'window_start' => time()];
+    if (file_exists($rateFile)) {
+        $raw = @file_get_contents($rateFile);
+        $decoded = $raw ? json_decode($raw, true) : null;
+        if (is_array($decoded) && (time() - ($decoded['window_start'] ?? 0)) <= $windowSeconds) {
+            $state = $decoded;
+        }
+    }
+
+    $state['count']++;
+    if ($state['count'] > $maxRequests) {
+        http_response_code(429);
+        header('Retry-After: ' . $windowSeconds);
+        header('Content-Type: application/json');
+        echo json_encode([
+            'error'             => 'rate_limit_exceeded',
+            'error_description' => 'Too many token requests. Maximum ' . $maxRequests . ' per minute.',
+        ], JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+
+    @file_put_contents($rateFile, json_encode($state), LOCK_EX);
+}
+
+/**
+ * SECURITY FIX (V-02 -- HIGH CVSS 7.5): Rate limit client registration.
+ *
+ * Enforces a maximum of 20 registrations per hour per IP address using
+ * WHMCS TransientData (DB-backed) with a file-based fallback.
+ * Prevents resource exhaustion from unauthenticated /register POST requests.
+ */
+function enforceRegistrationRateLimit(): void
+{
+    $maxRegistrations = 20;
+    $windowSeconds    = 3600; // 1 hour
+    $clientIp         = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+    $safeIp           = preg_replace('/[^a-f0-9.:]/', '_', $clientIp);
+    $cacheKey          = 'nt_mcp_reg_rl_' . $safeIp;
+
+    // Try WHMCS TransientData first (DB-backed, shared across workers)
+    try {
+        if (class_exists('\WHMCS\TransientData')) {
+            $data = \WHMCS\TransientData::getInstance()->retrieve($cacheKey);
+            if ($data === false || $data === null || $data === '') {
+                \WHMCS\TransientData::getInstance()->store($cacheKey, json_encode([
+                    'count' => 1,
+                    'window_start' => time(),
+                ]), $windowSeconds);
+                return;
+            }
+
+            $state = json_decode($data, true);
+            if (!is_array($state) || (time() - ($state['window_start'] ?? 0)) > $windowSeconds) {
+                \WHMCS\TransientData::getInstance()->store($cacheKey, json_encode([
+                    'count' => 1,
+                    'window_start' => time(),
+                ]), $windowSeconds);
+                return;
+            }
+
+            $state['count'] = ($state['count'] ?? 0) + 1;
+            if ($state['count'] > $maxRegistrations) {
+                http_response_code(429);
+                header('Retry-After: ' . $windowSeconds);
+                header('Content-Type: application/json');
+                echo json_encode([
+                    'error'             => 'rate_limit_exceeded',
+                    'error_description' => 'Too many client registrations. Maximum ' . $maxRegistrations . ' per hour.',
+                ], JSON_UNESCAPED_SLASHES);
+                exit;
+            }
+
+            \WHMCS\TransientData::getInstance()->store(
+                $cacheKey,
+                json_encode($state),
+                max(1, $windowSeconds - (time() - $state['window_start']))
+            );
+            return;
+        }
+    } catch (\Throwable $e) {
+        // Fall through to file-based limiter
+    }
+
+    // Fallback: file-based rate limiter
+    // SECURITY FIX (H-05 -- HIGH): Use app-local directory instead of shared /tmp
+    $rateDir = __DIR__ . '/data/rate';
+    if (!is_dir($rateDir)) {
+        @mkdir($rateDir, 0700, true);
+    }
+    $rateFile = $rateDir . '/reg_' . $safeIp . '.json';
+
+    $state = ['count' => 0, 'window_start' => time()];
+    if (file_exists($rateFile)) {
+        $raw = @file_get_contents($rateFile);
+        $decoded = $raw ? json_decode($raw, true) : null;
+        if (is_array($decoded) && (time() - ($decoded['window_start'] ?? 0)) <= $windowSeconds) {
+            $state = $decoded;
+        }
+    }
+
+    $state['count']++;
+    if ($state['count'] > $maxRegistrations) {
+        http_response_code(429);
+        header('Retry-After: ' . $windowSeconds);
+        header('Content-Type: application/json');
+        echo json_encode([
+            'error'             => 'rate_limit_exceeded',
+            'error_description' => 'Too many client registrations. Maximum ' . $maxRegistrations . ' per hour.',
+        ], JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+
+    @file_put_contents($rateFile, json_encode($state), LOCK_EX);
+}
 
 function oauthError(int $httpCode, string $error, string $description): void
 {

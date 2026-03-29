@@ -9,13 +9,19 @@ class ServiceTools
 {
     public function __construct(private readonly LocalApiClient $api) {}
 
-    #[McpTool(name: 'whmcs_list_services', description: 'Lista serviços/produtos ativos de um cliente')]
-    public function listServices(int $clientid = 0, string $status = ''): string
+    #[McpTool(name: 'whmcs_list_services', description: 'Lista serviços/produtos de um cliente (requer clientid)')]
+    public function listServices(int $clientid, string $status = ''): string
     {
-        $params = [];
-        if ($clientid > 0) $params['clientid'] = $clientid;
+        $params = ['clientid' => $clientid];
         if ($status !== '') $params['status'] = $status;
-        return json_encode($this->api->call('GetClientsProducts', $params), JSON_PRETTY_PRINT);
+        $result = $this->api->call('GetClientsProducts', $params);
+        if (isset($result['products']['product'])) {
+            foreach ($result['products']['product'] as &$p) {
+                unset($p['password']);
+            }
+            unset($p);
+        }
+        return json_encode($result, JSON_PRETTY_PRINT);
     }
 
     #[McpTool(name: 'whmcs_suspend_service', description: 'Suspende um serviço de hospedagem/servidor')]

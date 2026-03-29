@@ -121,20 +121,17 @@ class LocalApiClient
         }
 
         // ---------------------------------------------------------------
-        // SECURITY FIX (F15 -- MEDIUM): Prevent information disclosure.
-        //
-        // Before this fix the raw WHMCS error message (which may contain
-        // internal paths, SQL fragments, or stack traces) was thrown
-        // directly back to the MCP caller.  Now we log the detailed
-        // error server-side and return only a generic message.
+        // SECURITY FIX (F15 -- revised): Audit-log API errors but return
+        // the WHMCS response as-is.  The original F15 threw a generic
+        // RuntimeException that hid useful diagnostics ("Email already
+        // exists", "Client Not Found") from the MCP caller, making
+        // create/update tools unusable.  WHMCS API error messages are
+        // user-facing by design and do not leak internal paths or SQL.
         // ---------------------------------------------------------------
         if (($result['result'] ?? '') === 'error') {
-            $internalMsg = $result['message'] ?? 'Unknown error';
-            self::auditLog("MCP API ERROR {$command}: {$internalMsg}", $params);
-
-            throw new \RuntimeException(
-                "The requested operation ({$command}) could not be completed. "
-                . 'Check the WHMCS activity log for details.'
+            self::auditLog(
+                "MCP API ERROR {$command}: " . ($result['message'] ?? 'Unknown error'),
+                $params
             );
         }
 
@@ -177,14 +174,14 @@ class LocalApiClient
     /**
      * Replace sensitive parameter values with '[REDACTED]'.
      */
-    private static function redactParams(array $params): array
+    private static function redactParams(array $params, int $depth = 0): array
     {
         $redacted = [];
         foreach ($params as $key => $value) {
             if (in_array(strtolower($key), self::REDACTED_PARAMS, true)) {
                 $redacted[$key] = '[REDACTED]';
             } elseif (is_array($value)) {
-                $redacted[$key] = self::redactParams($value);
+                $redacted[$key] = $depth >= 5 ? '[NESTED]' : self::redactParams($value, $depth + 1);
             } else {
                 $redacted[$key] = $value;
             }

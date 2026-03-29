@@ -4,6 +4,7 @@ namespace NtMcp\Tools;
 
 use NtMcp\Whmcs\CapsuleClient;
 use PhpMcp\Server\Attributes\McpTool;
+use WHMCS\Database\Capsule;
 
 class CrmTools
 {
@@ -12,11 +13,28 @@ class CrmTools
     private const TABLE_FOLLOWUPS = 'mod_mgcrm_followups';
     private const TABLE_NOTES = 'mod_mgcrm_notes';
 
+    private static ?bool $crmAvailable = null;
+
     public function __construct(private readonly CapsuleClient $capsule) {}
+
+    private function ensureCrmAvailable(): void
+    {
+        if (self::$crmAvailable === null) {
+            self::$crmAvailable = Capsule::schema()->hasTable(self::TABLE_CONTACTS);
+        }
+        if (!self::$crmAvailable) {
+            throw new \RuntimeException(
+                'CRM ModulesGarden module is not installed. '
+                . 'Table "' . self::TABLE_CONTACTS . '" does not exist. '
+                . 'Install the module or remove CRM tools from the MCP server.'
+            );
+        }
+    }
 
     #[McpTool(name: 'whmcs_crm_list_contacts', description: 'Lista contatos/leads do CRM ModulesGarden')]
     public function listContacts(string $type = '', int $limit = 25, int $offset = 0): string
     {
+        $this->ensureCrmAvailable();
         $where = $type !== '' ? ['type' => $type] : [];
         return json_encode($this->capsule->select(self::TABLE_CONTACTS, $where, ['*'], $limit, $offset), JSON_PRETTY_PRINT);
     }
@@ -24,6 +42,7 @@ class CrmTools
     #[McpTool(name: 'whmcs_crm_get_contact', description: 'Obtém detalhes de um contato CRM')]
     public function getContact(int $id): string
     {
+        $this->ensureCrmAvailable();
         $contacts = $this->capsule->select(self::TABLE_CONTACTS, ['id' => $id], ['*'], 1);
         return json_encode($contacts[0] ?? null, JSON_PRETTY_PRINT);
     }
@@ -36,6 +55,7 @@ class CrmTools
         string $company = '',
         string $notes = ''
     ): string {
+        $this->ensureCrmAvailable();
         $id = $this->capsule->insert(self::TABLE_CONTACTS, [
             'type'    => 'lead',
             'name'    => $name,
@@ -65,6 +85,7 @@ class CrmTools
         string $status = '',
         string $stage = ''
     ): string {
+        $this->ensureCrmAvailable();
         $data = [];
         foreach (['name', 'email', 'phone', 'company', 'notes', 'status', 'stage'] as $field) {
             if ($$field !== '') {
@@ -83,6 +104,7 @@ class CrmTools
     #[McpTool(name: 'whmcs_crm_add_followup', description: 'Adiciona um follow-up a um contato CRM')]
     public function addFollowup(int $contactId, string $note, string $duedate): string
     {
+        $this->ensureCrmAvailable();
         $id = $this->capsule->insert(self::TABLE_FOLLOWUPS, [
             'contact_id' => $contactId,
             'note'       => $note,
@@ -95,6 +117,7 @@ class CrmTools
     #[McpTool(name: 'whmcs_crm_add_note', description: 'Adiciona uma nota a um contato CRM')]
     public function addNote(int $contactId, string $note): string
     {
+        $this->ensureCrmAvailable();
         $id = $this->capsule->insert(self::TABLE_NOTES, [
             'contact_id' => $contactId,
             'note'       => $note,
@@ -106,12 +129,14 @@ class CrmTools
     #[McpTool(name: 'whmcs_crm_list_followups', description: 'Lista follow-ups de um contato CRM')]
     public function listFollowups(int $contactId, int $limit = 25): string
     {
+        $this->ensureCrmAvailable();
         return json_encode($this->capsule->select(self::TABLE_FOLLOWUPS, ['contact_id' => $contactId], ['*'], $limit), JSON_PRETTY_PRINT);
     }
 
     #[McpTool(name: 'whmcs_crm_get_kanban', description: 'Retorna visão Kanban dos contatos agrupados por estágio')]
     public function getKanban(): string
     {
+        $this->ensureCrmAvailable();
         $contacts = $this->capsule->select(self::TABLE_CONTACTS, [], ['*'], 500);
         $kanban = [];
         foreach ($contacts as $contact) {
