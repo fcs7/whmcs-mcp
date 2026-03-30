@@ -116,22 +116,25 @@ final class AdminController
                 'message'   => $flashMessage,
                 'class'     => $flashClass,
                 'plaintext' => $flashPlaintext,
+                '_ts'       => time(),
             ];
-            $redirectUrl = self::addonUrl();
-            echo '<script>window.location.replace(' . json_encode($redirectUrl) . ');</script>';
+            $redirectUrl = self::addonUrl($vars);
+            echo '<script>window.location.replace(' . json_encode($redirectUrl, JSON_HEX_TAG | JSON_HEX_AMP) . ');</script>';
             return;
         }
 
-        // GET: read flash from session
+        // GET: read flash from session (expire after 30s to limit plaintext exposure)
         $flashPlaintext = '';
         $flashMessage   = '';
         $flashClass     = 'info';
         if (isset($_SESSION['nt_mcp_flash'])) {
-            $flash          = $_SESSION['nt_mcp_flash'];
-            $flashMessage   = $flash['message'] ?? '';
-            $flashClass     = $flash['class'] ?? 'info';
-            $flashPlaintext = $flash['plaintext'] ?? '';
+            $flash = $_SESSION['nt_mcp_flash'];
             unset($_SESSION['nt_mcp_flash']);
+            if (time() - ($flash['_ts'] ?? 0) <= 30) {
+                $flashMessage   = $flash['message'] ?? '';
+                $flashClass     = $flash['class'] ?? 'info';
+                $flashPlaintext = $flash['plaintext'] ?? '';
+            }
         }
 
         $csrf = CsrfProtection::token();
@@ -184,8 +187,11 @@ final class AdminController
         require dirname(__DIR__, 2) . '/templates/admin/dashboard.php';
     }
 
-    private static function addonUrl(): string
+    private static function addonUrl(array $vars = []): string
     {
+        if (!empty($vars['modulelink'])) {
+            return $vars['modulelink'];
+        }
         return SystemUrl::resolve() . '/admin/addonmodules.php?module=nt_mcp';
     }
 }
