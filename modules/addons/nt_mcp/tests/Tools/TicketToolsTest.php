@@ -113,6 +113,60 @@ class TicketToolsTest extends TestCase
         $this->assertSame(3, $capturedParams['flag']);
     }
 
+    public function test_reply_ticket_omits_status_by_default(): void
+    {
+        $capturedParams = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$capturedParams) {
+            $capturedParams = $params;
+            return ['result' => 'success'];
+        });
+
+        $tools->replyTicket(10, 'test');
+
+        $this->assertArrayNotHasKey('status', $capturedParams);
+    }
+
+    public function test_reply_ticket_sends_status_when_provided(): void
+    {
+        $capturedParams = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$capturedParams) {
+            $capturedParams = $params;
+            return ['result' => 'success'];
+        });
+
+        $tools->replyTicket(10, 'test', status: 'Answered');
+
+        $this->assertArrayHasKey('status', $capturedParams);
+        $this->assertSame('Answered', $capturedParams['status']);
+    }
+
+    public function test_update_ticket_sends_flag_zero_to_unflag(): void
+    {
+        $capturedParams = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$capturedParams) {
+            $capturedParams = $params;
+            return ['result' => 'success'];
+        });
+
+        $tools->updateTicket(10, flag: 0);
+
+        $this->assertArrayHasKey('flag', $capturedParams);
+        $this->assertSame(0, $capturedParams['flag']);
+    }
+
+    public function test_update_ticket_omits_flag_when_null(): void
+    {
+        $capturedParams = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$capturedParams) {
+            $capturedParams = $params;
+            return ['result' => 'success'];
+        });
+
+        $tools->updateTicket(10);
+
+        $this->assertArrayNotHasKey('flag', $capturedParams);
+    }
+
     public function test_list_tickets_sends_deptid_and_limitstart(): void
     {
         $capturedParams = null;

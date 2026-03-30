@@ -91,6 +91,53 @@ class BillingToolsTest extends TestCase
         $this->assertSame('Partial credit applied', $capturedParams['notes']);
     }
 
+    public function test_update_invoice_sends_credit_zero(): void
+    {
+        $capturedParams = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$capturedParams) {
+            $capturedParams = $params;
+            return ['result' => 'success'];
+        });
+
+        $tools->updateInvoice(invoiceid: 5, credit: 0.0);
+
+        $this->assertArrayHasKey('credit', $capturedParams);
+        $this->assertSame(0.0, $capturedParams['credit']);
+    }
+
+    public function test_update_invoice_omits_credit_when_null(): void
+    {
+        $capturedParams = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$capturedParams) {
+            $capturedParams = $params;
+            return ['result' => 'success'];
+        });
+
+        $tools->updateInvoice(invoiceid: 5);
+
+        $this->assertArrayNotHasKey('credit', $capturedParams);
+    }
+
+    public function test_add_payment_sends_negative_fees(): void
+    {
+        $capturedParams = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$capturedParams) {
+            $capturedParams = $params;
+            return ['result' => 'success'];
+        });
+
+        $tools->addPayment(
+            invoiceid: 10,
+            transid: 'TX999',
+            amount: 100.0,
+            gateway: 'banktransfer',
+            fees: -5.0
+        );
+
+        $this->assertArrayHasKey('fees', $capturedParams);
+        $this->assertSame(-5.0, $capturedParams['fees']);
+    }
+
     public function test_add_payment_sends_date_and_noemail(): void
     {
         $capturedParams = null;
