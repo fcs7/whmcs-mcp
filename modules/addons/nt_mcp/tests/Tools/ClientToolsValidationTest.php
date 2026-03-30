@@ -110,4 +110,53 @@ class ClientToolsValidationTest extends TestCase
 
         $this->assertSame(['clientid' => 42, 'firstname' => 'Jane'], $capturedParams);
     }
+
+    public function test_update_client_sends_customfields_encoded(): void
+    {
+        $capturedParams = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$capturedParams) {
+            $capturedParams = $params;
+            return ['result' => 'success'];
+        });
+
+        $tools->updateClient(42, customfields: '{"4":"CPF"}');
+
+        $this->assertSame(base64_encode(json_encode(['4' => 'CPF'])), $capturedParams['customfields']);
+    }
+
+    public function test_update_client_rejects_invalid_customfields(): void
+    {
+        $tools = $this->makeTools();
+
+        $this->expectException(\InvalidArgumentException::class);
+
+        $tools->updateClient(42, customfields: 'not-json');
+    }
+
+    public function test_create_client_sends_companyname_and_noemail(): void
+    {
+        $capturedParams = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$capturedParams) {
+            $capturedParams = $params;
+            return ['result' => 'success', 'clientid' => 1];
+        });
+
+        $tools->createClient('John', 'Doe', 'john@example.com', 'pass123', companyname: 'ACME', noemail: true);
+
+        $this->assertSame('ACME', $capturedParams['companyname']);
+        $this->assertTrue($capturedParams['noemail']);
+    }
+
+    public function test_list_clients_sends_status_filter(): void
+    {
+        $capturedParams = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$capturedParams) {
+            $capturedParams = $params;
+            return ['result' => 'success', 'clients' => []];
+        });
+
+        $tools->listClients(status: 'Active');
+
+        $this->assertSame('Active', $capturedParams['status']);
+    }
 }
