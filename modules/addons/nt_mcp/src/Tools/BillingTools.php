@@ -25,8 +25,19 @@ class BillingTools
     }
 
     #[McpTool(name: 'whmcs_create_invoice', description: 'Cria uma nova fatura manualmente')]
-    public function createInvoice(int $userid, string $date, array $itemdescription, array $itemamount): string
-    {
+    public function createInvoice(
+        int $userid,
+        string $date,
+        array $itemdescription,
+        array $itemamount,
+        string $status = '',
+        string $duedate = '',
+        string $paymentmethod = '',
+        bool $sendinvoice = false,
+        string $notes = '',
+        bool $draft = false,
+        array $itemtaxed = []
+    ): string {
         $params = ['userid' => $userid, 'date' => $date];
         foreach ($itemdescription as $i => $desc) {
             $params["itemdescription[{$i}]"] = (string) $desc;
@@ -34,21 +45,56 @@ class BillingTools
         foreach ($itemamount as $i => $amount) {
             $params["itemamount[{$i}]"] = (float) $amount;
         }
+        foreach ($itemtaxed as $i => $taxed) {
+            $params["itemtaxed[{$i}]"] = $taxed ? 1 : 0;
+        }
+        if ($status !== '') $params['status'] = $status;
+        if ($duedate !== '') $params['duedate'] = $duedate;
+        if ($paymentmethod !== '') $params['paymentmethod'] = $paymentmethod;
+        if ($sendinvoice) $params['sendinvoice'] = true;
+        if ($notes !== '') $params['notes'] = $notes;
+        if ($draft) $params['draft'] = true;
         return json_encode($this->api->call('CreateInvoice', $params), JSON_PRETTY_PRINT);
     }
 
     #[McpTool(name: 'whmcs_add_payment', description: 'Registra pagamento em uma fatura')]
-    public function addPayment(int $invoiceid, string $transid, float $amount, string $gateway): string
-    {
-        return json_encode($this->api->call('AddInvoicePayment', compact('invoiceid', 'transid', 'amount', 'gateway')), JSON_PRETTY_PRINT);
+    public function addPayment(
+        int $invoiceid,
+        string $transid,
+        float $amount,
+        string $gateway,
+        string $date = '',
+        float $fees = 0.0,
+        bool $noemail = false
+    ): string {
+        $params = compact('invoiceid', 'transid', 'amount', 'gateway');
+        if ($date !== '') $params['date'] = $date;
+        if ($fees > 0.0) $params['fees'] = $fees;
+        if ($noemail) $params['noemail'] = true;
+        return json_encode($this->api->call('AddInvoicePayment', $params), JSON_PRETTY_PRINT);
     }
 
     #[McpTool(name: 'whmcs_update_invoice', description: 'Atualiza status ou dados de uma fatura')]
-    public function updateInvoice(int $invoiceid, string $status = '', string $duedate = ''): string
-    {
+    public function updateInvoice(
+        int $invoiceid,
+        string $status = '',
+        string $duedate = '',
+        string $paymentmethod = '',
+        string $notes = '',
+        string $date = '',
+        float $credit = 0.0,
+        bool $publish = false,
+        bool $publishandsendemail = false
+    ): string {
         $params = ['invoiceid' => $invoiceid];
         if ($status !== '') $params['status'] = $status;
         if ($duedate !== '') $params['duedate'] = $duedate;
+        if ($paymentmethod !== '') $params['paymentmethod'] = $paymentmethod;
+        if ($notes !== '') $params['notes'] = $notes;
+        if ($date !== '') $params['date'] = $date;
+        if ($credit > 0.0) $params['credit'] = $credit;
+        if ($publish) $params['publish'] = true;
+        if ($publishandsendemail) $params['publishandsendemail'] = true;
         return json_encode($this->api->call('UpdateInvoice', $params), JSON_PRETTY_PRINT);
     }
 
