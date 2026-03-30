@@ -16,10 +16,16 @@ class ClientTools
     public function listClients(
         string $search = '',
         int $limitstart = 0,
-        int $limitnum = 25
+        int $limitnum = 25,
+        string $status = '',
+        string $sorting = '',
+        string $orderby = ''
     ): string {
         $params = ['limitstart' => $limitstart, 'limitnum' => $limitnum];
         if ($search !== '') $params['search'] = $search;
+        if ($status !== '') $params['status'] = $status;
+        if ($sorting !== '') $params['sorting'] = $sorting;
+        if ($orderby !== '') $params['orderby'] = $orderby;
 
         return json_encode($this->api->call('GetClients', $params), JSON_PRETTY_PRINT);
     }
@@ -51,35 +57,24 @@ class ClientTools
         string $postcode = '',
         string $country = 'BR',
         string $phonenumber = '',
-        string $customfields = ''
+        string $customfields = '',
+        string $companyname = '',
+        string $address2 = '',
+        string $notes = '',
+        string $tax_id = '',
+        bool $noemail = false
     ): string {
         $params = compact('firstname', 'lastname', 'email', 'password2');
-        foreach (['address1', 'city', 'state', 'postcode', 'country', 'phonenumber'] as $field) {
+        foreach (['address1', 'city', 'state', 'postcode', 'country', 'phonenumber', 'companyname', 'address2', 'notes', 'tax_id'] as $field) {
             if ($$field !== '') {
                 $params[$field] = $$field;
             }
         }
         if ($customfields !== '') {
-            $decoded = json_decode($customfields, true);
-            if (!is_array($decoded)) {
-                throw new \InvalidArgumentException(
-                    'customfields must be a valid JSON object, got: ' . json_last_error_msg()
-                );
-            }
-            // SECURITY FIX (S2A-02): Validate custom fields to prevent oversized
-            // payloads and non-scalar values.  Use json_encode instead of serialize
-            // to avoid latent deserialization surface in the WHMCS processing pipeline.
-            if (count($decoded) > 50 || strlen($customfields) > 8192) {
-                throw new \InvalidArgumentException('customfields exceeds size limits (max 50 fields, 8KB)');
-            }
-            foreach ($decoded as $key => $value) {
-                if (!is_scalar($value) && $value !== null) {
-                    throw new \InvalidArgumentException(
-                        'customfields values must be scalars, got non-scalar for key: ' . $key
-                    );
-                }
-            }
-            $params['customfields'] = base64_encode(json_encode($decoded));
+            $params['customfields'] = self::validateAndEncodeCustomFields($customfields);
+        }
+        if ($noemail) {
+            $params['noemail'] = true;
         }
         return json_encode($this->api->call('AddClient', $params), JSON_PRETTY_PRINT);
     }
@@ -103,7 +98,12 @@ class ClientTools
         string $postcode = '',
         string $country = '',
         string $phonenumber = '',
-        string $companyname = ''
+        string $companyname = '',
+        string $notes = '',
+        string $language = '',
+        string $paymentmethod = '',
+        int $groupid = 0,
+        string $customfields = ''
     ): string {
         $params = ['clientid' => $clientid];
 
@@ -112,13 +112,46 @@ class ClientTools
             'firstname', 'lastname', 'email',
             'address1', 'address2', 'city', 'state', 'postcode',
             'country', 'phonenumber', 'companyname',
+            'notes', 'language', 'paymentmethod',
         ] as $field) {
             if ($$field !== '') {
                 $params[$field] = $$field;
             }
         }
+        if ($groupid > 0) {
+            $params['groupid'] = $groupid;
+        }
+        if ($customfields !== '') {
+            $params['customfields'] = self::validateAndEncodeCustomFields($customfields);
+        }
 
         return json_encode($this->api->call('UpdateClient', $params), JSON_PRETTY_PRINT);
+    }
+
+    /**
+     * SECURITY FIX (S2A-02): Validate custom fields to prevent oversized
+     * payloads and non-scalar values.  Use json_encode instead of serialize
+     * to avoid latent deserialization surface in the WHMCS processing pipeline.
+     */
+    private static function validateAndEncodeCustomFields(string $customfields): string
+    {
+        $decoded = json_decode($customfields, true);
+        if (!is_array($decoded)) {
+            throw new \InvalidArgumentException(
+                'customfields must be a valid JSON object, got: ' . json_last_error_msg()
+            );
+        }
+        if (count($decoded) > 50 || strlen($customfields) > 8192) {
+            throw new \InvalidArgumentException('customfields exceeds size limits (max 50 fields, 8KB)');
+        }
+        foreach ($decoded as $key => $value) {
+            if (!is_scalar($value) && $value !== null) {
+                throw new \InvalidArgumentException(
+                    'customfields values must be scalars, got non-scalar for key: ' . $key
+                );
+            }
+        }
+        return base64_encode(json_encode($decoded));
     }
 
     #[McpTool(name: 'whmcs_close_client', description: 'Fecha/cancela a conta de um cliente')]
