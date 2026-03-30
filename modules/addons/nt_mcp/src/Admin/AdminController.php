@@ -15,6 +15,11 @@ final class AdminController
 {
     public function handle(array $vars): void
     {
+        // Ensure session is started (needed for flash messages before CSRF token call)
+        if (session_status() !== PHP_SESSION_ACTIVE) {
+            @session_start();
+        }
+
         $e = static fn(string $v): string => htmlspecialchars($v, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         $mcpUrl = SystemUrl::mcpUrl();
 
@@ -36,12 +41,12 @@ final class AdminController
         $tokenCreated = trim(\WHMCS\Config\Setting::getValue('nt_mcp_bearer_token_created') ?? '');
         $tokenHash    = trim(\WHMCS\Config\Setting::getValue('nt_mcp_bearer_token') ?? '');
 
-        // Handle POST actions
-        $flashPlaintext = '';
-        $flashMessage   = '';
-        $flashClass     = 'info';
-
+        // Handle POST actions — PRG via session flash + JS redirect
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            $flashMessage   = '';
+            $flashClass     = 'info';
+            $flashPlaintext = '';
+
             $csrfOk = CsrfProtection::verify($_POST['_csrf_token'] ?? '');
 
             if (!$csrfOk) {
@@ -54,9 +59,6 @@ final class AdminController
                 \WHMCS\Config\Setting::setValue('nt_mcp_bearer_token_admin', $currentAdminName);
                 \WHMCS\Config\Setting::setValue('nt_mcp_bearer_token_created', date('Y-m-d H:i:s'));
                 \WHMCS\Config\Setting::setValue('nt_mcp_admin_user', $currentAdminName);
-                $tokenHash    = $hash;
-                $tokenAdmin   = $currentAdminName;
-                $tokenCreated = date('Y-m-d H:i:s');
                 $flashPlaintext = $newToken;
                 $flashMessage   = 'Token regenerado com sucesso. Copie-o agora; ele nao sera exibido novamente.';
                 $flashClass     = 'success';
@@ -108,6 +110,28 @@ final class AdminController
                     }
                 }
             }
+
+            // Store flash in session and redirect via JS (headers already sent in WHMCS _output)
+            $_SESSION['nt_mcp_flash'] = [
+                'message'   => $flashMessage,
+                'class'     => $flashClass,
+                'plaintext' => $flashPlaintext,
+            ];
+            $redirectUrl = self::addonUrl();
+            echo '<script>window.location.replace(' . json_encode($redirectUrl) . ');</script>';
+            return;
+        }
+
+        // GET: read flash from session
+        $flashPlaintext = '';
+        $flashMessage   = '';
+        $flashClass     = 'info';
+        if (isset($_SESSION['nt_mcp_flash'])) {
+            $flash          = $_SESSION['nt_mcp_flash'];
+            $flashMessage   = $flash['message'] ?? '';
+            $flashClass     = $flash['class'] ?? 'info';
+            $flashPlaintext = $flash['plaintext'] ?? '';
+            unset($_SESSION['nt_mcp_flash']);
         }
 
         $csrf = CsrfProtection::token();
@@ -158,5 +182,10 @@ final class AdminController
 
         // Render template
         require dirname(__DIR__, 2) . '/templates/admin/dashboard.php';
+    }
+
+    private static function addonUrl(): string
+    {
+        return SystemUrl::resolve() . '/admin/addonmodules.php?module=nt_mcp';
     }
 }

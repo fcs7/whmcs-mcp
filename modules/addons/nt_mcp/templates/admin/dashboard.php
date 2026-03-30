@@ -13,19 +13,6 @@ $escapedCsrf     = $e($csrf);
 $escapedFlash    = $e($flashMessage);
 $escapedFlashCls = $e($flashClass);
 
-// Static token status
-if ($tokenHash !== '') {
-    $staticInfo = 'Ativo';
-    if ($tokenAdmin !== '') {
-        $staticInfo .= ' &mdash; vinculado a <strong>' . $e($tokenAdmin) . '</strong>';
-    }
-    if ($tokenCreated !== '') {
-        $staticInfo .= ' (criado em ' . $e($tokenCreated) . ')';
-    }
-} else {
-    $staticInfo = '<span class="text-danger">Não configurado</span>';
-}
-
 // Token display after regeneration
 $tokenSection = '';
 if ($flashPlaintext !== '') {
@@ -130,16 +117,46 @@ $revokeAllBtn = $activeCount > 0
 
         <hr>
         <h4>Bearer Token Estático</h4>
-        <p><?= $staticInfo ?></p>
         <p class="text-muted"><small>O hash SHA-256 é armazenado no banco. O token plaintext é exibido apenas uma vez ao regenerar.</small></p>
         <?= $tokenSection ?>
-        <form method="post" style="margin-bottom:20px;">
-            <input type="hidden" name="_csrf_token" value="<?= $escapedCsrf ?>">
-            <button type="submit" name="regenerate_token" class="btn btn-warning"
-                    onclick="return confirm('Tem certeza? O token atual será invalidado.');">
-                Regenerar Token
-            </button>
-        </form>
+        <table class="table table-bordered table-striped table-condensed" style="margin-bottom:20px;">
+            <thead>
+                <tr>
+                    <th>Admin</th>
+                    <th>Criado em</th>
+                    <th>Status</th>
+                    <th>Ações</th>
+                </tr>
+            </thead>
+            <tbody>
+<?php if ($tokenHash !== ''): ?>
+                <tr>
+                    <td><?= $e($tokenAdmin ?: '—') ?></td>
+                    <td><?= $e($tokenCreated ?: '—') ?></td>
+                    <td><span class="label label-success">Ativo</span></td>
+                    <td>
+                        <form method="post" style="display:inline;">
+                            <input type="hidden" name="_csrf_token" value="<?= $escapedCsrf ?>">
+                            <button type="submit" name="regenerate_token" class="btn btn-xs btn-warning"
+                                    onclick="return confirm('Tem certeza? O token atual será invalidado.');">Regenerar</button>
+                        </form>
+                    </td>
+                </tr>
+<?php else: ?>
+                <tr>
+                    <td colspan="4" class="text-center text-muted">Nenhum token configurado.</td>
+                </tr>
+                <tr>
+                    <td colspan="4" class="text-center">
+                        <form method="post" style="display:inline;">
+                            <input type="hidden" name="_csrf_token" value="<?= $escapedCsrf ?>">
+                            <button type="submit" name="regenerate_token" class="btn btn-xs btn-success">Gerar Token</button>
+                        </form>
+                    </td>
+                </tr>
+<?php endif; ?>
+            </tbody>
+        </table>
 
         <hr>
         <h4>Tokens OAuth Ativos <span class="badge"><?= $activeCount ?></span> <?= $revokeAllBtn ?></h4>
