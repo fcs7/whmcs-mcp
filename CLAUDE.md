@@ -11,7 +11,12 @@ composer install --ignore-platform-req=ext-iconv
 ./vendor/bin/phpunit --testdox                    # 47 tests, 73 assertions
 composer audit                                    # check dependency CVEs
 grep -c '#\[McpTool\]' src/Tools/*.php   # 54 tools total
-# Deploy via FTP (senha interativa — from modules/addons/nt_mcp/)
+# Deploy pipeline (from repo root)
+./scripts/deploy.sh prod   # → novo.ntweb.com.br (producao)
+./scripts/deploy.sh dev    # → desenv.ntweb.com.br (desenvolvimento)
+./scripts/verify.sh prod   # verificacao pos-deploy
+MCP_TOKEN=xxx ./scripts/verify.sh prod  # verificacao com teste MCP autenticado
+# Deploy manual via FTP (senha interativa — from modules/addons/nt_mcp/)
 lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror -R --only-newer --exclude .git/ --exclude vendor/ --exclude .phpunit.cache/ --exclude .full-review/ --exclude .security-hardening/ --exclude .security-hardening-archive-20260329/ --exclude data/ . /httpdocs/modules/addons/nt_mcp/; bye" desenv.ntweb.com.br
 # Verify: download prod and diff against git
 lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/ --exclude .git/ --exclude data/ --exclude .phpunit.cache/ /httpdocs/modules/addons/nt_mcp/ /tmp/nt_mcp_prod_check/; bye" desenv.ntweb.com.br && for f in $(find . -name '*.php' -not -path './vendor/*' | sort); do diff -q "$f" "/tmp/nt_mcp_prod_check/$f" 2>/dev/null && echo "OK $f" || echo "DIFF $f"; done; rm -rf /tmp/nt_mcp_prod_check
@@ -78,6 +83,7 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 
 ## Gotchas
 
+- **Autoloader order CRÍTICO** — `vendor/autoload.php` DEVE ser carregado ANTES de `init.php` em todo entry point (`mcp.php`, `oauth.php`). WHMCS carrega `psr/log` v1 (params sem type hints); nosso vendor tem v3 (typed `string|\Stringable`). Se `init.php` carrega primeiro, v1 é registrada e qualquer classe v3 (incluindo `NullLogger` dentro de `php-mcp/server`) causa **fatal declaration compatibility** silencioso — sem output, sem shutdown handler, sem log.
 - **Admin session path-scoping** — cookies admin só são enviados para `/admin/*`, não funcionam em `/modules/addons/`
 - **CLIENTAREA vs ADMINAREA** — `define('CLIENTAREA', true)` carrega sessão cliente; para sessão admin usar redirect ao painel admin
 - **Addon access control** — cada addon precisa permissão explícita por role group (Setup > Addon Modules > Configure > Access Control)

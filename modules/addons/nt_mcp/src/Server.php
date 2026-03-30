@@ -5,7 +5,6 @@ namespace NtMcp;
 use PhpMcp\Server\Server as McpServer;
 use PhpMcp\Server\Defaults\ArrayConfigurationRepository;
 use PhpMcp\Server\Defaults\FileCache;
-use Psr\Log\NullLogger;
 use PhpMcp\Server\Transports\HttpTransportHandler;
 use PhpMcp\Server\Contracts\ConfigurationRepositoryInterface;
 use Psr\SimpleCache\CacheInterface;
@@ -133,14 +132,30 @@ class Server
 
             $cacheDir = __DIR__ . '/../data/cache';
             $container->set(CacheInterface::class, new FileCache($cacheDir . '/mcp_state.json'));
-            $container->set(LoggerInterface::class, new NullLogger());
+
+            // WHMCS preloads Psr\Log\LoggerInterface v1 (untyped params).
+            // psr/log v3 NullLogger has typed params (string|\Stringable) which
+            // causes a fatal declaration compatibility error on PHP 8.1.
+            // Anonymous class with untyped params is compatible with both versions.
+            $container->set(LoggerInterface::class, new class implements LoggerInterface {
+                public function emergency($message, array $context = []): void {}
+                public function alert($message, array $context = []): void {}
+                public function critical($message, array $context = []): void {}
+                public function error($message, array $context = []): void {}
+                public function warning($message, array $context = []): void {}
+                public function notice($message, array $context = []): void {}
+                public function info($message, array $context = []): void {}
+                public function debug($message, array $context = []): void {}
+                public function log($level, $message, array $context = []): void {}
+            });
+
             $container->set(ConfigurationRepositoryInterface::class, $config);
 
-            $server = McpServer::make()
-                ->withContainer($container)
-                ->withConfig($config)
-                ->withBasePath(__DIR__)
-                ->withScanDirectories(['Tools']);
+            $server = McpServer::make();
+            $server = $server->withContainer($container);
+            $server = $server->withConfig($config);
+            $server = $server->withBasePath(__DIR__);
+            $server = $server->withScanDirectories(['Tools']);
 
             $server->discover();
 

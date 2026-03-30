@@ -7,12 +7,14 @@
  * Rate limiting, security headers, and audit logging applied at this layer.
  */
 
-// 1. Inicializar WHMCS (3 niveis: addons/nt_mcp -> modules -> whmcs root)
+// 1. Autoload do Composer PRIMEIRO — garante que psr/log v3 e demais
+//    PSR packages do addon sejam registrados antes do WHMCS carregar
+//    suas versões v1, evitando fatal "declaration compatibility" errors.
+require_once __DIR__ . '/vendor/autoload.php';
+
+// 2. Inicializar WHMCS (3 niveis: addons/nt_mcp -> modules -> whmcs root)
 define('CLIENTAREA', true);
 require_once __DIR__ . '/../../../init.php';
-
-// 2. Autoload do Composer (depois do WHMCS para evitar conflitos)
-require_once __DIR__ . '/vendor/autoload.php';
 
 use NtMcp\Auth\BearerAuth;
 use NtMcp\Http\TlsEnforcer;

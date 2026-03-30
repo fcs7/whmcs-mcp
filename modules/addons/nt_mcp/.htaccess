@@ -34,14 +34,42 @@
 # ---------------------------------------------------------------
 # Deny direct access to protected directories
 # ---------------------------------------------------------------
-# These are enforced by per-directory .htaccess as well (defense-in-depth),
-# but we add a RewriteRule layer here as a belt-and-suspenders measure.
+# Layer 1: mod_rewrite (if available)
 <IfModule mod_rewrite.c>
     RewriteEngine On
-
-    # Block direct access to src/, vendor/, tests/, data/, .phpunit.cache/
     RewriteRule ^(src|vendor|tests|data|\.phpunit\.cache)(/|$) - [F,L]
 </IfModule>
+
+# Layer 2: mod_alias RedirectMatch (fallback if mod_rewrite unavailable)
+# Returns 403 for any request to protected directories.
+<IfModule !mod_rewrite.c>
+    <IfModule mod_alias.c>
+        RedirectMatch 403 ^.*/nt_mcp/(src|vendor|tests|data)/
+    </IfModule>
+</IfModule>
+
+# Layer 3: Whitelist approach — only allow specific PHP entry points.
+# This is the strongest protection: deny everything, then allow only mcp.php,
+# oauth.php, and nt_mcp.php. Works even if mod_rewrite and mod_alias fail.
+<FilesMatch "\.php$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order deny,allow
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+<FilesMatch "^(mcp|oauth|nt_mcp)\.php$">
+    <IfModule mod_authz_core.c>
+        Require all granted
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Allow from all
+    </IfModule>
+</FilesMatch>
 
 # ---------------------------------------------------------------
 # Disable directory listings
