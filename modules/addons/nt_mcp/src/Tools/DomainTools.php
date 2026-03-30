@@ -10,18 +10,26 @@ class DomainTools
     public function __construct(private readonly LocalApiClient $api) {}
 
     #[McpTool(name: 'whmcs_list_domains', description: 'Lista domínios registrados no WHMCS')]
-    public function listDomains(int $clientid = 0, string $status = ''): string
+    public function listDomains(int $clientid = 0, string $status = '', int $limitnum = 25, int $limitstart = 0, int $domainid = 0): string
     {
-        $params = [];
+        $params = ['limitnum' => $limitnum];
         if ($clientid > 0) $params['clientid'] = $clientid;
         if ($status !== '') $params['status'] = $status;
+        if ($limitstart > 0) $params['limitstart'] = $limitstart;
+        if ($domainid > 0) $params['domainid'] = $domainid;
         return json_encode($this->api->call('GetClientsDomains', $params), JSON_PRETTY_PRINT);
     }
 
     #[McpTool(name: 'whmcs_register_domain', description: 'Registra um novo domínio')]
-    public function registerDomain(int $clientid, string $domain, int $regperiod = 1, string $nameserver1 = '', string $nameserver2 = ''): string
+    public function registerDomain(int $clientid, string $domain, int $regperiod = 1, string $nameserver1 = '', string $nameserver2 = '', int $domainid = 0): string
     {
-        return json_encode($this->api->call('DomainRegister', compact('clientid', 'domain', 'regperiod', 'nameserver1', 'nameserver2')), JSON_PRETTY_PRINT);
+        $params = ['regperiod' => $regperiod];
+        if ($domain !== '') $params['domain'] = $domain;
+        if ($clientid > 0) $params['clientid'] = $clientid;
+        if ($domainid > 0) $params['domainid'] = $domainid;
+        if ($nameserver1 !== '') $params['nameserver1'] = $nameserver1;
+        if ($nameserver2 !== '') $params['nameserver2'] = $nameserver2;
+        return json_encode($this->api->call('DomainRegister', $params), JSON_PRETTY_PRINT);
     }
 
     #[McpTool(name: 'whmcs_renew_domain', description: 'Renova o registro de um domínio')]

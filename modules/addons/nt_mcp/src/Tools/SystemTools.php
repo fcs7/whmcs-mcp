@@ -16,14 +16,21 @@ class SystemTools
     }
 
     #[McpTool(name: 'whmcs_send_email', description: 'Envia um email usando template do WHMCS')]
-    public function sendEmail(int $id, string $messagename, string $customtype = 'general'): string
+    public function sendEmail(int $id, string $messagename, string $customtype = 'general', string $customsubject = '', string $customvars = ''): string
     {
-        return json_encode($this->api->call('SendEmail', compact('id', 'messagename', 'customtype')), JSON_PRETTY_PRINT);
+        $params = compact('id', 'messagename', 'customtype');
+        if ($customsubject !== '') $params['customsubject'] = $customsubject;
+        if ($customvars !== '') $params['customvars'] = $customvars;
+        return json_encode($this->api->call('SendEmail', $params), JSON_PRETTY_PRINT);
     }
 
     #[McpTool(name: 'whmcs_get_activity_log', description: 'Obtém log de atividades do sistema')]
-    public function getActivityLog(int $limitnum = 25, int $limitstart = 0): string
+    public function getActivityLog(int $limitnum = 25, int $limitstart = 0, string $user = '', string $description = '', string $date = ''): string
     {
-        return json_encode($this->api->call('GetActivityLog', compact('limitnum', 'limitstart')), JSON_PRETTY_PRINT);
+        $params = compact('limitnum', 'limitstart');
+        if ($user !== '') $params['user'] = $user;
+        if ($description !== '') $params['description'] = $description;
+        if ($date !== '') $params['date'] = $date;
+        return json_encode($this->api->call('GetActivityLog', $params), JSON_PRETTY_PRINT);
     }
 }

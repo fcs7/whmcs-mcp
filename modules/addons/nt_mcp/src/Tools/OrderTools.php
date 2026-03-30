@@ -10,9 +10,10 @@ class OrderTools
     public function __construct(private readonly LocalApiClient $api) {}
 
     #[McpTool(name: 'whmcs_list_orders', description: 'Lista pedidos com filtros opcionais')]
-    public function listOrders(string $status = '', int $clientid = 0, int $limitnum = 25): string
+    public function listOrders(string $status = '', int $clientid = 0, int $limitnum = 25, int $limitstart = 0): string
     {
         $params = ['limitnum' => $limitnum];
+        if ($limitstart > 0) $params['limitstart'] = $limitstart;
         if ($status !== '') $params['status'] = $status;
         if ($clientid > 0) $params['userid'] = $clientid;
         return json_encode($this->api->call('GetOrders', $params), JSON_PRETTY_PRINT);
@@ -25,12 +26,15 @@ class OrderTools
     }
 
     #[McpTool(name: 'whmcs_accept_order', description: 'Aceita um pedido pendente e provisiona os serviços')]
-    public function acceptOrder(int $orderid, bool $sendEmail = true): string
+    public function acceptOrder(int $orderid, bool $sendEmail = true, bool $autosetup = false, int $serverid = 0): string
     {
-        return json_encode($this->api->call('AcceptOrder', [
+        $params = [
             'orderid' => $orderid,
             'sendemail' => $sendEmail ? 'true' : 'false',
-        ]), JSON_PRETTY_PRINT);
+        ];
+        if ($autosetup) $params['autosetup'] = true;
+        if ($serverid > 0) $params['serverid'] = $serverid;
+        return json_encode($this->api->call('AcceptOrder', $params), JSON_PRETTY_PRINT);
     }
 
     #[McpTool(name: 'whmcs_cancel_order', description: 'Cancela um pedido')]

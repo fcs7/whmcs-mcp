@@ -37,13 +37,15 @@ class ProjectManagerTools
         int $userid = 0,
         string $status = '',
         string $duedate = '',
-        string $notes = ''
+        string $notes = '',
+        string $ticketids = ''
     ): string {
         $params = ['title' => $title, 'adminid' => $adminid];
         if ($userid > 0) $params['userid'] = $userid;
         if ($status !== '') $params['status'] = $status;
         if ($duedate !== '') $params['duedate'] = $duedate;
         if ($notes !== '') $params['notes'] = $notes;
+        if ($ticketids !== '') $params['ticketids'] = $ticketids;
         return json_encode($this->api->call('CreateProject', $params), JSON_PRETTY_PRINT);
     }
 
