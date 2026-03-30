@@ -41,6 +41,9 @@ class DomainTools
     #[McpTool(name: 'whmcs_update_nameservers', description: 'Atualiza nameservers de um domínio')]
     public function updateNameservers(int $domainid, string $ns1, string $ns2, string $ns3 = '', string $ns4 = ''): string
     {
-        return json_encode($this->api->call('DomainUpdateNameservers', array_filter(compact('domainid', 'ns1', 'ns2', 'ns3', 'ns4'))), JSON_PRETTY_PRINT);
+        $params = ['domainid' => $domainid, 'ns1' => $ns1, 'ns2' => $ns2];
+        if ($ns3 !== '') $params['ns3'] = $ns3;
+        if ($ns4 !== '') $params['ns4'] = $ns4;
+        return json_encode($this->api->call('DomainUpdateNameservers', $params), JSON_PRETTY_PRINT);
     }
 }

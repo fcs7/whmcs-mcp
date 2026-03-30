@@ -69,7 +69,7 @@ class BillingTools
     ): string {
         $params = compact('invoiceid', 'transid', 'amount', 'gateway');
         if ($date !== '') $params['date'] = $date;
-        if ($fees > 0.0) $params['fees'] = $fees;
+        if ($fees != 0.0) $params['fees'] = $fees;
         if ($noemail) $params['noemail'] = true;
         return json_encode($this->api->call('AddInvoicePayment', $params), JSON_PRETTY_PRINT);
     }
@@ -82,7 +82,7 @@ class BillingTools
         string $paymentmethod = '',
         string $notes = '',
         string $date = '',
-        float $credit = 0.0,
+        ?float $credit = null,
         bool $publish = false,
         bool $publishandsendemail = false
     ): string {
@@ -92,7 +92,7 @@ class BillingTools
         if ($paymentmethod !== '') $params['paymentmethod'] = $paymentmethod;
         if ($notes !== '') $params['notes'] = $notes;
         if ($date !== '') $params['date'] = $date;
-        if ($credit > 0.0) $params['credit'] = $credit;
+        if ($credit !== null) $params['credit'] = $credit;
         if ($publish) $params['publish'] = true;
         if ($publishandsendemail) $params['publishandsendemail'] = true;
         return json_encode($this->api->call('UpdateInvoice', $params), JSON_PRETTY_PRINT);

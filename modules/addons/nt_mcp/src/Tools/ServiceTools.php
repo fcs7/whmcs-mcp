@@ -29,7 +29,9 @@ class ServiceTools
     #[McpTool(name: 'whmcs_suspend_service', description: 'Suspende um serviço de hospedagem/servidor')]
     public function suspendService(int $serviceid, string $reason = ''): string
     {
-        return json_encode($this->api->call('ModuleSuspend', ['serviceid' => $serviceid, 'suspendreason' => $reason]), JSON_PRETTY_PRINT);
+        $params = ['serviceid' => $serviceid];
+        if ($reason !== '') $params['suspendreason'] = $reason;
+        return json_encode($this->api->call('ModuleSuspend', $params), JSON_PRETTY_PRINT);
     }
 
     #[McpTool(name: 'whmcs_unsuspend_service', description: 'Reativa um serviço suspenso')]

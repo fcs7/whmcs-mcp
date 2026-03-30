@@ -30,7 +30,7 @@ class OrderTools
     {
         $params = [
             'orderid' => $orderid,
-            'sendemail' => $sendEmail ? 'true' : 'false',
+            'sendemail' => $sendEmail,
         ];
         if ($autosetup) $params['autosetup'] = true;
         if ($serverid > 0) $params['serverid'] = $serverid;
@@ -42,7 +42,7 @@ class OrderTools
     {
         return json_encode($this->api->call('CancelOrder', [
             'orderid' => $orderid,
-            'sendemail' => $sendEmail ? 'true' : 'false',
+            'sendemail' => $sendEmail,
         ]), JSON_PRETTY_PRINT);
     }
 
