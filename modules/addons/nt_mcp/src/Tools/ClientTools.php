@@ -164,13 +164,18 @@ class ClientTools
     public function getClientProducts(int $clientid): string
     {
         $result = $this->api->call('GetClientsProducts', ['clientid' => $clientid]);
+        self::stripProductPasswords($result);
+        return json_encode($result, JSON_PRETTY_PRINT);
+    }
+
+    private static function stripProductPasswords(array &$result): void
+    {
         if (isset($result['products']['product'])) {
             foreach ($result['products']['product'] as &$p) {
                 unset($p['password']);
             }
             unset($p);
         }
-        return json_encode($result, JSON_PRETTY_PRINT);
     }
 
     #[McpTool(name: 'whmcs_get_client_domains', description: 'Lista domínios de um cliente')]

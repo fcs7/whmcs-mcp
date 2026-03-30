@@ -17,13 +17,18 @@ class ServiceTools
         if ($limitstart > 0) $params['limitstart'] = $limitstart;
         if ($pid > 0) $params['pid'] = $pid;
         $result = $this->api->call('GetClientsProducts', $params);
+        self::stripProductPasswords($result);
+        return json_encode($result, JSON_PRETTY_PRINT);
+    }
+
+    private static function stripProductPasswords(array &$result): void
+    {
         if (isset($result['products']['product'])) {
             foreach ($result['products']['product'] as &$p) {
                 unset($p['password']);
             }
             unset($p);
         }
-        return json_encode($result, JSON_PRETTY_PRINT);
     }
 
     #[McpTool(name: 'whmcs_suspend_service', description: 'Suspende um serviço de hospedagem/servidor')]
