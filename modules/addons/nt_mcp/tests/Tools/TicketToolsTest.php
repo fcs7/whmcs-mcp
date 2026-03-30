@@ -68,7 +68,7 @@ class TicketToolsTest extends TestCase
 
         $tools->replyTicket(10, 'Hello');
 
-        $this->assertSame(['ticketid' => 10, 'message' => 'Hello', 'status' => 'Customer-Reply'], $capturedParams);
+        $this->assertSame(['ticketid' => 10, 'message' => 'Hello'], $capturedParams);
     }
 
     public function test_open_ticket_without_clientid_uses_name_email(): void

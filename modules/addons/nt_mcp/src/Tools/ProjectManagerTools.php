@@ -55,13 +55,13 @@ class ProjectManagerTools
         string $title = '',
         string $status = '',
         string $duedate = '',
-        bool $completed = false
+        ?bool $completed = null
     ): string {
         $params = ['projectid' => $projectid];
         if ($title !== '') $params['title'] = $title;
         if ($status !== '') $params['status'] = $status;
         if ($duedate !== '') $params['duedate'] = $duedate;
-        if ($completed) $params['completed'] = true;
+        if ($completed !== null) $params['completed'] = $completed ? 1 : 0;
         return json_encode($this->api->call('UpdateProject', $params), JSON_PRETTY_PRINT);
     }
 
@@ -84,12 +84,12 @@ class ProjectManagerTools
         int $taskid,
         string $task = '',
         string $duedate = '',
-        bool $completed = false
+        ?bool $completed = null
     ): string {
         $params = ['projectid' => $projectid, 'taskid' => $taskid];
         if ($task !== '') $params['task'] = $task;
         if ($duedate !== '') $params['duedate'] = $duedate;
-        if ($completed) $params['completed'] = true;
+        if ($completed !== null) $params['completed'] = $completed ? 1 : 0;
         return json_encode($this->api->call('UpdateProjectTask', $params), JSON_PRETTY_PRINT);
     }
 

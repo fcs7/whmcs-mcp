@@ -41,9 +41,10 @@ class TicketTools
     }
 
     #[McpTool(name: 'whmcs_reply_ticket', description: 'Adiciona resposta a um ticket existente')]
-    public function replyTicket(int $ticketid, string $message, string $status = 'Customer-Reply', int $adminid = 0, string $adminusername = '', string $name = '', string $email = '', int $clientid = 0, bool $markdown = false, bool $noemail = false): string
+    public function replyTicket(int $ticketid, string $message, string $status = '', int $adminid = 0, string $adminusername = '', string $name = '', string $email = '', int $clientid = 0, bool $markdown = false, bool $noemail = false): string
     {
-        $params = compact('ticketid', 'message', 'status');
+        $params = compact('ticketid', 'message');
+        if ($status !== '') $params['status'] = $status;
         if ($adminid > 0) $params['adminid'] = $adminid;
         if ($adminusername !== '') $params['adminusername'] = $adminusername;
         if ($name !== '') $params['name'] = $name;
@@ -55,14 +56,14 @@ class TicketTools
     }
 
     #[McpTool(name: 'whmcs_update_ticket', description: 'Atualiza status, prioridade ou departamento de um ticket')]
-    public function updateTicket(int $ticketid, string $status = '', string $priority = '', int $deptid = 0, string $subject = '', int $flag = 0, string $cc = '', string $message = ''): string
+    public function updateTicket(int $ticketid, string $status = '', string $priority = '', int $deptid = 0, string $subject = '', ?int $flag = null, string $cc = '', string $message = ''): string
     {
         $params = ['ticketid' => $ticketid];
         if ($status !== '') $params['status'] = $status;
         if ($priority !== '') $params['priority'] = $priority;
         if ($deptid > 0) $params['deptid'] = $deptid;
         if ($subject !== '') $params['subject'] = $subject;
-        if ($flag > 0) $params['flag'] = $flag;
+        if ($flag !== null) $params['flag'] = $flag;
         if ($cc !== '') $params['cc'] = $cc;
         if ($message !== '') $params['message'] = $message;
         return json_encode($this->api->call('UpdateTicket', $params), JSON_PRETTY_PRINT);
