@@ -23,9 +23,7 @@ class DomainTools
     #[McpTool(name: 'whmcs_register_domain', description: 'Registra um novo domínio')]
     public function registerDomain(int $clientid, string $domain, int $regperiod = 1, string $nameserver1 = '', string $nameserver2 = '', int $domainid = 0): string
     {
-        $params = ['regperiod' => $regperiod];
-        if ($domain !== '') $params['domain'] = $domain;
-        if ($clientid > 0) $params['clientid'] = $clientid;
+        $params = ['clientid' => $clientid, 'domain' => $domain, 'regperiod' => $regperiod];
         if ($domainid > 0) $params['domainid'] = $domainid;
         if ($nameserver1 !== '') $params['nameserver1'] = $nameserver1;
         if ($nameserver2 !== '') $params['nameserver2'] = $nameserver2;
@@ -45,5 +43,51 @@ class DomainTools
         if ($ns3 !== '') $params['ns3'] = $ns3;
         if ($ns4 !== '') $params['ns4'] = $ns4;
         return json_encode($this->api->call('DomainUpdateNameservers', $params), JSON_PRETTY_PRINT);
+    }
+
+    #[McpTool(name: 'whmcs_domain_get_nameservers', description: 'Obtém nameservers atuais de um domínio')]
+    public function domainGetNameservers(int $domainid): string
+    {
+        return json_encode($this->api->call('DomainGetNameservers', ['domainid' => $domainid]), JSON_PRETTY_PRINT);
+    }
+
+    #[McpTool(name: 'whmcs_domain_get_locking_status', description: 'Verifica status de bloqueio de transferência de um domínio')]
+    public function domainGetLockingStatus(int $domainid): string
+    {
+        return json_encode($this->api->call('DomainGetLockingStatus', ['domainid' => $domainid]), JSON_PRETTY_PRINT);
+    }
+
+    #[McpTool(name: 'whmcs_domain_get_whois_info', description: 'Obtém informações WHOIS de um domínio registrado')]
+    public function domainGetWhoisInfo(int $domainid): string
+    {
+        return json_encode($this->api->call('DomainGetWhoisInfo', ['domainid' => $domainid]), JSON_PRETTY_PRINT);
+    }
+
+    #[McpTool(name: 'whmcs_get_tld_pricing', description: 'Lista preços de TLDs disponíveis para registro')]
+    public function getTldPricing(int $currencyid = 0): string
+    {
+        $params = [];
+        if ($currencyid > 0) $params['currencyid'] = $currencyid;
+        return json_encode($this->api->call('GetTLDPricing', $params), JSON_PRETTY_PRINT);
+    }
+
+    #[McpTool(name: 'whmcs_update_client_domain', description: 'Atualiza dados de um domínio de cliente')]
+    public function updateClientDomain(
+        int $domainid,
+        string $status = '',
+        string $nextduedate = '',
+        string $expirydate = '',
+        string $registrar = '',
+        ?int $autorecalc = null,
+        string $notes = ''
+    ): string {
+        $params = ['domainid' => $domainid];
+        if ($status !== '') $params['status'] = $status;
+        if ($nextduedate !== '') $params['nextduedate'] = $nextduedate;
+        if ($expirydate !== '') $params['expirydate'] = $expirydate;
+        if ($registrar !== '') $params['registrar'] = $registrar;
+        if ($autorecalc !== null) $params['autorecalc'] = $autorecalc;
+        if ($notes !== '') $params['notes'] = $notes;
+        return json_encode($this->api->call('UpdateClientDomain', $params), JSON_PRETTY_PRINT);
     }
 }

@@ -51,4 +51,67 @@ class OrderTools
     {
         return json_encode($this->api->call('DeleteOrder', ['orderid' => $orderid]), JSON_PRETTY_PRINT);
     }
+
+    #[McpTool(name: 'whmcs_add_order', description: 'Cria um novo pedido para um cliente')]
+    public function addOrder(
+        int $clientid,
+        string $paymentmethod,
+        array $pid = [],
+        array $domain = [],
+        array $billingcycle = [],
+        string $promocode = '',
+        bool $noinvoice = false,
+        bool $noinvoiceemail = false,
+        bool $noemail = false
+    ): string {
+        $params = ['clientid' => $clientid, 'paymentmethod' => $paymentmethod];
+        if (empty($pid) && empty($domain)) {
+            throw new \InvalidArgumentException('At least one product (pid) or domain is required');
+        }
+        foreach ($pid as $i => $p) {
+            $params["pid[{$i}]"] = (int) $p;
+        }
+        foreach ($domain as $i => $d) {
+            $params["domain[{$i}]"] = (string) $d;
+        }
+        foreach ($billingcycle as $i => $b) {
+            $params["billingcycle[{$i}]"] = (string) $b;
+        }
+        if ($promocode !== '') $params['promocode'] = $promocode;
+        if ($noinvoice) $params['noinvoice'] = true;
+        if ($noinvoiceemail) $params['noinvoiceemail'] = true;
+        if ($noemail) $params['noemail'] = true;
+        return json_encode($this->api->call('AddOrder', $params), JSON_PRETTY_PRINT);
+    }
+
+    #[McpTool(name: 'whmcs_get_order_statuses', description: 'Lista os status de pedidos disponíveis')]
+    public function getOrderStatuses(): string
+    {
+        return json_encode($this->api->call('GetOrderStatuses', []), JSON_PRETTY_PRINT);
+    }
+
+    #[McpTool(name: 'whmcs_get_products', description: 'Lista produtos/serviços disponíveis no catálogo')]
+    public function getProducts(int $pid = 0, int $gid = 0, string $module = ''): string
+    {
+        $params = [];
+        if ($pid > 0) $params['pid'] = $pid;
+        if ($gid > 0) $params['gid'] = $gid;
+        if ($module !== '') $params['module'] = $module;
+        return json_encode($this->api->call('GetProducts', $params), JSON_PRETTY_PRINT);
+    }
+
+    #[McpTool(name: 'whmcs_get_promotions', description: 'Lista promoções/cupons disponíveis')]
+    public function getPromotions(string $code = '', int $id = 0): string
+    {
+        $params = [];
+        if ($code !== '') $params['code'] = $code;
+        if ($id > 0) $params['id'] = $id;
+        return json_encode($this->api->call('GetPromotions', $params), JSON_PRETTY_PRINT);
+    }
+
+    #[McpTool(name: 'whmcs_pending_order', description: 'Coloca um pedido em status pendente')]
+    public function pendingOrder(int $orderid): string
+    {
+        return json_encode($this->api->call('PendingOrder', ['orderid' => $orderid]), JSON_PRETTY_PRINT);
+    }
 }

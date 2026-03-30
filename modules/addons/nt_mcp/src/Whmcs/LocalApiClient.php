@@ -24,6 +24,11 @@ class LocalApiClient
         'CloseClient',
         'GetClientsProducts',
         'GetClientsDomains',
+        'GetContacts',
+        'AddContact',
+        'UpdateContact',
+        'GetClientGroups',
+        'GetClientsAddons',
 
         // BillingTools
         'GetInvoices',
@@ -32,6 +37,12 @@ class LocalApiClient
         'AddInvoicePayment',
         'UpdateInvoice',
         'GetTransactions',
+        'AddCredit',
+        'GetCredits',
+        'AddTransaction',
+        'UpdateTransaction',
+        'AddBillableItem',
+        'GetPayMethods',
 
         // ServiceTools
         'ModuleSuspend',
@@ -51,16 +62,34 @@ class LocalApiClient
         'AcceptOrder',
         'CancelOrder',
         'DeleteOrder',
+        'AddOrder',
+        'GetOrderStatuses',
+        'GetProducts',
+        'GetPromotions',
+        'PendingOrder',
 
         // DomainTools
         'DomainRegister',
         'DomainRenew',
         'DomainUpdateNameservers',
+        'DomainGetNameservers',
+        'DomainGetLockingStatus',
+        'DomainGetWhoisInfo',
+        'GetTLDPricing',
+        'UpdateClientDomain',
 
         // SystemTools
         'GetStats',
         'SendEmail',
         'GetActivityLog',
+        'GetAdminDetails',
+        'GetCurrencies',
+        'GetEmailTemplates',
+        'GetPaymentMethods',
+        'GetToDoItems',
+        'GetToDoItemStatuses',
+        'UpdateToDoItem',
+        'LogActivity',
 
         // ProjectManagerTools
         'GetProjects',
@@ -73,6 +102,22 @@ class LocalApiClient
         'StartTaskTimer',
         'EndTaskTimer',
         'AddProjectMessage',
+
+        // QuoteTools
+        'GetQuotes',
+        'CreateQuote',
+        'UpdateQuote',
+        'SendQuote',
+        'AcceptQuote',
+
+        // SupportInfoTools
+        'GetSupportDepartments',
+        'GetSupportStatuses',
+        'GetTicketCounts',
+        'GetTicketNotes',
+        'GetTicketPredefinedCats',
+        'GetTicketPredefinedReplies',
+        'GetTicketAttachment',
     ];
 
     /**
@@ -82,6 +127,7 @@ class LocalApiClient
     private const REDACTED_PARAMS = [
         'password', 'password2', 'cardnum', 'cvv', 'expdate',
         'cardnumber', 'cvc', 'bankacct', 'bankcode',
+        'securityqans', 'tax_id',
     ];
 
     /** @var callable|null Para injecao em testes */
@@ -118,6 +164,14 @@ class LocalApiClient
             $result = ($this->callable)($command, $params);
         } else {
             $result = localAPI($command, $params, $this->adminUser);
+        }
+
+        if (!is_array($result)) {
+            $type = gettype($result);
+            self::auditLog("MCP API call '{$command}' returned non-array ({$type})", $params);
+            throw new \RuntimeException(
+                "LocalApiClient: WHMCS API command '{$command}' returned unexpected type ({$type}). WHMCS may not be fully initialized."
+            );
         }
 
         // ---------------------------------------------------------------
@@ -177,8 +231,9 @@ class LocalApiClient
                 logActivity($entry);
             }
         } catch (\Throwable $e) {
-            // Logging must never break the request flow.
-            // Silently discard — the error itself is not actionable here.
+            // Logging must never break the request flow, but we must
+            // never lose forensic visibility silently either.
+            error_log("[NT-MCP] auditLog FAILED: {$e->getMessage()} | entry: {$entry}");
         }
     }
 

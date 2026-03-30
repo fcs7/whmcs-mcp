@@ -191,4 +191,79 @@ class ClientTools
         if ($status !== '') $params['status'] = $status;
         return json_encode($this->api->call('GetInvoices', $params), JSON_PRETTY_PRINT);
     }
+
+    #[McpTool(name: 'whmcs_get_contacts', description: 'Lista contatos/sub-contas de um cliente')]
+    public function getContacts(int $userid, int $limitstart = 0, int $limitnum = 25): string
+    {
+        $params = ['userid' => $userid, 'limitstart' => $limitstart, 'limitnum' => $limitnum];
+        return json_encode($this->api->call('GetContacts', $params), JSON_PRETTY_PRINT);
+    }
+
+    #[McpTool(name: 'whmcs_add_contact', description: 'Adiciona um contato/sub-conta a um cliente')]
+    public function addContact(
+        int $clientid,
+        string $firstname = '',
+        string $lastname = '',
+        string $email = '',
+        string $address1 = '',
+        string $address2 = '',
+        string $city = '',
+        string $state = '',
+        string $postcode = '',
+        string $country = 'BR',
+        string $phonenumber = '',
+        string $companyname = '',
+        bool $generalemails = true,
+        bool $invoiceemails = true,
+        bool $productemails = true,
+        bool $supportemails = true
+    ): string {
+        $params = ['clientid' => $clientid];
+        foreach (['firstname', 'lastname', 'email', 'address1', 'address2', 'city', 'state', 'postcode', 'country', 'phonenumber', 'companyname'] as $field) {
+            if ($$field !== '') $params[$field] = $$field;
+        }
+        $params['generalemails'] = $generalemails ? 1 : 0;
+        $params['invoiceemails'] = $invoiceemails ? 1 : 0;
+        $params['productemails'] = $productemails ? 1 : 0;
+        $params['supportemails'] = $supportemails ? 1 : 0;
+        return json_encode($this->api->call('AddContact', $params), JSON_PRETTY_PRINT);
+    }
+
+    #[McpTool(name: 'whmcs_update_contact', description: 'Atualiza um contato/sub-conta existente')]
+    public function updateContact(
+        int $contactid,
+        string $firstname = '',
+        string $lastname = '',
+        string $email = '',
+        string $address1 = '',
+        string $address2 = '',
+        string $city = '',
+        string $state = '',
+        string $postcode = '',
+        string $country = '',
+        string $phonenumber = '',
+        string $companyname = ''
+    ): string {
+        $params = ['contactid' => $contactid];
+        foreach (['firstname', 'lastname', 'email', 'address1', 'address2', 'city', 'state', 'postcode', 'country', 'phonenumber', 'companyname'] as $field) {
+            if ($$field !== '') $params[$field] = $$field;
+        }
+        return json_encode($this->api->call('UpdateContact', $params), JSON_PRETTY_PRINT);
+    }
+
+    #[McpTool(name: 'whmcs_get_client_groups', description: 'Lista grupos de clientes configurados')]
+    public function getClientGroups(): string
+    {
+        return json_encode($this->api->call('GetClientGroups', []), JSON_PRETTY_PRINT);
+    }
+
+    #[McpTool(name: 'whmcs_get_clients_addons', description: 'Lista addons contratados por clientes')]
+    public function getClientsAddons(int $clientid = 0, int $serviceid = 0, int $addonid = 0): string
+    {
+        $params = [];
+        if ($clientid > 0) $params['clientid'] = $clientid;
+        if ($serviceid > 0) $params['serviceid'] = $serviceid;
+        if ($addonid > 0) $params['addonid'] = $addonid;
+        return json_encode($this->api->call('GetClientsAddons', $params), JSON_PRETTY_PRINT);
+    }
 }
