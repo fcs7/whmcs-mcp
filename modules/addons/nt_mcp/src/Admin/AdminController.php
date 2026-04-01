@@ -6,6 +6,7 @@ namespace NtMcp\Admin;
 
 use Illuminate\Database\Capsule\Manager as Capsule;
 use NtMcp\Security\CsrfProtection;
+use NtMcp\Whmcs\AdminSession;
 use NtMcp\Whmcs\SystemUrl;
 
 /**
@@ -24,7 +25,7 @@ final class AdminController
         $mcpUrl = SystemUrl::mcpUrl();
 
         // Auto-detect logged-in admin
-        $currentAdminId = (int) ($_SESSION['adminid'] ?? 0);
+        $currentAdminId = AdminSession::getAdminId();
         $currentAdminName = 'admin';
         if ($currentAdminId > 0) {
             try {
@@ -120,6 +121,8 @@ final class AdminController
             ];
             $redirectUrl = self::addonUrl($vars);
             echo '<script>window.location.replace(' . json_encode($redirectUrl, JSON_HEX_TAG | JSON_HEX_AMP) . ');</script>';
+            echo '<noscript><div class="alert alert-info">Processando... ';
+            echo '<a href="' . htmlspecialchars($redirectUrl, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '">Clique aqui se nao for redirecionado.</a></div></noscript>';
             return;
         }
 
@@ -183,7 +186,11 @@ final class AdminController
             }
         }
 
-        // Render template
+        // Deliberate choice: PHP-native template (not Smarty) for explicit
+        // htmlspecialchars() escaping with ENT_QUOTES|ENT_SUBSTITUTE. Avoids
+        // relying on Smarty's auto-escape behavior and its specific version
+        // bundled by WHMCS. Bootstrap 3 classes (panel, btn, alert) from the
+        // admin panel context are reused for visual consistency.
         require dirname(__DIR__, 2) . '/templates/admin/dashboard.php';
     }
 

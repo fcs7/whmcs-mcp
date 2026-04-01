@@ -1,6 +1,6 @@
 # NT MCP — WHMCS MCP Server Addon
 
-Addon PHP para WHMCS que expõe 54 tools via Model Context Protocol.
+Addon PHP para WHMCS que expõe 96 tools via Model Context Protocol.
 Repo: `git@github.com:fcs7/whmcs-mcp.git`
 
 ## Commands
@@ -8,9 +8,9 @@ Repo: `git@github.com:fcs7/whmcs-mcp.git`
 ```bash
 cd modules/addons/nt_mcp
 composer install --ignore-platform-req=ext-iconv
-./vendor/bin/phpunit --testdox                    # 47 tests, 73 assertions
+./vendor/bin/phpunit --testdox                    # 77 tests, 118 assertions
 composer audit                                    # check dependency CVEs
-grep -c '#\[McpTool\]' src/Tools/*.php   # 54 tools total
+grep -c '#\[McpTool\]' src/Tools/*.php   # 96 tools total
 # Deploy pipeline (from repo root)
 ./scripts/deploy.sh prod   # → novo.ntweb.com.br (producao)
 ./scripts/deploy.sh dev    # → desenv.ntweb.com.br (desenvolvimento)
@@ -33,8 +33,8 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 - `src/Http/` — IpResolver, IpAllowlist, TlsEnforcer, SecurityHeaders, CorsHandler
 - `src/OAuth/` — OAuthRouter, OAuthMigration, OAuthHelper, Handlers/{Token,Authorization,Registration,Metadata}Handler
 - `src/Admin/` — AdminController (auth dashboard), OAuthApprovalController (5-layer approval)
-- `src/Whmcs/` — LocalApiClient (42 cmd allowlist), CapsuleClient (3 table allowlist), CompatContainer, SystemUrl
-- `src/Tools/*.php` — 9 classes com #[McpTool] para auto-discovery
+- `src/Whmcs/` — LocalApiClient (83 cmd allowlist), CapsuleClient (3 table allowlist), CompatContainer, SystemUrl, AdminSession
+- `src/Tools/*.php` — 11 classes com #[McpTool] para auto-discovery (96 tools)
 - `templates/admin/` — dashboard.php, oauth-approve.php (output escapado via htmlspecialchars)
 
 ### Admin Binding Flow
@@ -71,7 +71,7 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 - Bearer token: SHA-256 hash + `hash_equals()` timing-safe
 - OAuth codes: SHA-256 hash no DB, consumo atômico (`$affected === 0`)
 - CSRF: HMAC-SHA256 nonce em todos os forms admin
-- Command allowlist: 42 comandos em `LocalApiClient::ALLOWED_COMMANDS`
+- Command allowlist: 83 comandos em `LocalApiClient::ALLOWED_COMMANDS`
 - Table/column allowlist: 3 tabelas CRM em `CapsuleClient::ALLOWED_TABLES/COLUMNS`
 - Trusted proxy IP: `IpResolver::resolve()` — rightmost-untrusted from X-Forwarded-For behind configured proxies
 - Content-Length guard: Server.php rejeita >1MB

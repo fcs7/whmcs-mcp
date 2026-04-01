@@ -12,8 +12,30 @@ use Illuminate\Database\Capsule\Manager as Capsule;
  */
 final class OAuthMigration
 {
-    public static function ensureTables(): void
+    /** Prevents redundant information_schema queries within a single request. */
+    private static bool $ensured = false;
+
+    /**
+     * Resets the in-request cache. Call in PHPUnit tearDown() to prevent
+     * static state from leaking between test cases.
+     */
+    public static function resetForTesting(): void
     {
+        self::$ensured = false;
+    }
+
+    /**
+     * Ensures all OAuth tables exist, running CREATE/ALTER as needed.
+     * Returns true on success, false if the migration failed (error is
+     * written to the PHP error log).
+     */
+    public static function ensureTables(): bool
+    {
+        if (self::$ensured) {
+            return true;
+        }
+        self::$ensured = true;
+
         // SECURITY FIX (F-10): Wrap migration — called every OAuth request,
         // so failures must not propagate and break all OAuth endpoints.
         try {
@@ -74,8 +96,10 @@ final class OAuthMigration
                     $t->string('approved_by', 255)->nullable()->after('used');
                 });
             }
+            return true;
         } catch (\Throwable $e) {
             error_log('NT MCP: OAuth migration failed: ' . $e->getMessage());
+            return false;
         }
     }
 }

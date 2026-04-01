@@ -7,6 +7,7 @@ namespace NtMcp\Admin;
 use Illuminate\Database\Capsule\Manager as Capsule;
 use NtMcp\Http\IpResolver;
 use NtMcp\Security\CsrfProtection;
+use NtMcp\Whmcs\AdminSession;
 
 /**
  * OAuth authorization approval controller.
@@ -16,7 +17,7 @@ use NtMcp\Security\CsrfProtection;
  *
  * Defense in depth (5 layers):
  *  1. WHMCS requires admin login to access configaddonmods.php (native)
- *  2. Explicit $_SESSION['adminid'] verification (belt-and-suspenders)
+ *  2. Explicit admin session verification via AdminSession::getAdminId() (belt-and-suspenders)
  *  3. CSRF token tied to admin session via HMAC (anti-forgery)
  *  4. Pending request expires in 10 minutes (temporal window)
  *  5. Admin ID + IP logged in WHMCS activity log (audit trail)
@@ -28,13 +29,13 @@ final class OAuthApprovalController
         $e = static fn(string $v): string => htmlspecialchars($v, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 
         // Layer 2: Explicit admin session check (belt-and-suspenders)
-        if (empty($_SESSION['adminid']) || !is_numeric($_SESSION['adminid'])) {
+        $adminId = AdminSession::getAdminId();
+        if ($adminId === 0) {
             echo '<div class="alert alert-danger">';
             echo '<strong>Acesso negado.</strong> Sessao de administrador invalida.';
             echo '</div>';
             return;
         }
-        $adminId = (int) $_SESSION['adminid'];
 
         $requestId = $_GET['authorize'] ?? '';
         if (!preg_match('/^[a-f0-9]{32}$/', $requestId)) {

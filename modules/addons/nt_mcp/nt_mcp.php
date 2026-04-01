@@ -11,6 +11,7 @@ require_once __DIR__ . '/vendor/autoload.php';
 
 use NtMcp\Admin\AdminController;
 use NtMcp\Admin\OAuthApprovalController;
+use NtMcp\OAuth\OAuthMigration;
 use NtMcp\Security\CsrfProtection;
 
 /**
@@ -59,6 +60,20 @@ function nt_mcp_deactivate(): array
 {
     \WHMCS\Config\Setting::setValue('nt_mcp_bearer_token', '');
     return ['status' => 'success', 'description' => 'NT MCP desativado.'];
+}
+
+/**
+ * Executado pelo WHMCS quando a versao do addon muda — roda migracoes de schema.
+ */
+function nt_mcp_upgrade(array $vars): array
+{
+    $version = $vars['version'] ?? 'unknown';
+    if (!OAuthMigration::ensureTables()) {
+        logActivity("NT MCP: FALHA na migracao de schema para versao {$version} — verifique o error log do PHP");
+        return ['status' => 'error', 'description' => 'NT MCP: falha na migracao de schema. Verifique o log de erros do PHP.'];
+    }
+    logActivity("NT MCP: schema atualizado para versao {$version}");
+    return ['status' => 'success', 'description' => 'NT MCP schema atualizado.'];
 }
 
 // -----------------------------------------------------------------------
