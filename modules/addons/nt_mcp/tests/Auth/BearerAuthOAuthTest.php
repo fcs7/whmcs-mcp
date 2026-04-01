@@ -54,9 +54,8 @@ class BearerAuthOAuthTest extends TestCase
 
         $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . self::OAUTH_TOKEN;
 
-        // getFallbackAdmin() retorna 'admin' quando WHMCS config nao esta disponivel
         $result = $auth->authenticate();
-        $this->assertIsString($result);
+        $this->assertSame('admin', $result);
     }
 
     public function test_valid_oauth_token_without_admin_user_property_uses_fallback(): void
@@ -68,7 +67,7 @@ class BearerAuthOAuthTest extends TestCase
         $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . self::OAUTH_TOKEN;
 
         $result = $auth->authenticate();
-        $this->assertIsString($result);
+        $this->assertSame('admin', $result);
     }
 
     // --- Caminho de rejeicao ---
@@ -111,7 +110,6 @@ class BearerAuthOAuthTest extends TestCase
         // Deve retornar o admin do token estatico (nao 'oauth_admin')
         // getStaticTokenAdmin() -> getFallbackAdmin() -> 'admin' (WHMCS\Config\Setting nao disponivel em tests)
         $result = $auth->authenticate();
-        $this->assertIsString($result);
-        $this->assertNotSame('oauth_admin', $result);
+        $this->assertSame('admin', $result);
     }
 }
