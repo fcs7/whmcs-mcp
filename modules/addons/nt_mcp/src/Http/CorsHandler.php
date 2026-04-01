@@ -26,16 +26,12 @@ final class CorsHandler
         $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
         $allowedOrigins = self::getAllowedOrigins();
 
-        if ($origin !== '' && $allowedOrigins !== []) {
-            // Allowlist is configured and request has an Origin header
-            if (in_array($origin, $allowedOrigins, true)) {
-                header('Access-Control-Allow-Origin: ' . $origin);
+        $originHeader = self::resolveOriginHeader($origin, $allowedOrigins);
+        if ($originHeader !== null) {
+            header('Access-Control-Allow-Origin: ' . $originHeader);
+            if ($originHeader !== '*') {
                 header('Vary: Origin');
             }
-            // else: origin not in allowlist — omit header, browser will block the request
-        } else {
-            // No allowlist configured, or no Origin header (CLI clients) — emit wildcard
-            header('Access-Control-Allow-Origin: *');
         }
 
         header('Access-Control-Allow-Methods: ' . $methods);
@@ -51,6 +47,25 @@ final class CorsHandler
         }
 
         return false;
+    }
+
+    /**
+     * Determines the Access-Control-Allow-Origin header value.
+     *
+     * Returns the specific origin if it is in the allowlist, null if the request
+     * origin is present but not allowed, or '*' if no allowlist is configured or
+     * no origin header was sent.
+     *
+     * @param string   $origin         The request's HTTP_ORIGIN (empty string if absent)
+     * @param string[] $allowedOrigins Parsed allowlist (empty = not configured)
+     * @return string|null             Header value, or null to omit the header
+     */
+    public static function resolveOriginHeader(string $origin, array $allowedOrigins): ?string
+    {
+        if ($origin !== '' && $allowedOrigins !== []) {
+            return in_array($origin, $allowedOrigins, true) ? $origin : null;
+        }
+        return '*';
     }
 
     /**
