@@ -18,8 +18,13 @@ final class IpAllowlist
         try {
             $allowedIpsRaw = \WHMCS\Config\Setting::getValue('nt_mcp_allowed_ips') ?? '';
         } catch (\Throwable $e) {
-            // Setting doesn't exist yet — allow all
-            return;
+            // Config read failed (DB error etc.) — fail closed: deny rather than silently allow.
+            // Note: getValue() returns null for non-existent settings, not throws.
+            error_log('NT MCP IpAllowlist: Failed to read allowed IPs config: ' . $e->getMessage());
+            http_response_code(503);
+            header('Content-Type: application/json');
+            echo json_encode(['error' => 'Service temporarily unavailable.']);
+            exit;
         }
 
         $allowedIpsRaw = trim($allowedIpsRaw);
