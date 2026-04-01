@@ -21,6 +21,15 @@ class BearerAuth
      */
     public function __construct(private readonly string $expectedHash) {}
 
+    /** Injectable para testes — substitui a consulta Capsule::table() em authenticateOAuthToken(). */
+    private ?\Closure $oauthLookup = null;
+
+    /** Injeta callable para testes: fn(string $tokenHash): ?object */
+    public function setOAuthLookupCallable(\Closure $fn): void
+    {
+        $this->oauthLookup = $fn;
+    }
+
     /**
      * Authenticate the request and return the bound admin username.
      *
@@ -86,6 +95,16 @@ class BearerAuth
      */
     private function authenticateOAuthToken(string $tokenHash): ?string
     {
+        // Test injection point — bypasses Capsule when set
+        if ($this->oauthLookup !== null) {
+            $row = ($this->oauthLookup)($tokenHash);
+            if ($row === null) {
+                return null;
+            }
+            $adminUser = property_exists($row, 'admin_user') ? trim((string) ($row->admin_user ?? '')) : '';
+            return $adminUser !== '' ? $adminUser : $this->getFallbackAdmin();
+        }
+
         try {
             if (!Capsule::schema()->hasTable('mod_nt_mcp_oauth_tokens')) {
                 return null;
