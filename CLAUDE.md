@@ -27,14 +27,15 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 - `mcp.php` — Slim entry: TLS → CORS → IP allowlist → headers → rate limit → BearerAuth → Server::run()
 - `oauth.php` — Slim entry: TLS → headers → CORS → OAuthMigration → OAuthRouter::dispatch()
 - `nt_mcp.php` — WHMCS addon entry (_config/_activate/_output → AdminController/OAuthApprovalController)
-- `src/Server.php` — Bootstrap php-mcp/server, DI via CompatContainer, global LOCK_EX
+- `.well-known/openid-configuration/index.php` — RFC 8414 metadata discovery (redireciona para oauth.php)
+- `src/Server.php` — Bootstrap php-mcp/server, DI via CompatContainer, global LOCK_EX (resources e prompts desabilitados)
 - `src/Auth/BearerAuth.php` — Bearer token auth: `authenticate(): ?string` (static + OAuth), per-token admin binding
 - `src/Security/` — CsrfProtection (HMAC nonce), RateLimiter (TransientData + file fallback)
 - `src/Http/` — IpResolver, IpAllowlist, TlsEnforcer, SecurityHeaders, CorsHandler
 - `src/OAuth/` — OAuthRouter, OAuthMigration, OAuthHelper, Handlers/{Token,Authorization,Registration,Metadata}Handler
 - `src/Admin/` — AdminController (auth dashboard), OAuthApprovalController (5-layer approval)
 - `src/Whmcs/` — LocalApiClient (83 cmd allowlist), CapsuleClient (3 table allowlist), CompatContainer, SystemUrl, AdminSession
-- `src/Tools/*.php` — 11 classes com #[McpTool] para auto-discovery (96 tools)
+- `src/Tools/*.php` — 11 classes, 96 tools: Client(13), Billing(12), System(11), Order(10), ProjectManager(10), Domain(9), CRM(8), SupportInfo(7), Quote(6), Service(5), Ticket(5)
 - `templates/admin/` — dashboard.php, oauth-approve.php (output escapado via htmlspecialchars)
 
 ### Admin Binding Flow
@@ -67,7 +68,7 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 ## Security Layers (do not remove)
 
 - TLS enforced em mcp.php e oauth.php (bypass: `NT_MCP_ALLOW_HTTP=1` só p/ dev local)
-- Rate limiting: 4 endpoints (mcp, register, authorize, token) via TransientData + file fallback
+- Rate limiting: mcp 60/min, register 20/hr, authorize 20/min, token 30/min — TransientData + file fallback
 - Bearer token: SHA-256 hash + `hash_equals()` timing-safe
 - OAuth codes: SHA-256 hash no DB, consumo atômico (`$affected === 0`)
 - CSRF: HMAC-SHA256 nonce em todos os forms admin
@@ -80,6 +81,8 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 - Audit log: API calls logados com params sensíveis redactados
 - Admin action audit: logActivity() em regenerate_token, revoke_token, remove_client (ações destrutivas UI)
 - Per-token admin binding: cada token registra qual admin o criou/aprovou
+- File access: 5 .htaccess (root, data/, src/, vendor/, tests/) — whitelist apenas mcp.php, oauth.php, nt_mcp.php
+- CapsuleClient query limit: MAX 500 rows por SELECT (hard-clamped)
 
 ## Gotchas
 
