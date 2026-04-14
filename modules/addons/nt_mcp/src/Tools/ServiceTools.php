@@ -45,12 +45,6 @@ class ServiceTools
         return json_encode($this->api->call('ModuleUnsuspend', ['serviceid' => $serviceid]), JSON_PRETTY_PRINT);
     }
 
-    #[McpTool(name: 'whmcs_terminate_service', description: 'Termina/cancela definitivamente um serviço')]
-    public function terminateService(int $serviceid): string
-    {
-        return json_encode($this->api->call('ModuleTerminate', ['serviceid' => $serviceid]), JSON_PRETTY_PRINT);
-    }
-
     #[McpTool(name: 'whmcs_upgrade_service', description: 'Faz upgrade de plano de um serviço')]
     public function upgradeService(
         int $serviceid,

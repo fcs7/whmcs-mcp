@@ -21,7 +21,6 @@ class LocalApiClient
         'GetClientsDetails',
         'AddClient',
         'UpdateClient',
-        'CloseClient',
         'GetClientsProducts',
         'GetClientsDomains',
         'GetContacts',
@@ -33,21 +32,13 @@ class LocalApiClient
         // BillingTools
         'GetInvoices',
         'GetInvoice',
-        'CreateInvoice',
-        'AddInvoicePayment',
-        'UpdateInvoice',
         'GetTransactions',
-        'AddCredit',
         'GetCredits',
-        'AddTransaction',
-        'UpdateTransaction',
-        'AddBillableItem',
         'GetPayMethods',
 
         // ServiceTools
         'ModuleSuspend',
         'ModuleUnsuspend',
-        'ModuleTerminate',
         'UpgradeProduct',
 
         // TicketTools
@@ -61,7 +52,6 @@ class LocalApiClient
         'GetOrders',
         'AcceptOrder',
         'CancelOrder',
-        'DeleteOrder',
         'AddOrder',
         'GetOrderStatuses',
         'GetProducts',
