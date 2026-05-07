@@ -28,9 +28,14 @@ class BearerAuthOAuthTest extends TestCase
         unset($_SERVER['HTTP_AUTHORIZATION']);
     }
 
-    private function makeAuth(): BearerAuth
+    private function makeAuth(bool $adminActive = true): BearerAuth
     {
-        return new BearerAuth($this->staticHash);
+        $auth = new BearerAuth($this->staticHash);
+        // B1: tests precisam injetar um validator truthy por padrão, senão
+        // validateAdminActive() cai no fail-closed (no DB = false).
+        $auth->setAdminValidatorCallable(fn(string $u) => $adminActive);
+        $auth->setTokenRevokerCallable(function (int $id): void {});
+        return $auth;
     }
 
     // --- Caminho feliz ---
@@ -101,6 +106,7 @@ class BearerAuthOAuthTest extends TestCase
     {
         $staticToken = 'static_token_abcdef1234567890abcdef1234567890ab';
         $auth = new BearerAuth(hash('sha256', $staticToken));
+        $auth->setAdminValidatorCallable(fn(string $u) => true); // B1
 
         $row = (object) ['admin_user' => 'oauth_admin'];
         $auth->setOAuthLookupCallable(fn(string $hash) => $row); // OAuth sempre retornaria
@@ -111,5 +117,47 @@ class BearerAuthOAuthTest extends TestCase
         // getStaticTokenAdmin() -> getFallbackAdmin() -> 'admin' (WHMCS\Config\Setting nao disponivel em tests)
         $result = $auth->authenticate();
         $this->assertSame('admin', $result);
+    }
+
+    // --- B1: Orphan token defense — admin deletado/disabled em tbladmins ---
+
+    public function test_oauth_token_with_disabled_admin_returns_null(): void
+    {
+        $auth = new BearerAuth($this->staticHash);
+        $row = (object) ['id' => 42, 'admin_user' => 'john', 'expires_at' => time() + 3600];
+        $auth->setOAuthLookupCallable(fn(string $hash) => $row);
+        // tbladmins retorna false → admin foi deletado ou disabled=1
+        $auth->setAdminValidatorCallable(fn(string $u) => false);
+
+        $revokedId = null;
+        $auth->setTokenRevokerCallable(function (int $id) use (&$revokedId): void {
+            $revokedId = $id;
+        });
+
+        $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . self::OAUTH_TOKEN;
+
+        $this->assertNull($auth->authenticate(), 'orphan admin must force 401');
+        $this->assertSame(42, $revokedId, 'token precisa ser revogado por id');
+    }
+
+    public function test_oauth_token_with_active_admin_passes(): void
+    {
+        $auth = new BearerAuth($this->staticHash);
+        $row = (object) ['id' => 7, 'admin_user' => 'alice', 'expires_at' => time() + 3600];
+        $auth->setOAuthLookupCallable(fn(string $hash) => $row);
+
+        $validatorCalled = false;
+        $auth->setAdminValidatorCallable(function (string $u) use (&$validatorCalled) {
+            $validatorCalled = true;
+            return $u === 'alice';
+        });
+        $auth->setTokenRevokerCallable(function (int $id): void {
+            throw new \RuntimeException('revoke não deveria rodar quando admin está ativo');
+        });
+
+        $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . self::OAUTH_TOKEN;
+
+        $this->assertSame('alice', $auth->authenticate());
+        $this->assertTrue($validatorCalled, 'validator precisa ser chamado');
     }
 }

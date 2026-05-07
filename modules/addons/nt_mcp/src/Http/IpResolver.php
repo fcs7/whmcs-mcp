@@ -36,7 +36,7 @@ final class IpResolver
             error_log('NT MCP: Failed to load nt_mcp_trusted_proxies: ' . $e->getMessage());
         }
 
-        if (!in_array($remoteAddr, $trustedProxies, true)) {
+        if (!self::isTrusted($remoteAddr, $trustedProxies)) {
             return $remoteAddr;
         }
 
@@ -50,12 +50,31 @@ final class IpResolver
         // Walk from right to left, return first IP not in trusted list
         for ($i = count($ips) - 1; $i >= 0; $i--) {
             $ip = $ips[$i];
-            if ($ip !== '' && filter_var($ip, FILTER_VALIDATE_IP) && !in_array($ip, $trustedProxies, true)) {
+            if ($ip !== '' && filter_var($ip, FILTER_VALIDATE_IP) && !self::isTrusted($ip, $trustedProxies)) {
                 return $ip;
             }
         }
 
         return $remoteAddr;
+    }
+
+    /**
+     * SECURITY FIX (H2): exact-match OR CIDR match against trusted proxy list.
+     * Previously used only in_array() — CIDR entries like "10.0.0.0/8" never
+     * matched, so trusted_proxies config silently ignored netblock entries.
+     * Exposto como public para testabilidade sem mock do WHMCS.
+     */
+    public static function isTrusted(string $ip, array $trustedProxies): bool
+    {
+        foreach ($trustedProxies as $entry) {
+            if ($entry === $ip) {
+                return true;
+            }
+            if (str_contains($entry, '/') && self::isInCidr($ip, $entry)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

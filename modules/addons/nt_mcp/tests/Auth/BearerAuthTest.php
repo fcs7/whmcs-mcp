@@ -18,33 +18,45 @@ class BearerAuthTest extends TestCase
         $this->tokenHash = hash('sha256', self::TOKEN);
     }
 
+    /**
+     * Cria BearerAuth com validator injetado (B1 orphan-token defense).
+     * Em ambiente de teste não há tbladmins, então validateAdminActive()
+     * cairia no fail-closed; o injected validator representa "admin ativo".
+     */
+    private function makeAuth(string $expectedHash, bool $adminActive = true): BearerAuth
+    {
+        $auth = new BearerAuth($expectedHash);
+        $auth->setAdminValidatorCallable(fn(string $u) => $adminActive);
+        return $auth;
+    }
+
     // --- isValid() backward compat tests ---
 
     public function test_validates_correct_token(): void
     {
         $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . self::TOKEN;
-        $auth = new BearerAuth($this->tokenHash);
+        $auth = $this->makeAuth($this->tokenHash);
         $this->assertTrue($auth->isValid());
     }
 
     public function test_rejects_wrong_token(): void
     {
         $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . str_repeat('ff', 32);
-        $auth = new BearerAuth($this->tokenHash);
+        $auth = $this->makeAuth($this->tokenHash);
         $this->assertFalse($auth->isValid());
     }
 
     public function test_rejects_missing_header(): void
     {
         unset($_SERVER['HTTP_AUTHORIZATION']);
-        $auth = new BearerAuth($this->tokenHash);
+        $auth = $this->makeAuth($this->tokenHash);
         $this->assertFalse($auth->isValid());
     }
 
     public function test_rejects_non_bearer_scheme(): void
     {
         $_SERVER['HTTP_AUTHORIZATION'] = 'Basic dXNlcjpwYXNz';
-        $auth = new BearerAuth($this->tokenHash);
+        $auth = $this->makeAuth($this->tokenHash);
         $this->assertFalse($auth->isValid());
     }
 
@@ -67,7 +79,7 @@ class BearerAuthTest extends TestCase
     public function test_rejects_short_presented_token(): void
     {
         $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer abc';
-        $auth = new BearerAuth($this->tokenHash);
+        $auth = $this->makeAuth($this->tokenHash);
         $this->assertFalse($auth->isValid());
     }
 
@@ -76,7 +88,7 @@ class BearerAuthTest extends TestCase
     public function test_authenticate_returns_string_for_valid_static_token(): void
     {
         $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . self::TOKEN;
-        $auth = new BearerAuth($this->tokenHash);
+        $auth = $this->makeAuth($this->tokenHash);
         $result = $auth->authenticate();
         $this->assertIsString($result);
         // Without WHMCS config, falls back to 'admin'
@@ -86,21 +98,21 @@ class BearerAuthTest extends TestCase
     public function test_authenticate_returns_null_for_invalid_token(): void
     {
         $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . str_repeat('ff', 32);
-        $auth = new BearerAuth($this->tokenHash);
+        $auth = $this->makeAuth($this->tokenHash);
         $this->assertNull($auth->authenticate());
     }
 
     public function test_authenticate_returns_null_for_missing_header(): void
     {
         unset($_SERVER['HTTP_AUTHORIZATION']);
-        $auth = new BearerAuth($this->tokenHash);
+        $auth = $this->makeAuth($this->tokenHash);
         $this->assertNull($auth->authenticate());
     }
 
     public function test_authenticate_returns_null_for_short_token(): void
     {
         $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer abc';
-        $auth = new BearerAuth($this->tokenHash);
+        $auth = $this->makeAuth($this->tokenHash);
         $this->assertNull($auth->authenticate());
     }
 
@@ -114,7 +126,7 @@ class BearerAuthTest extends TestCase
     public function test_isValid_wraps_authenticate(): void
     {
         $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . self::TOKEN;
-        $auth = new BearerAuth($this->tokenHash);
+        $auth = $this->makeAuth($this->tokenHash);
         // isValid() should return true when authenticate() returns non-null
         $this->assertSame($auth->authenticate() !== null, $auth->isValid());
     }

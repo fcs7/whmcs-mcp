@@ -79,4 +79,35 @@ class IpResolverCidrTest extends TestCase
     {
         $this->assertFalse(IpResolver::isInCidr('192.168.1.1', '192.168.1.0'));
     }
+
+    // --- H2: isTrusted() combina exact match + CIDR ---
+
+    public function test_is_trusted_exact_match(): void
+    {
+        $this->assertTrue(IpResolver::isTrusted('127.0.0.1', ['127.0.0.1', '::1']));
+    }
+
+    public function test_is_trusted_cidr_match(): void
+    {
+        $this->assertTrue(IpResolver::isTrusted('10.5.5.5', ['10.0.0.0/8']));
+    }
+
+    public function test_is_trusted_cidr_no_match(): void
+    {
+        $this->assertFalse(IpResolver::isTrusted('192.168.1.1', ['10.0.0.0/8']));
+    }
+
+    public function test_is_trusted_mixed_entries(): void
+    {
+        $proxies = ['127.0.0.1', '10.0.0.0/8', '2001:db8::/64'];
+        $this->assertTrue(IpResolver::isTrusted('127.0.0.1', $proxies), 'exact IPv4');
+        $this->assertTrue(IpResolver::isTrusted('10.200.0.1', $proxies), 'IPv4 CIDR');
+        $this->assertTrue(IpResolver::isTrusted('2001:db8::42', $proxies), 'IPv6 CIDR');
+        $this->assertFalse(IpResolver::isTrusted('8.8.8.8', $proxies), 'outside all ranges');
+    }
+
+    public function test_is_trusted_empty_list_always_false(): void
+    {
+        $this->assertFalse(IpResolver::isTrusted('127.0.0.1', []));
+    }
 }

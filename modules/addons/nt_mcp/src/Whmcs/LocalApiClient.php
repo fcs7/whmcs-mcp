@@ -2,6 +2,8 @@
 // src/Whmcs/LocalApiClient.php
 namespace NtMcp\Whmcs;
 
+use NtMcp\Http\IpResolver;
+
 class LocalApiClient
 {
     // ---------------------------------------------------------------
@@ -194,18 +196,10 @@ class LocalApiClient
      */
     public static function auditLog(string $message, array $params = []): void
     {
-        // SECURITY FIX (F3 -- audit): Use proxy-aware IP when available.
-        // Behind Plesk reverse proxy, REMOTE_ADDR is 127.0.0.1 — useless
-        // for forensics. The entry-point files (mcp.php, oauth.php) define
-        // IP resolution functions; use them if available.
-        $ip = 'unknown';
-        if (function_exists('_ntMcpGetClientIp')) {
-            $ip = _ntMcpGetClientIp();
-        } elseif (function_exists('_oauthGetClientIp')) {
-            $ip = _oauthGetClientIp();
-        } else {
-            $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
-        }
+        // SECURITY FIX (F3 -- audit, revised H1): Use IpResolver directly.
+        // Behind Plesk reverse proxy, REMOTE_ADDR is 127.0.0.1 — useless for
+        // forensics. IpResolver respects nt_mcp_trusted_proxies and walks XFF.
+        $ip = IpResolver::resolve();
         $safe = self::redactParams($params);
         $summary = json_encode($safe, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
