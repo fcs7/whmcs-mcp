@@ -70,6 +70,12 @@ class Server
         }
 
         $input = file_get_contents('php://input');
+        if (strlen($input) > 1048576) {
+            http_response_code(413);
+            header('Content-Type: application/json');
+            echo json_encode(['error' => 'Request body too large (max 1 MB)']);
+            return;
+        }
         $decoded = json_decode($input, true);
 
         // ------------------------------------------------------------------

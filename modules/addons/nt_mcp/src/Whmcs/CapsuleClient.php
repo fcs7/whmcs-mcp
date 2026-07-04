@@ -69,6 +69,24 @@ class CapsuleClient
         }
     }
 
+    private function assertWritable(): void
+    {
+        $readonly = $this->boolCfg('nt_mcp_readonly', false);
+        $writeOn  = $this->boolCfg('nt_mcp_enable_write', true);
+        if ($readonly || !$writeOn) {
+            throw new \InvalidArgumentException('CapsuleClient: writes disabled (read-only / write gate).');
+        }
+    }
+
+    private function boolCfg(string $key, bool $default): bool
+    {
+        try {
+            $v = \WHMCS\Database\Capsule::connection() ? \WHMCS\Config\Setting::getValue($key) : null;
+            if ($v === null || $v === '') return $default;
+            return $v === '1' || $v === 1 || $v === true;
+        } catch (\Throwable $e) { return $default; }
+    }
+
     /**
      * Validates that every key in $data is present in the column allowlist
      * for the given table and operation.
@@ -131,6 +149,7 @@ class CapsuleClient
     public function insert(string $table, array $data): int
     {
         $this->assertTableAllowed($table);
+        $this->assertWritable();
         $this->assertColumnsAllowed($table, $data, self::ALLOWED_COLUMNS[$table]);
 
         // SECURITY FIX (F8): Audit log for DB writes
@@ -142,6 +161,7 @@ class CapsuleClient
     public function update(string $table, array $where, array $data): int
     {
         $this->assertTableAllowed($table);
+        $this->assertWritable();
         $this->assertColumnsAllowed($table, $where, self::ALLOWED_WHERE_COLUMNS[$table]);
         $this->assertColumnsAllowed($table, $data, self::ALLOWED_COLUMNS[$table]);
 
@@ -161,6 +181,7 @@ class CapsuleClient
     public function delete(string $table, array $where): int
     {
         $this->assertTableAllowed($table);
+        $this->assertWritable();
         $this->assertColumnsAllowed($table, $where, self::ALLOWED_WHERE_COLUMNS[$table]);
 
         if ($where === []) {

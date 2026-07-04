@@ -37,7 +37,7 @@ class BearerAuth
      * if the token is invalid/expired.  For static tokens the admin comes
      * from nt_mcp_bearer_token_admin; for OAuth tokens from the DB row.
      *
-     * Fallback chain: per-token admin_user → global nt_mcp_admin_user → 'admin'
+     * Fallback chain: per-token admin_user → global nt_mcp_admin_user → null (deny)
      */
     public function authenticate(): ?string
     {
@@ -75,7 +75,7 @@ class BearerAuth
     /**
      * Resolve admin username for the static bearer token.
      */
-    private function getStaticTokenAdmin(): string
+    private function getStaticTokenAdmin(): ?string
     {
         try {
             $admin = trim(\WHMCS\Config\Setting::getValue('nt_mcp_bearer_token_admin') ?? '');
@@ -142,9 +142,14 @@ class BearerAuth
     }
 
     /**
-     * Fallback admin resolution: global config → hardcoded 'admin'.
+     * Fallback admin resolution: global config → null (fail-closed).
+     *
+     * SECURITY FIX (WO-7): previously fell back to a hardcoded 'admin' when
+     * nt_mcp_admin_user was empty, silently binding every unconfigured token
+     * to the superadmin account. Now returns null so authenticate() denies
+     * the request (401) instead of granting superadmin access by default.
      */
-    private function getFallbackAdmin(): string
+    private function getFallbackAdmin(): ?string
     {
         try {
             $configured = trim(\WHMCS\Config\Setting::getValue('nt_mcp_admin_user') ?? '');
@@ -155,8 +160,8 @@ class BearerAuth
             error_log('NT MCP BearerAuth: Failed to read nt_mcp_admin_user: ' . $e->getMessage());
         }
 
-        error_log('NT MCP BearerAuth: WARNING - No admin_user configured, falling back to hardcoded "admin"');
-        return 'admin';
+        error_log('NT MCP BearerAuth: WARNING - No admin_user configured, denying (no fallback admin)');
+        return null;
     }
 
     /**

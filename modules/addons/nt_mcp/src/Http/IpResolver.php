@@ -22,21 +22,7 @@ final class IpResolver
         }
 
         // Check if REMOTE_ADDR is a trusted proxy (loopback or configured list)
-        $trustedProxies = ['127.0.0.1', '::1'];
-        try {
-            $configured = \WHMCS\Config\Setting::getValue('nt_mcp_trusted_proxies') ?? '';
-            if ($configured !== '') {
-                $trustedProxies = array_merge(
-                    $trustedProxies,
-                    array_filter(array_map('trim', explode(',', $configured)))
-                );
-            }
-        } catch (\Throwable $e) {
-            // SECURITY FIX (F-05): Log config load failures
-            error_log('NT MCP: Failed to load nt_mcp_trusted_proxies: ' . $e->getMessage());
-        }
-
-        if (!in_array($remoteAddr, $trustedProxies, true)) {
+        if (!self::isTrustedProxy($remoteAddr)) {
             return $remoteAddr;
         }
 
@@ -50,12 +36,60 @@ final class IpResolver
         // Walk from right to left, return first IP not in trusted list
         for ($i = count($ips) - 1; $i >= 0; $i--) {
             $ip = $ips[$i];
-            if ($ip !== '' && filter_var($ip, FILTER_VALIDATE_IP) && !in_array($ip, $trustedProxies, true)) {
+            if ($ip === '') {
+                continue;
+            }
+            // SECURITY FIX (WO-4): reject private/reserved-range IPs from the
+            // client-facing XFF entry (spoofable, never a legitimate public client).
+            // This flag is intentionally applied only here, not to the trusted-proxy
+            // match below, since configured trusted proxies are commonly private IPs.
+            if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                continue;
+            }
+            if (!self::isTrustedProxy($ip)) {
                 return $ip;
             }
         }
 
         return $remoteAddr;
+    }
+
+    /**
+     * SECURITY FIX (WO-4): Check whether an IP is a trusted proxy — loopback
+     * (always trusted) or present in the configured nt_mcp_trusted_proxies list,
+     * which may contain exact IPs or CIDR ranges (e.g. "10.0.0.0/8").
+     */
+    public static function isTrustedProxy(string $ip): bool
+    {
+        if ($ip === '127.0.0.1' || $ip === '::1') {
+            return true;
+        }
+
+        $trustedProxies = [];
+        try {
+            $configured = \WHMCS\Config\Setting::getValue('nt_mcp_trusted_proxies') ?? '';
+            if ($configured !== '') {
+                $trustedProxies = array_filter(array_map('trim', explode(',', $configured)));
+            }
+        } catch (\Throwable $e) {
+            // SECURITY FIX (F-05): Log config load failures
+            error_log('NT MCP: Failed to load nt_mcp_trusted_proxies: ' . $e->getMessage());
+        }
+
+        foreach ($trustedProxies as $entry) {
+            if ($entry === '') {
+                continue;
+            }
+            if (str_contains($entry, '/')) {
+                if (self::isInCidr($ip, $entry)) {
+                    return true;
+                }
+            } elseif ($entry === $ip) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
