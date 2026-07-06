@@ -153,14 +153,14 @@ class LocalApiClient
         'DomainUpdateNameservers'=>'WRITE','UpdateClientDomain'=>'WRITE','UpdateToDoItem'=>'WRITE',
         'LogActivity'=>'WRITE','CreateProject'=>'WRITE','UpdateProject'=>'WRITE','AddProjectTask'=>'WRITE',
         'UpdateProjectTask'=>'WRITE','StartTaskTimer'=>'WRITE','EndTaskTimer'=>'WRITE',
-        'AddProjectMessage'=>'WRITE','CreateQuote'=>'WRITE','UpdateQuote'=>'WRITE','AcceptQuote'=>'WRITE',
+        'AddProjectMessage'=>'WRITE','CreateQuote'=>'WRITE','UpdateQuote'=>'WRITE',
         // DESTRUCTIVE (irreversível)
         'CloseClient'=>'DESTRUCTIVE','ModuleTerminate'=>'DESTRUCTIVE','DeleteOrder'=>'DESTRUCTIVE',
         'DeleteProjectTask'=>'DESTRUCTIVE',
-        // FINANCIAL
+        // FINANCIAL — AcceptQuote gera fatura/pedido, logo é efeito financeiro
         'CreateInvoice'=>'FINANCIAL','AddInvoicePayment'=>'FINANCIAL','UpdateInvoice'=>'FINANCIAL',
         'AddCredit'=>'FINANCIAL','AddTransaction'=>'FINANCIAL','UpdateTransaction'=>'FINANCIAL',
-        'AddBillableItem'=>'FINANCIAL',
+        'AddBillableItem'=>'FINANCIAL','AcceptQuote'=>'FINANCIAL',
         // COST (custo/provisionamento externo)
         'DomainRegister'=>'COST','DomainRenew'=>'COST','UpgradeProduct'=>'COST',
         'AcceptOrder'=>'COST','AddOrder'=>'COST',

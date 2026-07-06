@@ -74,7 +74,7 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 - CSRF: HMAC-SHA256 nonce em todos os forms admin
 - Command allowlist: 83 comandos em `LocalApiClient::ALLOWED_COMMANDS`
 - Table/column allowlist: 3 tabelas CRM em `CapsuleClient::ALLOWED_TABLES/COLUMNS`
-- Trusted proxy IP: `IpResolver::resolve()` — rightmost-untrusted from X-Forwarded-For behind configured proxies
+- Trusted proxy IP: `IpResolver::resolve()` — usa `\App::getClientIp()` do WHMCS quando disponível (coherence guard contra spoof em conexão direta); `isTrustedProxy()` mescla Trusted Proxies nativo (aba Security, chave `TrustedProxyIps`) ∪ `nt_mcp_trusted_proxies` (aditivo/opcional); fallback rightmost-untrusted XFF
 - Content-Length guard: Server.php rejeita >1MB
 - customfields: json_encode (sem serialize), max 50 fields, 8KB, scalar-only
 - Passwords stripped de responses (ClientTools, ServiceTools)
@@ -83,6 +83,8 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 - Per-token admin binding: cada token registra qual admin o criou/aprovou
 - File access: 5 .htaccess (root, data/, src/, vendor/, tests/) — whitelist apenas mcp.php, oauth.php, nt_mcp.php
 - CapsuleClient query limit: MAX 500 rows por SELECT (hard-clamped)
+- Write-class gate (WO-2): `LocalApiClient` classifica cada comando (READ/WRITE/DESTRUCTIVE/FINANCIAL/COST/COMMS). WRITE on por padrão; DESTRUCTIVE/FINANCIAL/COST/COMMS bloqueados por padrão (opt-in `nt_mcp_enable_*`); master switch `nt_mcp_readonly` (fail-closed). Espelhado em `CapsuleClient::assertWritable()`. `AcceptQuote`=FINANCIAL (gera fatura). Impersonação clampada: `adminid`/`adminusername` forçados ao admin do token
+- Admin fail-closed (WO-7): sem `nt_mcp_admin_user` resolvível, `BearerAuth` e `Server::run()` negam (401) — nunca vinculam ao superadmin `admin`
 
 ## Gotchas
 
@@ -107,3 +109,5 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 - **property_exists() guard** — colunas novas (`admin_user`, `approved_by`, `last_used_at`) podem não existir em DBs pré-migration; usar `property_exists($row, 'col')` antes de acessar
 - **Pending audit findings** — F-05, F-10, F-12 resolvidos. Resolvidos no refactor: F-07 (RateLimiter), F-11 (TokenHandler). Mitigados: F-06 (IpAllowlist), F-14 (SystemUrl — intencional)
 - **Semgrep PHP parser** — não suporta constructor promotion com `readonly` (PHP 8.2); RateLimiter gera PartialParsing warning, findings nesse arquivo podem ser incompletos
+- **Trusted proxy unificado (WO-TP)** — `IpResolver` reusa o IP resolvido pelo WHMCS (`\App::getClientIp()`) e mescla a lista nativa `TrustedProxyIps` (aba Security) ∪ `nt_mcp_trusted_proxies`. Consequências: (i) proxies da lista NATIVA também autorizam `X-Forwarded-Proto` e `NT_MCP_ALLOW_HTTP` no `TlsEnforcer` — liste só proxies próprios na aba Security; (ii) o caminho nativo honra o "Proxy IP Header" (ex.: CF-Connecting-IP), mas o fallback só lê `X-Forwarded-For`; (iii) se a chave nativa não for `TrustedProxyIps` na versão instalada, a unificação vira no-op — observável pelo error_log "X-Forwarded-For present but no trusted proxies configured". `nt_mcp_trusted_proxies` é agora opcional/aditivo
+- **Config obrigatória pré-deploy** — `nt_mcp_admin_user` DEVE estar setado antes do deploy (senão 401 fail-closed, ver WO-7); operador também configura `nt_mcp_allowed_ips`, `nt_mcp_cors_origins`, e (opcional) `nt_mcp_trusted_proxies` / Trusted Proxies nativo do WHMCS

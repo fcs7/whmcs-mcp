@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace NtMcp\Tests\Http;
 
+use NtMcp\Http\IpResolver;
 use NtMcp\Http\TlsEnforcer;
 use PHPUnit\Framework\TestCase;
 
@@ -23,6 +24,7 @@ class TlsEnforcerTest extends TestCase
         $this->serverBackup = $_SERVER;
         putenv('NT_MCP_ALLOW_HTTP');
         unset($_ENV['NT_MCP_ALLOW_HTTP']);
+        IpResolver::resetForTests();
     }
 
     protected function tearDown(): void
@@ -30,6 +32,7 @@ class TlsEnforcerTest extends TestCase
         $_SERVER = $this->serverBackup;
         putenv('NT_MCP_ALLOW_HTTP');
         unset($_ENV['NT_MCP_ALLOW_HTTP']);
+        IpResolver::resetForTests();
     }
 
     // --- isRequestSecure() ---
@@ -83,6 +86,20 @@ class TlsEnforcerTest extends TestCase
         unset($_SERVER['HTTPS'], $_SERVER['SERVER_PORT'], $_SERVER['HTTP_X_FORWARDED_PROTO']);
 
         $this->assertFalse(TlsEnforcer::isRequestSecure());
+    }
+
+    public function test_isRequestSecure_true_when_xfp_https_from_native_trusted_proxy(): void
+    {
+        // WO-TP: a proxy configured ONLY in the WHMCS native list must also be
+        // honored for X-Forwarded-Proto — TlsEnforcer inherits the merged list.
+        unset($_SERVER['HTTPS'], $_SERVER['SERVER_PORT']);
+        IpResolver::setConfigReaderForTests(
+            fn(string $key) => $key === 'TrustedProxyIps' ? '["203.0.113.0/24"]' : null
+        );
+        $_SERVER['REMOTE_ADDR'] = '203.0.113.7';
+        $_SERVER['HTTP_X_FORWARDED_PROTO'] = 'https';
+
+        $this->assertTrue(TlsEnforcer::isRequestSecure());
     }
 
     // --- isHttpBypassAllowed() ---

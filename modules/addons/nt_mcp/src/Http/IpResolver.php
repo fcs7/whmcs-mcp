@@ -7,16 +7,64 @@ namespace NtMcp\Http;
 /**
  * SECURITY FIX (M-01): Resolve the real client IP behind reverse proxies.
  *
- * When REMOTE_ADDR is a loopback address or matches a configured trusted
- * proxy, the rightmost untrusted IP from X-Forwarded-For is used instead.
- * This prevents rate-limit bypass and ensures IP allowlists work correctly
- * behind Plesk/nginx reverse proxies.
+ * Unification (WO-TP): prefer the client IP that WHMCS itself resolves via its
+ * native Trusted Proxies configuration (Configuration > General Settings >
+ * Security tab), so the addon's IP allowlist / rate-limiter key on the same IP
+ * WHMCS logs and bans. A coherence guard prevents a directly-connected attacker
+ * from spoofing a forwarded header. When the native path is unavailable the
+ * previous rightmost-untrusted X-Forwarded-For algorithm is used unchanged.
+ *
+ * isTrustedProxy() trusts loopback plus the union of the native WHMCS proxy
+ * list (TrustedProxyIps) and the addon's own nt_mcp_trusted_proxies (now
+ * additive/optional). Any parse failure degrades to loopback-only — never
+ * fail-open.
  */
 final class IpResolver
 {
+    /** @var callable|null test hook: fn(): ?string — the WHMCS-resolved client IP */
+    private static $nativeIpResolver = null;
+
+    /** @var callable|null test hook: fn(string $key): mixed — raw config reader */
+    private static $configReader = null;
+
+    /** @var string[]|null per-request cache of the merged trusted-proxy list */
+    private static ?array $trustedProxiesCache = null;
+
+    public static function setNativeIpResolverForTests(?callable $fn): void
+    {
+        self::$nativeIpResolver = $fn;
+    }
+
+    public static function setConfigReaderForTests(?callable $fn): void
+    {
+        self::$configReader = $fn;
+        self::$trustedProxiesCache = null;
+    }
+
+    public static function resetForTests(): void
+    {
+        self::$nativeIpResolver = null;
+        self::$configReader = null;
+        self::$trustedProxiesCache = null;
+    }
+
     public static function resolve(): string
     {
         $remoteAddr = $_SERVER['REMOTE_ADDR'] ?? '';
+
+        // Unification (WO-TP): prefer the IP WHMCS itself resolves — it honours
+        // the native Trusted Proxy List and Proxy IP Header (Security tab).
+        // COHERENCE GUARD: only accept the native value when it equals
+        // REMOTE_ADDR (no proxy in the path) or REMOTE_ADDR is a trusted proxy
+        // by the merged list. Otherwise a directly-connected attacker could
+        // spoof a forwarded header (e.g. XFF: 10.0.0.5) to slip into the IP
+        // allowlist or rotate the rate-limiter key — fall through to the
+        // conservative algorithm below.
+        $native = self::nativeClientIp();
+        if ($native !== null && ($native === $remoteAddr || self::isTrustedProxy($remoteAddr))) {
+            return $native;
+        }
+
         if ($remoteAddr === '') {
             return '0.0.0.0';
         }
@@ -55,9 +103,41 @@ final class IpResolver
     }
 
     /**
+     * The client IP resolved by the WHMCS core (which applies the native
+     * Trusted Proxy List and Proxy IP Header), or null if unavailable/invalid
+     * so resolve() falls back to its own algorithm.
+     */
+    private static function nativeClientIp(): ?string
+    {
+        try {
+            if (self::$nativeIpResolver !== null) {
+                $ip = (self::$nativeIpResolver)();
+            } elseif (class_exists('\App') && is_callable(['\App', 'getClientIp'])) {
+                $ip = \App::getClientIp();
+            } else {
+                return null;
+            }
+
+            if (!is_string($ip)) {
+                return null;
+            }
+            $ip = trim($ip);
+            // '0.0.0.0' would trip IpAllowlist's empty-IP 403 — treat as null.
+            if ($ip === '' || $ip === '0.0.0.0' || !filter_var($ip, FILTER_VALIDATE_IP)) {
+                return null;
+            }
+            return $ip;
+        } catch (\Throwable $e) {
+            error_log('NT MCP: native client IP resolution failed: ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
      * SECURITY FIX (WO-4): Check whether an IP is a trusted proxy — loopback
-     * (always trusted) or present in the configured nt_mcp_trusted_proxies list,
-     * which may contain exact IPs or CIDR ranges (e.g. "10.0.0.0/8").
+     * (always trusted) or present in the merged proxy list (WHMCS native
+     * TrustedProxyIps ∪ addon nt_mcp_trusted_proxies), which may contain exact
+     * IPs or CIDR ranges (e.g. "10.0.0.0/8").
      */
     public static function isTrustedProxy(string $ip): bool
     {
@@ -65,21 +145,7 @@ final class IpResolver
             return true;
         }
 
-        $trustedProxies = [];
-        try {
-            $configured = \WHMCS\Config\Setting::getValue('nt_mcp_trusted_proxies') ?? '';
-            if ($configured !== '') {
-                $trustedProxies = array_filter(array_map('trim', explode(',', $configured)));
-            }
-        } catch (\Throwable $e) {
-            // SECURITY FIX (F-05): Log config load failures
-            error_log('NT MCP: Failed to load nt_mcp_trusted_proxies: ' . $e->getMessage());
-        }
-
-        foreach ($trustedProxies as $entry) {
-            if ($entry === '') {
-                continue;
-            }
+        foreach (self::trustedProxies() as $entry) {
             if (str_contains($entry, '/')) {
                 if (self::isInCidr($ip, $entry)) {
                     return true;
@@ -90,6 +156,121 @@ final class IpResolver
         }
 
         return false;
+    }
+
+    /**
+     * Merged, per-request-cached trusted-proxy list: the addon's own
+     * nt_mcp_trusted_proxies (additive/optional) ∪ the WHMCS native
+     * TrustedProxyIps. isTrustedProxy() is called many times per request
+     * (TlsEnforcer twice + the resolve() walk), so the parsed list is cached.
+     *
+     * @return string[]
+     */
+    private static function trustedProxies(): array
+    {
+        if (self::$trustedProxiesCache !== null) {
+            return self::$trustedProxiesCache;
+        }
+
+        $own = self::parseProxyList(self::readSetting('nt_mcp_trusted_proxies'));
+        $native = self::parseProxyList(self::readSetting('TrustedProxyIps'));
+
+        // Observability: XFF present but no trusted proxies configured anywhere
+        // is a likely unification no-op (native key named differently on this
+        // WHMCS version?) — surface it instead of silently trusting nothing.
+        if ($own === [] && $native === [] && !empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
+            error_log('NT MCP: X-Forwarded-For present but no trusted proxies configured '
+                . '(nt_mcp_trusted_proxies empty; WHMCS TrustedProxyIps not found/empty) — only loopback trusted');
+        }
+
+        return self::$trustedProxiesCache = array_values(array_unique(array_merge($own, $native)));
+    }
+
+    /**
+     * Read a WHMCS config value (via the test hook when set). Any Throwable is
+     * swallowed and null returned — a config read failure must never fail-open
+     * into an empty (loopback-only) trusted list without a log trail.
+     */
+    private static function readSetting(string $key): mixed
+    {
+        try {
+            if (self::$configReader !== null) {
+                return (self::$configReader)($key);
+            }
+            return \WHMCS\Config\Setting::getValue($key);
+        } catch (\Throwable $e) {
+            // SECURITY FIX (F-05): Log config load failures
+            error_log("NT MCP: Failed to load {$key}: " . $e->getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Normalise a proxy-list config value into a list of syntactically VALID
+     * IPs/CIDRs. The native TrustedProxyIps storage format is undocumented, so
+     * every plausible shape is accepted: an already-decoded array (getValue may
+     * return one); a JSON array of strings or of objects ({ip, note, ...}); a
+     * PHP-serialized array (allowed_classes=false, only when prefixed "a:"); or
+     * plain CSV/newline text. Anything unrecognised or invalid is dropped — an
+     * unparseable value never degrades into "trust everything".
+     *
+     * @return string[]
+     */
+    private static function parseProxyList(mixed $raw): array
+    {
+        if ($raw === null || $raw === '' || $raw === []) {
+            return [];
+        }
+
+        $items = null;
+        if (is_array($raw)) {
+            $items = $raw;
+        } elseif (is_string($raw)) {
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) {
+                $items = $decoded;
+            } elseif (str_starts_with($raw, 'a:')) {
+                $unserialized = @unserialize($raw, ['allowed_classes' => false]);
+                if (is_array($unserialized)) {
+                    $items = $unserialized;
+                }
+            }
+            if ($items === null) {
+                $items = preg_split('/[,\r\n]+/', $raw) ?: [];
+            }
+        } else {
+            return [];
+        }
+
+        $out = [];
+        foreach ($items as $item) {
+            if (is_array($item)) {
+                $item = $item['ip'] ?? '';
+            }
+            if (!is_string($item)) {
+                continue;
+            }
+            $item = trim($item);
+            if ($item !== '' && self::isValidProxyEntry($item)) {
+                $out[] = $item;
+            }
+        }
+        return $out;
+    }
+
+    /** An entry must be a valid IP or a valid CIDR — never an arbitrary string. */
+    private static function isValidProxyEntry(string $entry): bool
+    {
+        if (str_contains($entry, '/')) {
+            $parts = explode('/', $entry, 2);
+            if (count($parts) !== 2) {
+                return false;
+            }
+            [$subnet, $bits] = $parts;
+            return $bits !== '' && ctype_digit($bits)
+                && filter_var($subnet, FILTER_VALIDATE_IP) !== false;
+        }
+        return filter_var($entry, FILTER_VALIDATE_IP) !== false;
     }
 
     /**
