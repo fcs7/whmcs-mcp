@@ -69,6 +69,53 @@ class CapsuleClient
         }
     }
 
+    /** Override do gate de escrita para testes (null = usa config WHMCS). */
+    private ?bool $writableOverride = null;
+    public function setWritableForTests(bool $writable): void { $this->writableOverride = $writable; }
+
+    private function assertWritable(): void
+    {
+        if ($this->writableOverride !== null) {
+            if (!$this->writableOverride) {
+                throw new \InvalidArgumentException('CapsuleClient: writes disabled (read-only / write gate).');
+            }
+            return;
+        }
+        if ($this->isReadonly() || !$this->boolCfg('nt_mcp_enable_write', true)) {
+            throw new \InvalidArgumentException('CapsuleClient: writes disabled (read-only / write gate).');
+        }
+    }
+
+    /**
+     * readonly master switch — FAIL-CLOSED: qualquer falha de leitura de config
+     * é tratada como read-only (bloqueia escrita), para não liberar writes num
+     * ambiente que deveria permanecer somente-leitura.
+     */
+    private function isReadonly(): bool
+    {
+        // Fora de um WHMCS bootstrapado (ex.: testes) não há config a proteger.
+        // Sob WHMCS, uma falha de leitura cai no catch e falha FECHADO.
+        if (!class_exists('\WHMCS\Config\Setting')) {
+            return false;
+        }
+        try {
+            $v = \WHMCS\Config\Setting::getValue('nt_mcp_readonly');
+            return $v === '1' || $v === 1 || $v === true;
+        } catch (\Throwable $e) {
+            error_log('NT MCP CapsuleClient: readonly config read failed — failing closed: ' . $e->getMessage());
+            return true;
+        }
+    }
+
+    private function boolCfg(string $key, bool $default): bool
+    {
+        try {
+            $v = \WHMCS\Config\Setting::getValue($key);
+            if ($v === null || $v === '') return $default;
+            return $v === '1' || $v === 1 || $v === true;
+        } catch (\Throwable $e) { return $default; }
+    }
+
     /**
      * Validates that every key in $data is present in the column allowlist
      * for the given table and operation.
@@ -131,6 +178,7 @@ class CapsuleClient
     public function insert(string $table, array $data): int
     {
         $this->assertTableAllowed($table);
+        $this->assertWritable();
         $this->assertColumnsAllowed($table, $data, self::ALLOWED_COLUMNS[$table]);
 
         // SECURITY FIX (F8): Audit log for DB writes
@@ -142,6 +190,7 @@ class CapsuleClient
     public function update(string $table, array $where, array $data): int
     {
         $this->assertTableAllowed($table);
+        $this->assertWritable();
         $this->assertColumnsAllowed($table, $where, self::ALLOWED_WHERE_COLUMNS[$table]);
         $this->assertColumnsAllowed($table, $data, self::ALLOWED_COLUMNS[$table]);
 
@@ -161,6 +210,7 @@ class CapsuleClient
     public function delete(string $table, array $where): int
     {
         $this->assertTableAllowed($table);
+        $this->assertWritable();
         $this->assertColumnsAllowed($table, $where, self::ALLOWED_WHERE_COLUMNS[$table]);
 
         if ($where === []) {

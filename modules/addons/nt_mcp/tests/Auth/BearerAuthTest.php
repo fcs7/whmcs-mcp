@@ -20,11 +20,15 @@ class BearerAuthTest extends TestCase
 
     // --- isValid() backward compat tests ---
 
-    public function test_validates_correct_token(): void
+    public function test_correct_token_without_admin_configured_is_invalid(): void
     {
+        // SECURITY FIX (WO-7): a correct token is no longer sufficient on its
+        // own. Without nt_mcp_admin_user / nt_mcp_bearer_token_admin
+        // configured, the fallback fails closed (null) instead of binding to
+        // the hardcoded 'admin' superadmin, so isValid() must be false.
         $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . self::TOKEN;
         $auth = new BearerAuth($this->tokenHash);
-        $this->assertTrue($auth->isValid());
+        $this->assertFalse($auth->isValid());
     }
 
     public function test_rejects_wrong_token(): void
@@ -73,14 +77,17 @@ class BearerAuthTest extends TestCase
 
     // --- authenticate() tests ---
 
-    public function test_authenticate_returns_string_for_valid_static_token(): void
+    public function test_authenticate_returns_null_for_valid_static_token_without_admin_configured(): void
     {
+        // SECURITY FIX (WO-7): without nt_mcp_admin_user (and no
+        // nt_mcp_bearer_token_admin) configured, authenticate() must fail
+        // closed and return null instead of the old hardcoded 'admin'
+        // fallback -- a valid static token alone is no longer enough to
+        // bind to the superadmin account.
         $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . self::TOKEN;
         $auth = new BearerAuth($this->tokenHash);
         $result = $auth->authenticate();
-        $this->assertIsString($result);
-        // Without WHMCS config, falls back to 'admin'
-        $this->assertSame('admin', $result);
+        $this->assertNull($result);
     }
 
     public function test_authenticate_returns_null_for_invalid_token(): void

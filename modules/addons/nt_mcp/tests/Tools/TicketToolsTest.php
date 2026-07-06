@@ -32,8 +32,11 @@ class TicketToolsTest extends TestCase
         $this->assertArrayNotHasKey('adminid', $capturedParams);
     }
 
-    public function test_reply_ticket_sends_adminusername(): void
+    public function test_reply_ticket_clamps_adminusername_to_token_admin(): void
     {
+        // WO-2 anti-impersonation clamp: LocalApiClient forces adminusername to the
+        // admin bound to the current token, regardless of what the caller supplies,
+        // to prevent a caller from forging replies as an arbitrary admin.
         $capturedParams = null;
         $tools = $this->makeTools(function (string $cmd, array $params) use (&$capturedParams) {
             $capturedParams = $params;
@@ -42,7 +45,7 @@ class TicketToolsTest extends TestCase
 
         $tools->replyTicket(10, 'Hello', adminusername: 'admin1');
 
-        $this->assertSame('admin1', $capturedParams['adminusername']);
+        $this->assertSame('testadmin', $capturedParams['adminusername']);
     }
 
     public function test_reply_ticket_sends_noemail_when_true(): void
@@ -68,7 +71,12 @@ class TicketToolsTest extends TestCase
 
         $tools->replyTicket(10, 'Hello');
 
-        $this->assertSame(['ticketid' => 10, 'message' => 'Hello'], $capturedParams);
+        // adminusername is always injected by LocalApiClient's anti-impersonation
+        // clamp (WO-2) for AddTicketReply, even when the caller supplies none.
+        $this->assertSame(
+            ['ticketid' => 10, 'message' => 'Hello', 'adminusername' => 'testadmin'],
+            $capturedParams
+        );
     }
 
     public function test_open_ticket_without_clientid_uses_name_email(): void

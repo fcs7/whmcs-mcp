@@ -19,17 +19,27 @@ class Server
     {
         // ------------------------------------------------------------------
         // Admin user resolution: prefer per-token admin from authenticate(),
-        // fall back to global config, then hardcoded 'admin'.
+        // fall back to global config. SECURITY (WO-7 consistency): if none is
+        // resolvable, fail CLOSED (401) instead of binding the superadmin
+        // 'admin' — mirrors BearerAuth::getFallbackAdmin(). In practice mcp.php
+        // never calls run() with an empty admin (authenticate() denies first),
+        // so this only closes a latent inconsistency.
         // ------------------------------------------------------------------
         if ($adminUser === '') {
-            $adminUser = 'admin';
             try {
                 $configured = trim(\WHMCS\Config\Setting::getValue('nt_mcp_admin_user') ?? '');
                 if ($configured !== '') {
                     $adminUser = $configured;
                 }
             } catch (\Throwable $_ex) {
-                // Setting not available — use default
+                // Setting not available — leave empty to deny below
+            }
+            if ($adminUser === '') {
+                error_log('NT MCP Server: no admin user resolved and none configured — denying request');
+                http_response_code(401);
+                header('Content-Type: application/json');
+                echo json_encode(['error' => 'Unauthorized: no admin user configured']);
+                return;
             }
         }
 
@@ -69,7 +79,17 @@ class Server
             return;
         }
 
-        $input = file_get_contents('php://input');
+        // Read at most 1 MB + 1 byte so an oversized body is rejected without
+        // materializing the whole payload (covers missing/incorrect Content-Length
+        // and chunked Transfer-Encoding). The header guard above still runs first.
+        $maxBytes = 1048576; // 1 MB
+        $input = (string) file_get_contents('php://input', false, null, 0, $maxBytes + 1);
+        if (strlen($input) > $maxBytes) {
+            http_response_code(413);
+            header('Content-Type: application/json');
+            echo json_encode(['error' => 'Request body too large (max 1 MB)']);
+            return;
+        }
         $decoded = json_decode($input, true);
 
         // ------------------------------------------------------------------
