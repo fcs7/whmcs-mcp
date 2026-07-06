@@ -1,0 +1,58 @@
+# NT MCP — Hardening para nginx / Plesk
+# ============================================================================
+# IMPORTANTE: o arquivo .htaccess do addon SO funciona no Apache. Se o WHMCS
+# e servido por nginx (comum em Plesk), as protecoes do .htaccess sao
+# IGNORADAS e `src/`, `vendor/`, `data/`, `tests/`, `composer.*` podem ficar
+# acessiveis via HTTP. Estes blocos espelham
+# modules/addons/nt_mcp/.htaccess para nginx.
+#
+# COMO USAR
+#   1. Cole os blocos abaixo DENTRO do `server { ... }` do dominio do WHMCS.
+#   2. Eles DEVEM aparecer ANTES do `location ~ \.php$` generico (PHP-FPM),
+#      porque o nginx avalia locations regex na ordem de definicao e o
+#      primeiro match vence.
+#   3. Recarregue: `nginx -t && systemctl reload nginx`
+#      (no Plesk: Websites & Domains > Apache & nginx Settings >
+#       "Additional nginx directives").
+#   4. VERIFIQUE (deve dar 403/404):
+#        curl -I https://SEU-HOST/modules/addons/nt_mcp/composer.json
+#        curl -I https://SEU-HOST/modules/addons/nt_mcp/src/Server.php
+#        curl -I https://SEU-HOST/modules/addons/nt_mcp/data/
+#      E (deve responder 401/200, nao 403):
+#        curl -I https://SEU-HOST/modules/addons/nt_mcp/mcp.php
+# ============================================================================
+
+# 1. Bloqueia diretorios internos (codigo, libs, testes, runtime, deploy).
+location ~ ^/modules/addons/nt_mcp/(src|vendor|tests|data|deploy|\.phpunit\.cache)/ {
+    deny all;   # 403 (troque por `return 404;` se preferir ocultar a existencia)
+}
+
+# 2. Bloqueia arquivos sensiveis por extensao dentro do addon.
+location ~ ^/modules/addons/nt_mcp/.*\.(json|lock|xml|ya?ml|md|txt|dist|bak|orig|swp|env|log|ini|sh|neon)$ {
+    deny all;
+}
+
+# 3. Bloqueia dotfiles dentro do addon (.gitignore, .env, .htaccess, etc.).
+location ~ ^/modules/addons/nt_mcp/.*/?\.[^/]+$ {
+    deny all;
+}
+
+# 4. Whitelist de entrypoints PHP: SO mcp.php, oauth.php e nt_mcp.php podem
+#    executar. Qualquer outro .php sob o addon e negado (defesa em
+#    profundidade, mesmo que os blocos acima falhem).
+location ~ ^/modules/addons/nt_mcp/(?!(mcp|oauth|nt_mcp)\.php($|/)).*\.php($|/) {
+    deny all;
+}
+
+# 5. Discovery OAuth 2.1 (RFC 8414) — equivalente nginx do
+#    deploy/htaccess-well-known.conf. Necessario para auto-discovery do
+#    Claude.ai / Claude Code. Coloque na raiz do dominio (server block).
+location = /.well-known/oauth-authorization-server {
+    rewrite ^ /modules/addons/nt_mcp/oauth.php/.well-known/oauth-authorization-server last;
+}
+location = /.well-known/openid-configuration {
+    rewrite ^ /modules/addons/nt_mcp/oauth.php/.well-known/openid-configuration last;
+}
+
+# Nota: `autoindex` ja e `off` por padrao no nginx — listagem de diretorio
+# nao e exposta. Mantenha assim (nao habilite autoindex no document root).

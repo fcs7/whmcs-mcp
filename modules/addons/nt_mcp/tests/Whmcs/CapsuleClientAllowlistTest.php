@@ -12,6 +12,9 @@ class CapsuleClientAllowlistTest extends TestCase
     protected function setUp(): void
     {
         $this->client = new CapsuleClient();
+        // Bypass the write gate so the allowlist-rejection tests reach the
+        // table/column checks. The gate itself is tested separately below.
+        $this->client->setWritableForTests(true);
     }
 
     public function test_select_rejects_disallowed_table(): void
@@ -74,5 +77,25 @@ class CapsuleClientAllowlistTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('not permitted');
         $this->client->delete('tbladmins', ['id' => 1]);
+    }
+
+    // ---------------------------------------------------------------
+    // Write gate (read-only / nt_mcp_enable_write)
+    // ---------------------------------------------------------------
+
+    public function test_insert_blocked_when_write_gate_disabled(): void
+    {
+        $this->client->setWritableForTests(false);
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('writes disabled');
+        $this->client->insert('mod_mgcrm_contacts', ['name' => 'x']);
+    }
+
+    public function test_delete_blocked_when_write_gate_disabled(): void
+    {
+        $this->client->setWritableForTests(false);
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('writes disabled');
+        $this->client->delete('mod_mgcrm_contacts', ['id' => 1]);
     }
 }

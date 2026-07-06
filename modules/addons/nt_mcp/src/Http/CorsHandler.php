@@ -13,18 +13,33 @@ namespace NtMcp\Http;
  * - nt_mcp_cors_origins set + HTTP_ORIGIN in list → specific origin + Vary: Origin
  * - nt_mcp_cors_origins set + HTTP_ORIGIN not in list → no CORS header (browser blocks)
  * - nt_mcp_cors_origins set + no HTTP_ORIGIN (CLI) → Access-Control-Allow-Origin: *
+ *
+ * Fail-closed on config-read error (E): a real error reading nt_mcp_cors_origins
+ * (e.g. DB failure) must NEVER be treated as "no allowlist configured" — that would
+ * silently degrade to Access-Control-Allow-Origin: * on infra failure. handle()
+ * responds 503 instead. See getAllowedOriginsOrFail(), mirrors IpAllowlist.php:20-28.
  */
 final class CorsHandler
 {
     /**
      * Emit CORS headers. Returns true if this was an OPTIONS preflight (caller should exit).
+     * Responds 503 + exits if the CORS origins config could not be read (fail closed).
      *
      * @param string[] $exposeHeaders Additional headers to expose
      */
     public static function handle(array $exposeHeaders = [], string $methods = 'GET, POST, OPTIONS'): bool
     {
         $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
-        $allowedOrigins = self::getAllowedOrigins();
+        $allowedOrigins = self::getAllowedOriginsOrFail();
+
+        if ($allowedOrigins === false) {
+            // Config read failed (DB error etc.) — fail closed: deny rather than silently
+            // falling back to Access-Control-Allow-Origin: *.
+            http_response_code(503);
+            header('Content-Type: application/json');
+            echo json_encode(['error' => 'Service temporarily unavailable.']);
+            exit;
+        }
 
         $originHeader = self::resolveOriginHeader($origin, $allowedOrigins);
         if ($originHeader !== null) {
@@ -70,18 +85,41 @@ final class CorsHandler
 
     /**
      * Reads nt_mcp_cors_origins from WHMCS config (CSV of allowed origins).
-     * Returns empty array if not configured or on error → falls back to wildcard.
+     *
+     * Back-compat wrapper around getAllowedOriginsOrFail(): treats a real config-read
+     * error the same as "not configured" (empty array). Callers that need to
+     * distinguish the two (i.e. handle()) must use getAllowedOriginsOrFail() instead,
+     * since collapsing "error" into "empty" here would resolve to a wildcard origin.
      *
      * @return string[]
      */
     public static function getAllowedOrigins(): array
     {
+        $result = self::getAllowedOriginsOrFail();
+        return $result === false ? [] : $result;
+    }
+
+    /**
+     * Reads nt_mcp_cors_origins from WHMCS config (CSV of allowed origins).
+     *
+     * Unlike getAllowedOrigins(), distinguishes "not configured" ([]) from
+     * "config read failed" (false) so callers can fail closed (E) instead of
+     * silently falling back to Access-Control-Allow-Origin: *. Returns array|false
+     * rather than exiting directly so this stays unit-testable; the actual
+     * fail-closed response (503 + exit) is emitted by handle().
+     *
+     * @return string[]|false
+     */
+    public static function getAllowedOriginsOrFail()
+    {
         try {
             $raw = \WHMCS\Config\Setting::getValue('nt_mcp_cors_origins') ?? '';
-            $origins = array_filter(array_map('trim', explode(',', $raw)));
-            return array_values($origins);
         } catch (\Throwable $e) {
-            return [];
+            error_log('NT MCP CorsHandler: Failed to read CORS origins config: ' . $e->getMessage());
+            return false;
         }
+
+        $origins = array_filter(array_map('trim', explode(',', $raw)));
+        return array_values($origins);
     }
 }

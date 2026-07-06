@@ -3,6 +3,7 @@
 namespace NtMcp\Tools;
 
 use NtMcp\Whmcs\LocalApiClient;
+use NtMcp\Whmcs\ResponseRedactor;
 use PhpMcp\Server\Attributes\McpTool;
 
 class ClientTools
@@ -36,10 +37,9 @@ class ClientTools
     )]
     public function getClient(int $clientid): string
     {
-        return json_encode(
-            $this->api->call('GetClientsDetails', ['clientid' => $clientid, 'stats' => true]),
-            JSON_PRETTY_PRINT
-        );
+        $result = $this->api->call('GetClientsDetails', ['clientid' => $clientid, 'stats' => true]);
+        ResponseRedactor::stripClientDetails($result);
+        return json_encode($result, JSON_PRETTY_PRINT);
     }
 
     #[McpTool(
@@ -158,18 +158,8 @@ class ClientTools
     public function getClientProducts(int $clientid): string
     {
         $result = $this->api->call('GetClientsProducts', ['clientid' => $clientid]);
-        self::stripProductPasswords($result);
+        ResponseRedactor::stripProductPasswords($result);
         return json_encode($result, JSON_PRETTY_PRINT);
-    }
-
-    private static function stripProductPasswords(array &$result): void
-    {
-        if (isset($result['products']['product'])) {
-            foreach ($result['products']['product'] as &$p) {
-                unset($p['password']);
-            }
-            unset($p);
-        }
     }
 
     #[McpTool(name: 'whmcs_get_client_domains', description: 'Lista domínios de um cliente')]

@@ -128,9 +128,17 @@ Use um cliente FTP como FileZilla, WinSCP ou Cyberduck:
           
         .well-known/
           openid-configuration/
-            index.php       # RFC 8414 fallback
-        
-        vendor/             # Criado pelo composer no passo 2
+            index.php      # Discovery fallback
+        src/
+          Server.php       # Bootstrap MCP server
+          Auth/
+            BearerAuth.php # Autenticacao Bearer + OAuth
+          Tools/            # 11 classes com 86 tools
+          Whmcs/
+            LocalApiClient.php   # Wrapper localAPI() com allowlist
+            CapsuleClient.php    # Query builder DB com allowlist
+            CompatContainer.php  # PSR-11 container com auto-wiring
+        vendor/            # Criado pelo composer (nao versionado)
         tests/              # (NAO envie - fica local)
         deploy/             # (NAO envie - templates para seu deploy)
 ```
@@ -591,22 +599,24 @@ Ao exceder, retorna `429 Too Many Requests` com header `Retry-After`.
 
 | Categoria | Qty | Descricao |
 |-----------|:---:|-----------|
-| **ClientTools** | 8 | Listar, buscar, criar, atualizar e fechar clientes; produtos, dominios e faturas |
-| **BillingTools** | 6 | Faturas, pagamentos, transacoes |
-| **TicketTools** | 5 | Tickets: listar, abrir, responder, atualizar |
-| **ServiceTools** | 5 | Servicos: suspender, reativar, terminar, upgrade |
-| **DomainTools** | 4 | Dominios: registrar, renovar, nameservers |
-| **OrderTools** | 5 | Pedidos: aceitar, cancelar, deletar |
-| **CrmTools** | 8 | Contatos/leads, follow-ups, notas, Kanban (requer ModulesGarden CRM) |
+| **ClientTools** | 13 | Listar, buscar, criar, atualizar e fechar clientes; produtos, dominios, faturas, contatos, grupos, addons |
+| **BillingTools** | 12 | Faturas, pagamentos, transacoes, creditos, billable items, metodos de pagamento |
+| **SystemTools** | 11 | Estatisticas, email, activity log, admin, moedas, templates, to-dos |
+| **OrderTools** | 10 | Pedidos: listar, aceitar, cancelar, deletar, criar; produtos, promocoes, status |
 | **ProjectManagerTools** | 10 | Projetos, tarefas, time tracking, mensagens |
-| **SystemTools** | 3 | Estatisticas, email, activity log |
+| **DomainTools** | 9 | Dominios: registrar, renovar, nameservers, locking, whois, pricing TLD |
+| **CrmTools** | 8 | Contatos/leads, follow-ups, notas, Kanban (requer ModulesGarden CRM) |
+| **SupportInfoTools** | 7 | Departamentos, status, contadores e notas de tickets, respostas predefinidas |
+| **QuoteTools** | 6 | Orcamentos: listar, criar, atualizar, enviar, aceitar |
+| **ServiceTools** | 5 | Servicos: suspender, reativar, terminar, upgrade |
+| **TicketTools** | 5 | Tickets: listar, abrir, responder, atualizar |
 
 ## Seguranca
 
 Defesa em profundidade em 3 camadas:
 
 1. **Autenticacao** — OAuth 2.1 com PKCE S256 ou Bearer Token SHA-256 (`hash_equals`)
-2. **Gateway API** — Allowlist de 37 comandos WHMCS; campos sensiveis bloqueados
+2. **Gateway API** — Allowlist de 73 comandos WHMCS; campos sensiveis bloqueados
 3. **Acesso a dados** — Tabelas e colunas restritas por allowlist no acesso direto ao banco
 
 Controles adicionais: security headers (HSTS, CSP, X-Frame-Options), rate limiting, audit logging, CORS, protecao `.htaccess`, validacao de Session ID.

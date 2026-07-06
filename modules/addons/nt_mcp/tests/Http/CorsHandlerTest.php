@@ -79,4 +79,47 @@ class CorsHandlerTest extends TestCase
         $origins = CorsHandler::getAllowedOrigins();
         $this->assertSame([], $origins); // WHMCS not available → returns []
     }
+
+    // --- getAllowedOriginsOrFail() fail-closed (WO-5 / item E) ---
+
+    public function test_get_allowed_origins_or_fail_returns_false_on_config_error(): void
+    {
+        // No WHMCS bootstrap in tests → \WHMCS\Config\Setting doesn't exist → this is
+        // exactly the "real config-read error" path. It must return the `false`
+        // sentinel, NOT an empty array — an empty array would be indistinguishable
+        // from "no allowlist configured" and resolveOriginHeader() would then hand
+        // back a wildcard on what is actually an infra failure.
+        $result = CorsHandler::getAllowedOriginsOrFail();
+        $this->assertFalse($result);
+    }
+
+    public function test_get_allowed_origins_or_fail_error_would_not_resolve_to_wildcard_if_handled_correctly(): void
+    {
+        // Demonstrates the bug WO-5 fixes: naively feeding a config-read error into
+        // resolveOriginHeader() (by collapsing it to []) silently produces '*'.
+        $orFail = CorsHandler::getAllowedOriginsOrFail();
+        $this->assertFalse($orFail, 'error must be reported as false, not []');
+
+        // The buggy pre-fix behaviour (error treated as empty allowlist):
+        $wronglyCollapsed = $orFail === false ? [] : $orFail;
+        $this->assertSame('*', CorsHandler::resolveOriginHeader('https://evil.com', $wronglyCollapsed));
+
+        // handle() must check for the `false` sentinel explicitly (503) instead of
+        // ever calling resolveOriginHeader() with a collapsed empty array on error.
+    }
+
+    public function test_get_allowed_origins_still_collapses_error_to_empty_array_for_back_compat(): void
+    {
+        // getAllowedOrigins() (unlike getAllowedOriginsOrFail()) is a back-compat
+        // wrapper — existing non-handle() callers keep seeing [] on error.
+        $this->assertSame([], CorsHandler::getAllowedOrigins());
+    }
+
+    // --- allowlist configured + origin outside it → header omitted (reinforced) ---
+
+    public function test_configured_allowlist_with_origin_outside_it_omits_header(): void
+    {
+        $result = CorsHandler::resolveOriginHeader('https://not-allowed.example', ['https://claude.ai', 'https://app.example.com']);
+        $this->assertNull($result);
+    }
 }

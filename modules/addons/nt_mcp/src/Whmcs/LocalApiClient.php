@@ -122,14 +122,176 @@ class LocalApiClient
         'securityqans', 'tax_id',
     ];
 
+    /** Classe de efeito colateral por comando. Fail-safe: ausente ⇒ WRITE. */
+    private const COMMAND_CLASS = [
+        // READ
+        'GetClients'=>'READ','GetClientsDetails'=>'READ','GetClientsProducts'=>'READ',
+        'GetClientsDomains'=>'READ','GetContacts'=>'READ','GetClientGroups'=>'READ',
+        'GetClientsAddons'=>'READ','GetInvoices'=>'READ','GetInvoice'=>'READ',
+        'GetTransactions'=>'READ','GetCredits'=>'READ','GetPayMethods'=>'READ',
+        'GetTickets'=>'READ','GetTicket'=>'READ','GetOrders'=>'READ','GetOrderStatuses'=>'READ',
+        'GetProducts'=>'READ','GetPromotions'=>'READ','DomainGetNameservers'=>'READ',
+        'DomainGetLockingStatus'=>'READ','DomainGetWhoisInfo'=>'READ','GetTLDPricing'=>'READ',
+        'GetStats'=>'READ','GetActivityLog'=>'READ','GetAdminDetails'=>'READ','GetCurrencies'=>'READ',
+        'GetEmailTemplates'=>'READ','GetPaymentMethods'=>'READ','GetToDoItems'=>'READ',
+        'GetToDoItemStatuses'=>'READ','GetProjects'=>'READ','GetProject'=>'READ','GetQuotes'=>'READ',
+        'GetSupportDepartments'=>'READ','GetSupportStatuses'=>'READ','GetTicketCounts'=>'READ',
+        'GetTicketNotes'=>'READ','GetTicketPredefinedCats'=>'READ','GetTicketPredefinedReplies'=>'READ',
+        'GetTicketAttachment'=>'READ',
+        // WRITE (reversível)
+        'AddClient'=>'WRITE','UpdateClient'=>'WRITE','AddContact'=>'WRITE','UpdateContact'=>'WRITE',
+        'ModuleSuspend'=>'WRITE','ModuleUnsuspend'=>'WRITE','OpenTicket'=>'WRITE',
+        'AddTicketReply'=>'WRITE','UpdateTicket'=>'WRITE','CancelOrder'=>'WRITE','PendingOrder'=>'WRITE',
+        'DomainUpdateNameservers'=>'WRITE','UpdateClientDomain'=>'WRITE','UpdateToDoItem'=>'WRITE',
+        'LogActivity'=>'WRITE','CreateProject'=>'WRITE','UpdateProject'=>'WRITE','AddProjectTask'=>'WRITE',
+        'UpdateProjectTask'=>'WRITE','StartTaskTimer'=>'WRITE','EndTaskTimer'=>'WRITE',
+        'AddProjectMessage'=>'WRITE','CreateQuote'=>'WRITE','UpdateQuote'=>'WRITE',
+        // DESTRUCTIVE (irreversível) — os comandos destrutivos/financeiros de
+        // client/order/invoice foram REMOVIDOS do allowlist (não apenas desativados
+        // pelo gate); resta apenas DeleteProjectTask, ainda coberto pelo gate WO-2.
+        'DeleteProjectTask'=>'DESTRUCTIVE',
+        // FINANCIAL — AcceptQuote gera fatura/pedido, logo é efeito financeiro.
+        // (Único comando financeiro remanescente: os demais foram removidos.)
+        'AcceptQuote'=>'FINANCIAL',
+        // COST (custo/provisionamento externo)
+        'DomainRegister'=>'COST','DomainRenew'=>'COST','UpgradeProduct'=>'COST',
+        'AcceptOrder'=>'COST','AddOrder'=>'COST',
+        // COMMS (envio de e-mail)
+        'SendEmail'=>'COMMS','SendQuote'=>'COMMS',
+    ];
+
     /** @var callable|null Para injecao em testes */
     private $callable = null;
+
+    private ?array $gatesOverride = null; // teste: ['write'=>bool,'destructive'=>bool,...,'readonly'=>bool]
+    private const IMPERSONATION_COMMANDS = [
+        'AddTicketReply','CreateProject','UpdateProject','AddProjectTask',
+        'UpdateProjectTask','StartTaskTimer','EndTaskTimer','AddProjectMessage',
+        'UpdateToDoItem',
+    ];
+    private array $adminIdCache = [];
+    private $adminIdResolver = null; // teste: fn(string $username): ?int
 
     public function __construct(private readonly string $adminUser = 'admin') {}
 
     public function setCallable(callable $fn): void
     {
         $this->callable = $fn;
+    }
+
+    public function setGates(array $gates): void { $this->gatesOverride = $gates; }
+
+    public function setAdminIdResolver(callable $fn): void { $this->adminIdResolver = $fn; }
+
+    private function classOf(string $command): string
+    {
+        return self::COMMAND_CLASS[$command] ?? 'WRITE'; // fail-safe
+    }
+
+    private function gateEnabled(string $class): bool
+    {
+        if ($class === 'READ') return true;
+        if ($this->isReadonly()) return false; // master switch (fail-closed)
+        [$key, $default] = match ($class) {
+            'WRITE'       => ['nt_mcp_enable_write', true],   // WRITE habilitado por padrão
+            'DESTRUCTIVE' => ['nt_mcp_enable_destructive', false],
+            'FINANCIAL'   => ['nt_mcp_enable_financial', false],
+            'COST'        => ['nt_mcp_enable_cost', false],
+            'COMMS'       => ['nt_mcp_enable_comms', false],
+            default       => ['nt_mcp_enable_write', false],
+        };
+        return $this->boolSetting($key, $default, strtolower($class));
+    }
+
+    /**
+     * readonly master switch — FAIL-CLOSED: qualquer falha de leitura de config
+     * é tratada como read-only (bloqueia escrita), consistente com
+     * CapsuleClient::isReadonly(). O override de teste tem precedência.
+     */
+    private function isReadonly(): bool
+    {
+        if ($this->gatesOverride !== null) {
+            return (bool) ($this->gatesOverride['readonly'] ?? false);
+        }
+        // Fora de um WHMCS bootstrapado (ex.: testes) não há config a proteger —
+        // usa o default seguro. Sob WHMCS, uma falha de leitura cai no catch
+        // abaixo e falha FECHADO (bloqueia escrita).
+        if (!class_exists('\WHMCS\Config\Setting')) {
+            return false;
+        }
+        try {
+            $v = \WHMCS\Config\Setting::getValue('nt_mcp_readonly');
+            return $v === '1' || $v === 1 || $v === true;
+        } catch (\Throwable $e) {
+            error_log('NT MCP LocalApiClient: readonly config read failed — failing closed: ' . $e->getMessage());
+            return true;
+        }
+    }
+
+    /** Lê config booleana com override de teste e default seguro. */
+    private function boolSetting(string $key, bool $default, string $overrideKey): bool
+    {
+        if ($this->gatesOverride !== null) {
+            return (bool) ($this->gatesOverride[$overrideKey] ?? $default);
+        }
+        try {
+            $v = \WHMCS\Config\Setting::getValue($key);
+            if ($v === null || $v === '') return $default;
+            return $v === '1' || $v === 1 || $v === true;
+        } catch (\Throwable $e) {
+            return $default;
+        }
+    }
+
+    private function assertModeAllows(string $command): void
+    {
+        $class = $this->classOf($command);
+        if (!$this->gateEnabled($class)) {
+            self::auditLog("MCP BLOCKED {$class} '{$command}' (gate disabled)", []);
+            throw new \RuntimeException(
+                "LocalApiClient: command '{$command}' is blocked (class {$class} disabled by config)."
+            );
+        }
+    }
+
+    private function clampImpersonation(string $command, array $params): array
+    {
+        if (!in_array($command, self::IMPERSONATION_COMMANDS, true)) return $params;
+
+        if ($command === 'AddTicketReply') {
+            $params['adminusername'] = $this->adminUser; // força o admin do token
+            unset($params['adminid']);
+            return $params;
+        }
+        // comandos baseados em adminid
+        $id = $this->resolveAdminId($this->adminUser);
+        if ($id === null) {
+            throw new \RuntimeException(
+                "LocalApiClient: cannot resolve admin id for '{$this->adminUser}'; refusing caller-supplied admin."
+            );
+        }
+        $params['adminid'] = $id;
+        unset($params['adminusername']);
+        return $params;
+    }
+
+    private function resolveAdminId(string $username): ?int
+    {
+        if (array_key_exists($username, $this->adminIdCache)) return $this->adminIdCache[$username];
+        if ($this->adminIdResolver !== null) {
+            $id = ($this->adminIdResolver)($username);
+            if ($id !== null) $this->adminIdCache[$username] = $id;
+            return $id;
+        }
+        try {
+            $row = \WHMCS\Database\Capsule::table('tbladmins')->where('username', $username)->first();
+            $id = $row ? (int) $row->id : null;
+            if ($id !== null) $this->adminIdCache[$username] = $id;
+            return $id;
+        } catch (\Throwable $e) {
+            error_log('NT MCP: resolveAdminId failed: ' . $e->getMessage());
+            return null;
+        }
     }
 
     public function call(string $command, array $params = []): array
@@ -143,6 +305,9 @@ class LocalApiClient
                 "LocalApiClient: WHMCS API command '{$command}' is not in the allowed list."
             );
         }
+
+        $this->assertModeAllows($command);                       // A
+        $params = $this->clampImpersonation($command, $params);  // B
 
         // ---------------------------------------------------------------
         // SECURITY FIX (F8 -- HIGH): Audit logging for every tool
@@ -180,6 +345,8 @@ class LocalApiClient
                 $params
             );
         }
+
+        ResponseRedactor::scrubSensitive($result);  // D defense-in-depth
 
         return $result;
     }

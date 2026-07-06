@@ -51,8 +51,12 @@ class BearerAuthOAuthTest extends TestCase
         $this->assertSame('john', $auth->authenticate());
     }
 
-    public function test_valid_oauth_token_falls_back_to_admin_when_admin_user_empty(): void
+    public function test_valid_oauth_token_denies_when_admin_user_empty_and_no_fallback_configured(): void
     {
+        // SECURITY FIX (WO-7): empty admin_user on the token row falls
+        // through to getFallbackAdmin(), which now fails closed (null)
+        // instead of returning the hardcoded 'admin' superadmin when
+        // nt_mcp_admin_user isn't configured.
         $auth = $this->makeAuth();
         $row = (object) ['admin_user' => '   ', 'expires_at' => time() + 3600];
         $auth->setOAuthLookupCallable(fn(string $hash) => $row);
@@ -60,11 +64,13 @@ class BearerAuthOAuthTest extends TestCase
         $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . self::OAUTH_TOKEN;
 
         $result = $auth->authenticate();
-        $this->assertSame('admin', $result);
+        $this->assertNull($result);
     }
 
-    public function test_valid_oauth_token_without_admin_user_property_uses_fallback(): void
+    public function test_valid_oauth_token_without_admin_user_property_denies_without_fallback_configured(): void
     {
+        // SECURITY FIX (WO-7): same as above, but for a row that never had
+        // the admin_user column at all (pre-migration DBs).
         $auth = $this->makeAuth();
         $row = (object) ['expires_at' => time() + 3600]; // sem admin_user
         $auth->setOAuthLookupCallable(fn(string $hash) => $row);
@@ -72,7 +78,7 @@ class BearerAuthOAuthTest extends TestCase
         $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . self::OAUTH_TOKEN;
 
         $result = $auth->authenticate();
-        $this->assertSame('admin', $result);
+        $this->assertNull($result);
     }
 
     // --- Caminho de rejeicao ---
@@ -113,10 +119,14 @@ class BearerAuthOAuthTest extends TestCase
 
         $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . $staticToken;
 
-        // Deve retornar o admin do token estatico (nao 'oauth_admin')
-        // getStaticTokenAdmin() -> getFallbackAdmin() -> 'admin' (WHMCS\Config\Setting nao disponivel em tests)
+        // Deve seguir o caminho do token estatico (nao 'oauth_admin'), que
+        // cai em getStaticTokenAdmin() -> getFallbackAdmin(). Sem
+        // nt_mcp_admin_user configurado (WHMCS\Config\Setting nao existe em
+        // testes), o fallback agora nega (null) em vez do antigo 'admin'
+        // hardcoded (SECURITY FIX WO-7) -- mas o importante e que NUNCA
+        // retorna 'oauth_admin'.
         $result = $auth->authenticate();
-        $this->assertSame('admin', $result);
+        $this->assertNull($result);
     }
 
     // --- B1: Orphan token defense — admin deletado/disabled em tbladmins ---

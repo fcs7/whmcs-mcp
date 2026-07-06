@@ -3,6 +3,7 @@
 namespace NtMcp\Tools;
 
 use NtMcp\Whmcs\LocalApiClient;
+use NtMcp\Whmcs\ResponseRedactor;
 use PhpMcp\Server\Attributes\McpTool;
 
 class BillingTools
@@ -43,12 +44,7 @@ class BillingTools
     public function getPayMethods(int $clientid): string
     {
         $result = $this->api->call('GetPayMethods', ['clientid' => $clientid]);
-        if (isset($result['paymethods'])) {
-            foreach ($result['paymethods'] as &$pm) {
-                unset($pm['gateway_customer_id'], $pm['token'], $pm['card_number']);
-            }
-            unset($pm);
-        }
+        ResponseRedactor::stripPayMethods($result);
         return json_encode($result, JSON_PRETTY_PRINT);
     }
 }
