@@ -2,3 +2,18 @@
 /modules/addons/nt_mcp/.phpunit.cache/
 *.env
 /.security-hardening/
+
+# Ferramentas de sessão / IDE (não pertencem ao repo)
+.omc/
+.claude/worktrees/
+
+# Metadados do Windows (WSL) em arquivos baixados
+*:Zone.Identifier
+
+# Dumps de sessão de assistente
+modules/addons/nt_mcp/[0-9][0-9][0-9][0-9]-*.txt
+
+# Módulos WHMCS de terceiros (staging de deploy — ionCube encoded, não versionar)
+/Plesk/
+/Virtualizor/
+/proxmox/

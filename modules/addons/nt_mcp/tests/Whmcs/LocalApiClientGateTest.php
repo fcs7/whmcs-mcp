@@ -22,7 +22,14 @@ class LocalApiClientGateTest extends TestCase
         $this->assertSame('success', $result['result']);
     }
 
-    public function test_module_terminate_blocked_when_destructive_gate_off(): void
+    // Nota: os comandos destrutivos/financeiros de client/order/invoice
+    // (CloseClient, ModuleTerminate, DeleteOrder, CreateInvoice, AddCredit...)
+    // foram REMOVIDOS do allowlist — não apenas gated. Os testes de gate abaixo
+    // usam os únicos comandos remanescentes de cada classe: DeleteProjectTask
+    // (DESTRUCTIVE) e AcceptQuote (FINANCIAL). A remoção física é garantida pelo
+    // regression guard em test_removed_*_rejected_by_allowlist.
+
+    public function test_delete_project_task_blocked_when_destructive_gate_off(): void
     {
         $client = new LocalApiClient('testadmin');
         $client->setGates(['destructive' => false]);
@@ -30,21 +37,21 @@ class LocalApiClientGateTest extends TestCase
 
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('blocked');
-        $client->call('ModuleTerminate', ['serviceid' => 1]);
+        $client->call('DeleteProjectTask', ['projectid' => 1, 'taskid' => 1]);
     }
 
-    public function test_module_terminate_allowed_when_destructive_gate_on(): void
+    public function test_delete_project_task_allowed_when_destructive_gate_on(): void
     {
         $client = new LocalApiClient('testadmin');
         $client->setGates(['destructive' => true]);
         $client->setCallable(fn() => ['result' => 'success']);
 
-        $result = $client->call('ModuleTerminate', ['serviceid' => 1]);
+        $result = $client->call('DeleteProjectTask', ['projectid' => 1, 'taskid' => 1]);
 
         $this->assertSame('success', $result['result']);
     }
 
-    public function test_add_credit_blocked_by_default_financial_gate(): void
+    public function test_accept_quote_blocked_by_default_financial_gate(): void
     {
         $client = new LocalApiClient('testadmin');
         $client->setGates([]); // financial off by default
@@ -52,7 +59,35 @@ class LocalApiClientGateTest extends TestCase
 
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('blocked');
-        $client->call('AddCredit', ['clientid' => 1, 'amount' => 10]);
+        $client->call('AcceptQuote', ['quoteid' => 1]);
+    }
+
+    /**
+     * Regression guard: as 10 tools destrutivas/financeiras foram REMOVIDAS
+     * fisicamente do allowlist. Mesmo com todos os gates habilitados, o
+     * allowlist rejeita esses comandos antes de qualquer classificação —
+     * é a defesa que teria pego o merge incoerente que reintroduziu o gate.
+     */
+    public function test_removed_destructive_financial_commands_rejected_by_allowlist_even_with_gates_on(): void
+    {
+        $removed = [
+            'CloseClient', 'ModuleTerminate', 'DeleteOrder', 'CreateInvoice',
+            'AddInvoicePayment', 'UpdateInvoice', 'AddCredit', 'AddTransaction',
+            'UpdateTransaction', 'AddBillableItem',
+        ];
+
+        foreach ($removed as $cmd) {
+            $client = new LocalApiClient('testadmin');
+            $client->setGates(['write' => true, 'destructive' => true, 'financial' => true, 'cost' => true, 'comms' => true]);
+            $client->setCallable(fn() => ['result' => 'success']);
+
+            try {
+                $client->call($cmd, []);
+                $this->fail("Comando removido '{$cmd}' não deveria ser aceito pelo allowlist");
+            } catch (\RuntimeException $e) {
+                $this->assertStringContainsString('not in the allowed list', $e->getMessage());
+            }
+        }
     }
 
     public function test_add_client_write_allowed_by_default(): void

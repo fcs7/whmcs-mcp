@@ -64,7 +64,10 @@ final class RegistrationHandler
             }
         }
 
-        $clientId   = bin2hex(random_bytes(16));
+        // SECURITY FIX (B3): prefix discriminador facilita auditoria/busca de
+        // clients registrados via DCR público (RFC 7591).  Coluna client_id
+        // é VARCHAR(64); "nt-mcp-" (7) + 32 hex = 39 chars, cabe.
+        $clientId   = 'nt-mcp-' . bin2hex(random_bytes(16));
         // SECURITY FIX (L-01 -- LOW): Sanitize client_name to prevent stored XSS
         $clientName = strip_tags($input['client_name'] ?? 'MCP Client');
 

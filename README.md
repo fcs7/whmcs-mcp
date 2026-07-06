@@ -1,14 +1,14 @@
 # NT MCP Server — WHMCS Addon
 
-Servidor MCP (Model Context Protocol) que expoe 96 operacoes WHMCS como ferramentas para o Claude. Funciona como **Conector** — conecta o Claude ao seu WHMCS para gerenciar clientes, faturas, tickets, servicos, dominios, pedidos, projetos e CRM via conversacao.
+Servidor MCP (Model Context Protocol) que expoe 86 ferramentas WHMCS como ferramentas para o Claude. Funciona como **Conector** — conecta o Claude ao seu WHMCS para gerenciar clientes, faturas, tickets, servicos, dominios, pedidos, projetos e CRM via conversacao.
 
-> **Para a experiencia completa**, combine este Conector com a **Habilidade** (Skill) que ensina o Claude a usar os 96 tools → **[fcs7/whmcs-mcp-plugin](https://github.com/fcs7/whmcs-mcp-plugin)**
+> **Para a experiencia completa**, combine este Conector com a **Habilidade** (Skill) que ensina o Claude a usar os 86 tools → **[fcs7/whmcs-mcp-plugin](https://github.com/fcs7/whmcs-mcp-plugin)**
 
 ### Como os componentes se encaixam
 
 | Conceito | O que faz | Repositorio |
 |----------|-----------|-------------|
-| **Conector** (este repo) | Expoe 96 tools MCP via HTTP — o Claude *pode* usar | Voce esta aqui |
+| **Conector** (este repo) | Expoe 86 tools MCP via HTTP — o Claude *pode* usar | Voce esta aqui |
 | **Habilidade** ([plugin repo](https://github.com/fcs7/whmcs-mcp-plugin)) | Ensina o Claude *como* usar os tools — parametros, workflows, boas praticas | [fcs7/whmcs-mcp-plugin](https://github.com/fcs7/whmcs-mcp-plugin) |
 
 > Sem a Habilidade o Claude tem acesso aos tools mas pode errar parametros ou nao saber a melhor sequencia de operacoes. Sem o Conector, a Habilidade nao tem como executar nada.
@@ -23,41 +23,109 @@ Servidor MCP (Model Context Protocol) que expoe 96 operacoes WHMCS como ferramen
 
 ## Instalacao
 
+### 0. Preparacao inicial
+
+Antes de comecar, voce precisa:
+
+1. **Clonar ou baixar este repositorio:**
+   ```bash
+   git clone https://github.com/fcs7/whmcs-mcp.git
+   cd whmcs-mcp
+   ```
+   Ou baixe o ZIP em https://github.com/fcs7/whmcs-mcp/releases
+
+2. **Acessar seu servidor WHMCS** via SSH ou Plesk File Manager
+
+3. **Determinar o caminho raiz do WHMCS:**
+   - Em hosting Plesk: `/home/seu_usuario/public_html/` ou `/home/seu_usuario/httpdocs/`
+   - Procure pelos arquivos: `init.php`, `admin/index.php`, `modules/`
+   - Este sera chamado de `{WHMCS_ROOT}` nos passos abaixo
+
 ### 1. Enviar arquivos para o WHMCS
 
-Envie o diretorio `modules/addons/nt_mcp/` para dentro da instalacao do WHMCS. O destino e `httpdocs/modules/addons/nt_mcp/`.
+Envie o diretorio `modules/addons/nt_mcp/` para `{WHMCS_ROOT}/modules/addons/nt_mcp/`.
 
-**Via SFTP/SCP:**
+**IMPORTANTE:** Nao envie: `vendor/`, `tests/`, `.full-review/`, `.security-hardening/`, `data/`, `.git/`, `deploy/`
+
+#### Opcao A: Via SSH (RECOMENDADO)
+
+Se voce tem acesso SSH ao servidor:
 
 ```bash
-scp -r modules/addons/nt_mcp/ usuario@servidor:httpdocs/modules/addons/nt_mcp/
+# No seu computador, dentro do repo clonado:
+scp -r modules/addons/nt_mcp/ usuario@seu-servidor:public_html/modules/addons/nt_mcp/
+
+# OU se estiver dentro do servidor:
+cp -r modules/addons/nt_mcp/ /home/seu_usuario/public_html/modules/addons/nt_mcp/
 ```
 
-**Via Plesk (File Manager):**
+#### Opcao B: Via Plesk File Manager (SEM SSH)
 
-1. Acesse o **File Manager** do Plesk
-2. Navegue ate `httpdocs/modules/addons/`
-3. Crie a pasta `nt_mcp`
-4. Faca upload dos arquivos e pastas: `mcp.php`, `nt_mcp.php`, `oauth.php`, `composer.json`, `composer.lock`, `src/`, `.well-known/`
-5. **Nao envie** as pastas `vendor/`, `tests/`, `.full-review/`, `.security-hardening/`, `data/` ou `deploy/`
+Se nao tem acesso SSH, use o File Manager do Plesk:
 
-A estrutura final deve ser:
+1. **Acesse** o Plesk da sua hospedagem (geralmente https://seu-servidor:8443)
+2. **Navegue** ate `File Manager > httpdocs/modules/addons/`
+3. **Crie a pasta** `nt_mcp` (clique direito > New Folder)
+4. **Faca upload** dos seguintes arquivos/pastas (em ordem):
+   - `mcp.php`
+   - `oauth.php`
+   - `nt_mcp.php`
+   - `composer.json`
+   - `composer.lock`
+   - `.htaccess`
+   - `src/` (pasta inteira)
+   - `.well-known/` (pasta inteira)
+
+   **Dica:** Compacte `src/` e `.well-known/` em ZIP antes do upload, depois extraia no Plesk para acelerar.
+
+5. **Verifique** a estrutura na apos o upload (ver abaixo)
+
+#### Opcao C: Via FTP/SFTP (OUTRO CLIENTE)
+
+Use um cliente FTP como FileZilla, WinSCP ou Cyberduck:
+
+1. **Conecte-se** ao seu servidor FTP/SFTP
+2. **Navegue** ate `httpdocs/modules/addons/`
+3. **Crie a pasta** `nt_mcp`
+4. **Faca upload** dos arquivos (mesma lista acima)
+
+#### Estrutura esperada apos o upload:
 
 ```
-httpdocs/                  # Raiz do WHMCS (Plesk document root)
-  .well-known/
-    oauth-authorization-server/
-      index.php            # RFC 8414 discovery (ver passo 4)
+{WHMCS_ROOT}/                # Exemplo: /home/seu_usuario/public_html/
   init.php
   modules/
     addons/
-      nt_mcp/
-        mcp.php            # Endpoint MCP HTTP
-        nt_mcp.php         # Hooks do addon (ativacao, admin UI)
-        oauth.php          # Servidor OAuth 2.1 (register, authorize, token)
+      nt_mcp/               # ← Voce esta aqui apos o upload
+        mcp.php             # Endpoint principal MCP (START_POINT)
+        oauth.php           # Servidor OAuth 2.1
+        nt_mcp.php          # Addon hooks (ativacao, admin UI)
         composer.json
         composer.lock
-        .htaccess          # Protecao de diretorios
+        .htaccess           # Protecao: rejeita acesso direto a vendor/, src/, etc
+        
+        src/
+          Server.php        # Bootstrap php-mcp/server
+          Auth/
+            BearerAuth.php  # Autenticacao Bearer token + OAuth 2.1
+          OAuth/
+            OAuthRouter.php
+            Handlers/
+          Tools/
+            Client.php      # 12 tools de clientes
+            Order.php       # 9 tools de pedidos
+            ...             # (9 classes no total)
+          Whmcs/
+            LocalApiClient.php   # Wrapper com allowlist de comandos
+            CapsuleClient.php    # Query builder com allowlist
+            CompatContainer.php  # PSR-11 container
+          Admin/
+            AdminController.php  # Dashboard admin
+          Http/
+            IpResolver.php       # CIDR proxy resolution
+          Security/
+            ...
+          
         .well-known/
           openid-configuration/
             index.php      # Discovery fallback
@@ -65,45 +133,124 @@ httpdocs/                  # Raiz do WHMCS (Plesk document root)
           Server.php       # Bootstrap MCP server
           Auth/
             BearerAuth.php # Autenticacao Bearer + OAuth
-          Tools/            # 11 classes com 96 tools
+          Tools/            # 11 classes com 86 tools
           Whmcs/
             LocalApiClient.php   # Wrapper localAPI() com allowlist
             CapsuleClient.php    # Query builder DB com allowlist
             CompatContainer.php  # PSR-11 container com auto-wiring
         vendor/            # Criado pelo composer (nao versionado)
+        tests/              # (NAO envie - fica local)
+        deploy/             # (NAO envie - templates para seu deploy)
 ```
 
-### 2. Instalar dependencias
+**Checklist apos o upload:**
+- [ ] Arquivo `mcp.php` existe em `modules/addons/nt_mcp/`
+- [ ] Pasta `src/` contem ao menos `Server.php` e `Auth/BearerAuth.php`
+- [ ] Arquivo `.htaccess` esta presente (protege a pasta)
+- [ ] Permissoes: pasta com 755, arquivos com 644 (se aplicavel)
 
-**Via SSH (recomendado):**
+### 2. Instalar dependências (Composer)
+
+O addon usa PHP Composer para gerenciar dependências. Você **PRECISA** completar este passo antes de ativar o addon.
+
+#### Opcao A: Via SSH (RECOMENDADO)
+
+Se voce tem acesso SSH:
 
 ```bash
-cd httpdocs/modules/addons/nt_mcp/
+# Conecte ao servidor via SSH, depois execute:
+cd /home/seu_usuario/public_html/modules/addons/nt_mcp
 composer install --no-dev --ignore-platform-req=ext-iconv
 ```
 
-**Sem SSH (enviar vendor/ pronto):**
+**Que verifica:** Cria a pasta `vendor/` com todas as bibliotecas necesarias.
+
+#### Opcao B: Sem SSH - Instalar localmente e enviar
+
+Se seu hosting **nao tem SSH**, faca isso na sua maquina:
 
 ```bash
-# No computador local
-cd modules/addons/nt_mcp/
+# 1. Certifique-se que tem Composer instalado
+# Download em https://getcomposer.org/download/
+
+# 2. No seu computador, dentro do repo clonado:
+cd modules/addons/nt_mcp
 composer install --no-dev --ignore-platform-req=ext-iconv
-# Depois envie a pasta vendor/ via SFTP ou File Manager
+
+# 3. Isso cria a pasta vendor/ localmente
+# Agora envie vendor/ para o servidor:
+#    - Via Plesk File Manager (compacte em ZIP primeiro)
+#    - Via FTP/SFTP
+#    - Via seu cliente de sincronizacao
+
+# Exemplo com SCP (se SSH estiver disponivel para upload):
+scp -r vendor/ usuario@seu-servidor:public_html/modules/addons/nt_mcp/
+```
+
+**IMPORTANTE:** A pasta `vendor/` **DEVE** estar presente para o addon funcionar.
+
+#### Verifica se funcionou:
+
+```bash
+# No servidor, verifique:
+ls -la /home/seu_usuario/public_html/modules/addons/nt_mcp/vendor/
+
+# Deve haver varias pastas: autoload.php, php-mcp/, psr/, etc.
 ```
 
 ### 3. Ativar o addon no WHMCS
 
-1. Acesse o admin do WHMCS
-2. Va em **Setup > Addon Modules**
-3. Encontre **NT MCP Server** e clique em **Activate**
-4. Na mensagem de sucesso, **copie o Bearer Token exibido** — ele so aparece uma vez
-5. No campo **Admin User para API Local**, configure o **username** de um administrador ativo do WHMCS (deve existir em `tbladmins`)
+#### Passo A: Acessar a tela de addons
 
-> **IMPORTANTE:** O token e armazenado como hash SHA-256. Apos a ativacao, o token em texto claro nao pode ser recuperado. Se perder, regenere na tela do addon.
+1. **Abra** seu admin WHMCS (geralmente `https://seu-servidor/admin/`)
+2. Autentique-se como administrador
+3. **Navegue** para: **Setup** > **Addon Modules**
+4. **Procure** por **NT MCP Server** na lista (use Ctrl+F se necessario)
+5. **Clique em** **Activate** (botao verde)
+
+#### Passo B: Configurar o addon
+
+Apos clicar Activate, você verá uma tela com:
+
+1. **Bearer Token (gerado automaticamente):**
+   ```
+   Token: sk-xxxxxxxxxxxxxxxxxxxxxxxxxx
+   ```
+   - **COPIE este token agora** — ele so é exibido uma UNICA VEZ
+   - Se perder, você tera que regenerar na tela do addon depois
+   - Guarde em um lugar seguro (1Password, .env, etc)
+
+2. **Admin User para API Local:**
+   - Escolha o **username** de um administrador WHMCS ativo
+   - Deve ser alguem que existe em `Setup > Administrator Users`
+   - Exemplo: `admin` (usuario padrao) ou `seu_admin_user`
+   - Este usuario sera usado para chamar a WHMCS Local API em seu nome
+
+   **Por que?** O addon precisa de permissao para chamar comandos WHMCS. Ele usa este usuario administrativo para fazer isso de forma controlada.
+
+3. **Clique em** **Salvar** ou **Continue**
+
+**Apos ativar:**
+- O addon aparecera em **Setup > Addon Modules > NT MCP Server** com opcoes:
+  - **Configurar** — Alterar usuario admin, renovar token, revogar clientes OAuth
+  - **Desativar** — Para desabilitar o addon
 
 ### 4. Configurar discovery OAuth (rewrite rules)
 
-Para que o Claude Code descubra automaticamente o servidor OAuth, adicione as seguintes regras ao `.htaccess` na **raiz do WHMCS** (`httpdocs/.htaccess`):
+O Claude Code e outros clientes OAuth precisam descobrir o servidor OAuth 2.1 automaticamente via RFC 8414. Para isso, adicione regras ao `.htaccess` na **raiz do WHMCS**.
+
+#### Localizacao do arquivo:
+
+- Se WHMCS esta em `/home/seu_usuario/public_html/` → arquivo é `/home/seu_usuario/public_html/.htaccess`
+- Se WHMCS esta em `/home/seu_usuario/httpdocs/` → arquivo é `/home/seu_usuario/httpdocs/.htaccess`
+
+#### Opcao A: Via Plesk File Manager
+
+1. **Acesse** Plesk File Manager
+2. **Navegue** para a raiz (httpdocs/)
+3. **Procure** por `.htaccess` (use "Show hidden files" se nao aparecer)
+4. **Clique em** `.htaccess` > **Edit**
+5. **Adicione** as seguintes linhas **ANTES** de qualquer outra regra RewriteRule:
 
 ```apache
 # NT MCP OAuth Discovery (RFC 8414)
@@ -112,11 +259,124 @@ RewriteRule ^\.well-known/oauth-authorization-server/?$ /modules/addons/nt_mcp/o
 RewriteRule ^\.well-known/openid-configuration/?$ /modules/addons/nt_mcp/oauth.php?action=server-metadata [L,QSA]
 ```
 
-Estas regras redirecionam a discovery OAuth padrao para o endpoint do addon. Sem elas, o Claude Code pode demorar 60s no timeout do discovery.
+6. **Clique em** **Save**
 
-> O arquivo `deploy/htaccess-well-known.conf` contem estas regras prontas para copiar.
+#### Opcao B: Via SSH ou FTP
 
-### 5. Conectar ao Claude
+```bash
+# SSH - abra o .htaccess com seu editor favorito:
+nano /home/seu_usuario/public_html/.htaccess
+
+# Ou use um cliente FTP para editar remotamente
+# Abra em um editor de texto, adicione as regras no topo, salve
+```
+
+#### Se o arquivo .htaccess nao existir:
+
+1. **Crie um novo arquivo** chamado `.htaccess`
+2. **Adicione o conteudo:**
+
+```apache
+RewriteEngine On
+RewriteBase /
+
+# NT MCP OAuth Discovery (RFC 8414)
+RewriteRule ^\.well-known/oauth-authorization-server/?$ /modules/addons/nt_mcp/oauth.php?action=server-metadata [L,QSA]
+RewriteRule ^\.well-known/openid-configuration/?$ /modules/addons/nt_mcp/oauth.php?action=server-metadata [L,QSA]
+
+# Suas outras regras WHMCS aqui...
+```
+
+3. **Envie** para a raiz do WHMCS
+
+#### Verifica se funcionou:
+
+```bash
+# Teste via curl:
+curl -I https://seu-servidor/.well-known/oauth-authorization-server
+
+# Deve retornar HTTP 200 e conteudo JSON com openid_configuration_endpoint, token_endpoint, etc.
+# Se retornar 404 ou erro, rewrite nao funcionou — check .htaccess
+```
+
+**Sem este passo:** O Claude Code pode demorar ate 60s tentando descobrir o servidor OAuth, ou nao conseguir conectar ao addon.
+
+### 5. Verificacao pos-instalacao (ANTES de conectar ao Claude)
+
+Antes de configurar o Claude Code, verifique que tudo esta funcionando:
+
+#### Verificacao 1: Arquivos no lugar
+
+```bash
+# SSH - verifique a estrutura:
+ls -la /home/seu_usuario/public_html/modules/addons/nt_mcp/
+
+# Deve mostrar:
+# - mcp.php
+# - oauth.php
+# - nt_mcp.php
+# - composer.json
+# - src/ (pasta)
+# - vendor/ (pasta - criada pelo composer)
+```
+
+#### Verificacao 2: Addon ativado no WHMCS
+
+1. **Admin WHMCS** > **Setup** > **Addon Modules**
+2. **Procure** por **NT MCP Server**
+3. **Status** deve ser **Active** (nao Inactive)
+4. **Se nao aparecer:** Pode ser um erro de `vendor/` faltando ou permissoes erradas
+
+#### Verificacao 3: Bearer Token guardado
+
+1. **Admin WHMCS** > **Setup** > **Addon Modules** > **NT MCP Server** > **Configurar**
+2. **Verifique** que há um token exibido (comeca com `sk-`)
+3. Se nao houver, clique **Regenerar Token** e copie
+
+#### Verificacao 4: Discovery OAuth funcionando
+
+```bash
+# Teste a descoberta:
+curl -s https://seu-servidor/.well-known/oauth-authorization-server | jq .
+
+# Deve retornar um JSON com campos como:
+# {
+#   "issuer": "https://seu-servidor",
+#   "authorization_endpoint": "...",
+#   "token_endpoint": "...",
+#   ...
+# }
+
+# Se retornar 404 ou erro, volte ao Passo 4 e check .htaccess
+```
+
+#### Verificacao 5: Permissoes de arquivo
+
+```bash
+# SSH - verifique permissoes:
+stat /home/seu_usuario/public_html/modules/addons/nt_mcp/mcp.php
+
+# Deve ser -rw-r--r-- (644) ou similar
+# Pastas devem ter drwxr-xr-x (755)
+
+# Se estiverem erradas, corrija:
+chmod 755 /home/seu_usuario/public_html/modules/addons/nt_mcp/
+chmod 644 /home/seu_usuario/public_html/modules/addons/nt_mcp/*.php
+chmod -R 755 /home/seu_usuario/public_html/modules/addons/nt_mcp/src
+```
+
+#### Troubleshooting comum nesta fase:
+
+| Problema | Solucao |
+|----------|---------|
+| Addon nao aparece em Setup > Addon Modules | Verifique se `vendor/` existe. Se nao, rode `composer install`. Se ainda nao aparecer, reinicie o WHMCS ou limpe o cache do navegador. |
+| Bearer Token nao aparece na tela do addon | Token foi perdido? Clique **Regenerar Token** para criar um novo. |
+| Discovery retorna 404 | Rewrite rules do `.htaccess` nao estao funcionando. Verifique se `RewriteEngine On` esta ativo e as regras estao no topo. |
+| Permissao negada ao acessar mcp.php | Permissoes erradas. Rode `chmod` conforme acima. |
+
+Apos passar por todas as verificacoes, siga para o Passo 6 (Conectar ao Claude).
+
+### 6. Conectar ao Claude
 
 Apos instalar o addon, conecte o Claude ao servidor. O processo depende de qual cliente voce usa.
 
@@ -185,7 +445,7 @@ claude        # iniciar o Claude Code
 /mcp          # ver status dos servidores MCP
 ```
 
-O servidor deve aparecer como `connected` com 96 tools disponiveis.
+O servidor deve aparecer como `connected` com 86 tools disponiveis.
 
 **Debug:**
 
@@ -229,12 +489,12 @@ O OAuth e iniciado automaticamente na primeira chamada de tool.
 
 Va em **Settings > Habilidades** e crie uma **habilidade pessoal** com o conteudo do arquivo [`SKILL.md` do plugin](https://github.com/fcs7/whmcs-mcp-plugin/blob/main/skills/whmcs-mcp/SKILL.md).
 
-Sem a Habilidade, o Claude tem acesso aos 96 tools mas nao sabe os parametros de cabeca — pode errar nomes de campo ou esquecer parametros obrigatorios.
+Sem a Habilidade, o Claude tem acesso aos 86 tools mas nao sabe os parametros de cabeca — pode errar nomes de campo ou esquecer parametros obrigatorios.
 
 **Verificar:**
 
 1. Reinicie o Claude Desktop
-2. As 96 tools do WHMCS devem aparecer na lista de ferramentas
+2. As 86 tools do WHMCS devem aparecer na lista de ferramentas
 3. Teste: pergunte "liste meus clientes do WHMCS"
 
 **Troubleshooting Claude Desktop:**
@@ -260,7 +520,7 @@ Sem a Habilidade, o Claude tem acesso aos 96 tools mas nao sabe os parametros de
 Apos configurar qualquer cliente, confirme que:
 
 1. **Conexao** — o cliente mostra o servidor como conectado
-2. **Tools** — 96 ferramentas visiveis na lista
+2. **Tools** — 86 ferramentas visiveis na lista
 3. **Execucao** — pergunte "liste os clientes do WHMCS" e confirme que retorna dados reais
 
 ## Autenticacao
@@ -335,7 +595,7 @@ Ao exceder, retorna `429 Too Many Requests` com header `Retry-After`.
 
 ## Ferramentas Disponiveis
 
-96 ferramentas organizadas em 11 categorias:
+86 ferramentas organizadas em 11 categorias:
 
 | Categoria | Qty | Descricao |
 |-----------|:---:|-----------|
@@ -356,7 +616,7 @@ Ao exceder, retorna `429 Too Many Requests` com header `Retry-After`.
 Defesa em profundidade em 3 camadas:
 
 1. **Autenticacao** — OAuth 2.1 com PKCE S256 ou Bearer Token SHA-256 (`hash_equals`)
-2. **Gateway API** — Allowlist de 83 comandos WHMCS; campos sensiveis bloqueados
+2. **Gateway API** — Allowlist de 73 comandos WHMCS; campos sensiveis bloqueados
 3. **Acesso a dados** — Tabelas e colunas restritas por allowlist no acesso direto ao banco
 
 Controles adicionais: security headers (HSTS, CSP, X-Frame-Options), rate limiting, audit logging, CORS, protecao `.htaccess`, validacao de Session ID.
@@ -417,7 +677,7 @@ scp -r . usuario@servidor:httpdocs/modules/addons/nt_mcp/
 
 ## Habilidade (Skill) — Ensinar o Claude a Usar os Tools
 
-Este servidor (Conector) expoe 96 tools via MCP. A **Habilidade** ensina o Claude *como* usa-los — parametros, workflows, boas praticas.
+Este servidor (Conector) expoe 86 tools via MCP. A **Habilidade** ensina o Claude *como* usa-los — parametros, workflows, boas praticas.
 
 **[fcs7/whmcs-mcp-plugin](https://github.com/fcs7/whmcs-mcp-plugin)** — Conector + Habilidade + Hooks de seguranca
 
@@ -434,7 +694,7 @@ Este servidor (Conector) expoe 96 tools via MCP. A **Habilidade** ensina o Claud
 │  Addon WHMCS (PHP):          │      │  Claude Code: Plugin auto    │
 │  • mcp.php (endpoint HTTP)   │      │  Claude Desktop: SKILL.md    │
 │  • oauth.php (OAuth 2.1)     │ ──── │                              │
-│  • src/Tools/ (96 tools)     │ MCP  │  • SKILL.md (referencia)     │
+│  • src/Tools/ (86 tools)     │ MCP  │  • SKILL.md (referencia)     │
 │  • src/Auth/ (Bearer+OAuth)  │      │  • .mcp.json (conector auto) │
 │                              │      │  • hooks.json (seguranca)    │
 │  Roda em: Servidor WHMCS     │      │                              │

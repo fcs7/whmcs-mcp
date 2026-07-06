@@ -154,12 +154,6 @@ class ClientTools
         return base64_encode(json_encode($decoded));
     }
 
-    #[McpTool(name: 'whmcs_close_client', description: 'Fecha/cancela a conta de um cliente')]
-    public function closeClient(int $clientid): string
-    {
-        return json_encode($this->api->call('CloseClient', ['clientid' => $clientid]), JSON_PRETTY_PRINT);
-    }
-
     #[McpTool(name: 'whmcs_get_client_products', description: 'Lista produtos/serviços ativos de um cliente')]
     public function getClientProducts(int $clientid): string
     {

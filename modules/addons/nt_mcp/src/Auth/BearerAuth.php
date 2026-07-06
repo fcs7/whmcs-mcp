@@ -24,10 +24,28 @@ class BearerAuth
     /** Injectable para testes — substitui a consulta Capsule::table() em authenticateOAuthToken(). */
     private ?\Closure $oauthLookup = null;
 
+    /** Injectable para testes — substitui Capsule::table('tbladmins') em validateAdminActive() (B1). */
+    private ?\Closure $adminValidator = null;
+
+    /** Injectable para testes — substitui Capsule::table()->update(revoked=1) em authenticateOAuthToken() (B1). */
+    private ?\Closure $tokenRevoker = null;
+
     /** Injeta callable para testes: fn(string $tokenHash): ?object */
     public function setOAuthLookupCallable(\Closure $fn): void
     {
         $this->oauthLookup = $fn;
+    }
+
+    /** Injeta callable para testes (B1): fn(string $username): bool */
+    public function setAdminValidatorCallable(\Closure $fn): void
+    {
+        $this->adminValidator = $fn;
+    }
+
+    /** Injeta callable para testes (B1): fn(int $tokenId): void */
+    public function setTokenRevokerCallable(\Closure $fn): void
+    {
+        $this->tokenRevoker = $fn;
     }
 
     /**
@@ -55,13 +73,35 @@ class BearerAuth
         $presentedHash = hash('sha256', $presentedToken);
 
         // Check 1: Static token from tblconfiguration (original auth)
-        if (strlen($this->expectedHash) >= self::MIN_TOKEN_LENGTH
+        // SECURITY FIX (B4): opt-in bypass — when nt_mcp_disable_static_bearer=1
+        // only OAuth-issued tokens are accepted, shrinking the auth surface to
+        // the full OAuth 2.1 path with per-token admin binding.
+        if (!$this->isStaticBearerDisabled()
+            && strlen($this->expectedHash) >= self::MIN_TOKEN_LENGTH
             && hash_equals($this->expectedHash, $presentedHash)) {
-            return $this->getStaticTokenAdmin();
+            $admin = $this->getStaticTokenAdmin();
+            // SECURITY FIX (B1): confirm admin still active in tbladmins.
+            return $this->validateAdminActive($admin) ? $admin : null;
         }
 
         // Check 2: OAuth-issued token from mod_nt_mcp_oauth_tokens
         return $this->authenticateOAuthToken($presentedHash);
+    }
+
+    /**
+     * SECURITY FIX (B4): opt-in flag to refuse the static Bearer token,
+     * forcing clients through the OAuth 2.1 flow (per-token admin binding,
+     * revocable, approved via UI).  Default false for backwards compat.
+     */
+    private function isStaticBearerDisabled(): bool
+    {
+        try {
+            $v = trim((string) (\WHMCS\Config\Setting::getValue('nt_mcp_disable_static_bearer') ?? ''));
+            return $v === '1' || strtolower($v) === 'true' || strtolower($v) === 'on';
+        } catch (\Throwable $e) {
+            error_log('NT MCP BearerAuth: Failed to read nt_mcp_disable_static_bearer: ' . $e->getMessage());
+            return false;
+        }
     }
 
     /**
@@ -102,7 +142,16 @@ class BearerAuth
                 return null;
             }
             $adminUser = property_exists($row, 'admin_user') ? trim((string) ($row->admin_user ?? '')) : '';
-            return $adminUser !== '' ? $adminUser : $this->getFallbackAdmin();
+            $resolved = $adminUser !== '' ? $adminUser : $this->getFallbackAdmin();
+            // SECURITY FIX (B1): validate admin active; revoke token if orphan.
+            if (!$this->validateAdminActive($resolved)) {
+                $tokenId = property_exists($row, 'id') ? (int) $row->id : 0;
+                if ($tokenId > 0) {
+                    $this->revokeToken($tokenId);
+                }
+                return null;
+            }
+            return $resolved;
         }
 
         try {
@@ -131,13 +180,75 @@ class BearerAuth
             }
 
             $admin = property_exists($row, 'admin_user') ? trim($row->admin_user ?? '') : '';
-            return $admin !== '' ? $admin : $this->getFallbackAdmin();
+            $resolved = $admin !== '' ? $admin : $this->getFallbackAdmin();
+
+            // SECURITY FIX (B1): orphan-token defense — confirm admin still
+            // exists in tbladmins and is not disabled.  If not, revoke the
+            // token (expires_at=0) and return 401.
+            if (!$this->validateAdminActive($resolved)) {
+                if (function_exists('logActivity')) {
+                    @logActivity("[NT-MCP] OAuth token revoked: admin '{$resolved}' missing or disabled (token id {$row->id})");
+                }
+                $this->revokeToken((int) $row->id);
+                return null;
+            }
+
+            return $resolved;
         } catch (\Throwable $e) {
             // SECURITY FIX (F4 -- audit): Log DB failures instead of silently
             // returning null.  A database outage should not masquerade as an
             // authentication failure with zero diagnostic information.
             error_log('NT MCP BearerAuth: OAuth token validation failed: ' . $e->getMessage());
             return null;
+        }
+    }
+
+    /**
+     * SECURITY FIX (B1): confirm the admin username is still present in
+     * tbladmins and not disabled.  Prevents orphan tokens from surviving
+     * admin deletion/deactivation up to 4h (OAuth token TTL) / forever
+     * (static token).  Fails closed on DB error — availability of
+     * tbladmins is a hard prerequisite anyway.
+     */
+    private function validateAdminActive(?string $username): bool
+    {
+        // WO-7 × B1: getFallbackAdmin() pode retornar null (nenhum admin
+        // configurado → fail-closed). Tratamos null/'' como "sem admin válido"
+        // → deny, unificando o fail-closed do WO-7 com a defesa de orphan token.
+        if ($username === null || $username === '') {
+            return false;
+        }
+        if ($this->adminValidator !== null) {
+            return (bool) ($this->adminValidator)($username);
+        }
+        try {
+            return (bool) Capsule::table('tbladmins')
+                ->where('username', $username)
+                ->where('disabled', 0)
+                ->exists();
+        } catch (\Throwable $e) {
+            error_log('NT MCP BearerAuth: tbladmins validation failed: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * SECURITY FIX (B1): revoke an OAuth token by expiring it.  No
+     * `revoked` column exists, but the existing authenticate() filter
+     * (expires_at > time()) already rejects the row.
+     */
+    private function revokeToken(int $tokenId): void
+    {
+        if ($this->tokenRevoker !== null) {
+            ($this->tokenRevoker)($tokenId);
+            return;
+        }
+        try {
+            Capsule::table('mod_nt_mcp_oauth_tokens')
+                ->where('id', $tokenId)
+                ->update(['expires_at' => 0]);
+        } catch (\Throwable $e) {
+            error_log('NT MCP BearerAuth: failed to revoke token id ' . $tokenId . ': ' . $e->getMessage());
         }
     }
 

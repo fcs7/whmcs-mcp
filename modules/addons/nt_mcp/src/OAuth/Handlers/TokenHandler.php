@@ -97,7 +97,10 @@ final class TokenHandler
         // Issue access token
         $accessToken = bin2hex(random_bytes(32));
         $tokenHash   = hash('sha256', $accessToken);
-        $expiresIn   = 86400; // 24 hours
+        // SECURITY FIX (B2): TTL reduzido de 24h → 4h.  Shrinks the compromise
+        // window if an admin is deleted/disabled (orphan tokens survive until
+        // expiry or until next authenticate() call revokes via B1 check).
+        $expiresIn   = 14400; // 4 hours
 
         // SECURITY FIX (F7 -- audit): Wrap token insert in try/catch
         try {

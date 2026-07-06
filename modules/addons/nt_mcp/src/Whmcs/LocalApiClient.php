@@ -2,6 +2,8 @@
 // src/Whmcs/LocalApiClient.php
 namespace NtMcp\Whmcs;
 
+use NtMcp\Http\IpResolver;
+
 class LocalApiClient
 {
     // ---------------------------------------------------------------
@@ -21,7 +23,6 @@ class LocalApiClient
         'GetClientsDetails',
         'AddClient',
         'UpdateClient',
-        'CloseClient',
         'GetClientsProducts',
         'GetClientsDomains',
         'GetContacts',
@@ -33,21 +34,13 @@ class LocalApiClient
         // BillingTools
         'GetInvoices',
         'GetInvoice',
-        'CreateInvoice',
-        'AddInvoicePayment',
-        'UpdateInvoice',
         'GetTransactions',
-        'AddCredit',
         'GetCredits',
-        'AddTransaction',
-        'UpdateTransaction',
-        'AddBillableItem',
         'GetPayMethods',
 
         // ServiceTools
         'ModuleSuspend',
         'ModuleUnsuspend',
-        'ModuleTerminate',
         'UpgradeProduct',
 
         // TicketTools
@@ -61,7 +54,6 @@ class LocalApiClient
         'GetOrders',
         'AcceptOrder',
         'CancelOrder',
-        'DeleteOrder',
         'AddOrder',
         'GetOrderStatuses',
         'GetProducts',
@@ -154,13 +146,13 @@ class LocalApiClient
         'LogActivity'=>'WRITE','CreateProject'=>'WRITE','UpdateProject'=>'WRITE','AddProjectTask'=>'WRITE',
         'UpdateProjectTask'=>'WRITE','StartTaskTimer'=>'WRITE','EndTaskTimer'=>'WRITE',
         'AddProjectMessage'=>'WRITE','CreateQuote'=>'WRITE','UpdateQuote'=>'WRITE',
-        // DESTRUCTIVE (irreversível)
-        'CloseClient'=>'DESTRUCTIVE','ModuleTerminate'=>'DESTRUCTIVE','DeleteOrder'=>'DESTRUCTIVE',
+        // DESTRUCTIVE (irreversível) — os comandos destrutivos/financeiros de
+        // client/order/invoice foram REMOVIDOS do allowlist (não apenas desativados
+        // pelo gate); resta apenas DeleteProjectTask, ainda coberto pelo gate WO-2.
         'DeleteProjectTask'=>'DESTRUCTIVE',
-        // FINANCIAL — AcceptQuote gera fatura/pedido, logo é efeito financeiro
-        'CreateInvoice'=>'FINANCIAL','AddInvoicePayment'=>'FINANCIAL','UpdateInvoice'=>'FINANCIAL',
-        'AddCredit'=>'FINANCIAL','AddTransaction'=>'FINANCIAL','UpdateTransaction'=>'FINANCIAL',
-        'AddBillableItem'=>'FINANCIAL','AcceptQuote'=>'FINANCIAL',
+        // FINANCIAL — AcceptQuote gera fatura/pedido, logo é efeito financeiro.
+        // (Único comando financeiro remanescente: os demais foram removidos.)
+        'AcceptQuote'=>'FINANCIAL',
         // COST (custo/provisionamento externo)
         'DomainRegister'=>'COST','DomainRenew'=>'COST','UpgradeProduct'=>'COST',
         'AcceptOrder'=>'COST','AddOrder'=>'COST',
@@ -371,18 +363,10 @@ class LocalApiClient
      */
     public static function auditLog(string $message, array $params = []): void
     {
-        // SECURITY FIX (F3 -- audit): Use proxy-aware IP when available.
-        // Behind Plesk reverse proxy, REMOTE_ADDR is 127.0.0.1 — useless
-        // for forensics. The entry-point files (mcp.php, oauth.php) define
-        // IP resolution functions; use them if available.
-        $ip = 'unknown';
-        if (function_exists('_ntMcpGetClientIp')) {
-            $ip = _ntMcpGetClientIp();
-        } elseif (function_exists('_oauthGetClientIp')) {
-            $ip = _oauthGetClientIp();
-        } else {
-            $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
-        }
+        // SECURITY FIX (F3 -- audit, revised H1): Use IpResolver directly.
+        // Behind Plesk reverse proxy, REMOTE_ADDR is 127.0.0.1 — useless for
+        // forensics. IpResolver respects nt_mcp_trusted_proxies and walks XFF.
+        $ip = IpResolver::resolve();
         $safe = self::redactParams($params);
         $summary = json_encode($safe, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 

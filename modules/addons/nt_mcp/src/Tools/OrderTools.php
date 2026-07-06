@@ -46,12 +46,6 @@ class OrderTools
         ]), JSON_PRETTY_PRINT);
     }
 
-    #[McpTool(name: 'whmcs_delete_order', description: 'Deleta permanentemente um pedido cancelado')]
-    public function deleteOrder(int $orderid): string
-    {
-        return json_encode($this->api->call('DeleteOrder', ['orderid' => $orderid]), JSON_PRETTY_PRINT);
-    }
-
     #[McpTool(name: 'whmcs_add_order', description: 'Cria um novo pedido para um cliente')]
     public function addOrder(
         int $clientid,

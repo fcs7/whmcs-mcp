@@ -1,6 +1,6 @@
 # NT MCP — WHMCS MCP Server Addon
 
-Addon PHP para WHMCS que expõe 96 tools via Model Context Protocol.
+Addon PHP para WHMCS que expõe 86 tools via Model Context Protocol.
 Repo: `git@github.com:fcs7/whmcs-mcp.git`
 
 ## Commands
@@ -8,14 +8,9 @@ Repo: `git@github.com:fcs7/whmcs-mcp.git`
 ```bash
 cd modules/addons/nt_mcp
 composer install --ignore-platform-req=ext-iconv
-./vendor/bin/phpunit --testdox                    # 77 tests, 118 assertions
+./vendor/bin/phpunit --testdox                    # 103+ tests
 composer audit                                    # check dependency CVEs
-grep -c '#\[McpTool\]' src/Tools/*.php   # 96 tools total
-# Deploy pipeline (from repo root)
-./scripts/deploy.sh prod   # → novo.ntweb.com.br (producao)
-./scripts/deploy.sh dev    # → desenv.ntweb.com.br (desenvolvimento)
-./scripts/verify.sh prod   # verificacao pos-deploy
-MCP_TOKEN=xxx ./scripts/verify.sh prod  # verificacao com teste MCP autenticado
+grep -c '#\[McpTool(' src/Tools/*.php    # 86 tools total
 # Deploy manual via FTP (senha interativa — from modules/addons/nt_mcp/)
 lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror -R --only-newer --exclude .git/ --exclude vendor/ --exclude .phpunit.cache/ --exclude .full-review/ --exclude .security-hardening/ --exclude .security-hardening-archive-20260329/ --exclude data/ . /httpdocs/modules/addons/nt_mcp/; bye" desenv.ntweb.com.br
 # Verify: download prod and diff against git
@@ -34,8 +29,8 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 - `src/Http/` — IpResolver, IpAllowlist, TlsEnforcer, SecurityHeaders, CorsHandler
 - `src/OAuth/` — OAuthRouter, OAuthMigration, OAuthHelper, Handlers/{Token,Authorization,Registration,Metadata}Handler
 - `src/Admin/` — AdminController (auth dashboard), OAuthApprovalController (5-layer approval)
-- `src/Whmcs/` — LocalApiClient (83 cmd allowlist), CapsuleClient (3 table allowlist), CompatContainer, SystemUrl, AdminSession
-- `src/Tools/*.php` — 11 classes, 96 tools: Client(13), Billing(12), System(11), Order(10), ProjectManager(10), Domain(9), CRM(8), SupportInfo(7), Quote(6), Service(5), Ticket(5)
+- `src/Whmcs/` — LocalApiClient (73 cmd allowlist, somente não-destrutivas), CapsuleClient (3 table allowlist), CompatContainer, SystemUrl, AdminSession
+- `src/Tools/*.php` — 11 classes, 86 tools: Client(12), System(11), ProjectManager(10), Order(9), Domain(9), CRM(8), SupportInfo(7), Quote(6), Billing(5), Ticket(5), Service(4) — tools destrutivas/financeiras removidas (close_client, delete_order, terminate_service, create_invoice, add_payment, update_invoice, add_credit, add_transaction, update_transaction, add_billable_item)
 - `templates/admin/` — dashboard.php, oauth-approve.php (output escapado via htmlspecialchars)
 
 ### Admin Binding Flow
@@ -69,10 +64,11 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 
 - TLS enforced em mcp.php e oauth.php (bypass: `NT_MCP_ALLOW_HTTP=1` só p/ dev local)
 - Rate limiting: mcp 60/min, register 20/hr, authorize 20/min, token 30/min — TransientData + file fallback
+- CORS origin allowlist: `nt_mcp_cors_origins` (CSV em tblconfiguration) — vazia=`*`; definida+origin-no-allowlist=origem específica+`Vary: Origin`; definida+origin-fora-do-allowlist=sem header (browser bloqueia); sem `HTTP_ORIGIN` (CLI)=`*`
 - Bearer token: SHA-256 hash + `hash_equals()` timing-safe
 - OAuth codes: SHA-256 hash no DB, consumo atômico (`$affected === 0`)
 - CSRF: HMAC-SHA256 nonce em todos os forms admin
-- Command allowlist: 83 comandos em `LocalApiClient::ALLOWED_COMMANDS`
+- Command allowlist: 73 comandos em `LocalApiClient::ALLOWED_COMMANDS`
 - Table/column allowlist: 3 tabelas CRM em `CapsuleClient::ALLOWED_TABLES/COLUMNS`
 - Trusted proxy IP: `IpResolver::resolve()` — usa `\App::getClientIp()` do WHMCS quando disponível (coherence guard contra spoof em conexão direta); `isTrustedProxy()` mescla Trusted Proxies nativo (aba Security, chave `TrustedProxyIps`) ∪ `nt_mcp_trusted_proxies` (aditivo/opcional); fallback rightmost-untrusted XFF
 - Content-Length guard: Server.php rejeita >1MB
@@ -109,5 +105,6 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 - **property_exists() guard** — colunas novas (`admin_user`, `approved_by`, `last_used_at`) podem não existir em DBs pré-migration; usar `property_exists($row, 'col')` antes de acessar
 - **Pending audit findings** — F-05, F-10, F-12 resolvidos. Resolvidos no refactor: F-07 (RateLimiter), F-11 (TokenHandler). Mitigados: F-06 (IpAllowlist), F-14 (SystemUrl — intencional)
 - **Semgrep PHP parser** — não suporta constructor promotion com `readonly` (PHP 8.2); RateLimiter gera PartialParsing warning, findings nesse arquivo podem ser incompletos
+- **`deploy/htaccess-well-known.conf`** — regras RewriteRule a inserir no `.htaccess` da raiz WHMCS (antes das regras WHMCS existentes) para que Claude.ai auto-descubra o OAuth 2.1 via RFC 8414 (`/.well-known/oauth-authorization-server`); sem esse passo, Custom Connector do Claude.ai não consegue descobrir os endpoints
 - **Trusted proxy unificado (WO-TP)** — `IpResolver` reusa o IP resolvido pelo WHMCS (`\App::getClientIp()`) e mescla a lista nativa `TrustedProxyIps` (aba Security) ∪ `nt_mcp_trusted_proxies`. Consequências: (i) proxies da lista NATIVA também autorizam `X-Forwarded-Proto` e `NT_MCP_ALLOW_HTTP` no `TlsEnforcer` — liste só proxies próprios na aba Security; (ii) o caminho nativo honra o "Proxy IP Header" (ex.: CF-Connecting-IP), mas o fallback só lê `X-Forwarded-For`; (iii) se a chave nativa não for `TrustedProxyIps` na versão instalada, a unificação vira no-op — observável pelo error_log "X-Forwarded-For present but no trusted proxies configured". `nt_mcp_trusted_proxies` é agora opcional/aditivo
 - **Config obrigatória pré-deploy** — `nt_mcp_admin_user` DEVE estar setado antes do deploy (senão 401 fail-closed, ver WO-7); operador também configura `nt_mcp_allowed_ips`, `nt_mcp_cors_origins`, e (opcional) `nt_mcp_trusted_proxies` / Trusted Proxies nativo do WHMCS
