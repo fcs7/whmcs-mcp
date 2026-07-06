@@ -81,22 +81,30 @@ final class IpResolver
         }
 
         $ips = array_map('trim', explode(',', $xff));
-        // Walk from right to left, return first IP not in trusted list
+        // Walk from right to left, peeling off trusted proxies. The FIRST
+        // untrusted hop is the real client and terminates the chain of trust —
+        // everything to its left is attacker-controlled, so the scan must never
+        // continue past it (SECURITY: stop at the first untrusted hop, else a
+        // forged leftmost XFF value could be returned).
         for ($i = count($ips) - 1; $i >= 0; $i--) {
             $ip = $ips[$i];
             if ($ip === '') {
                 continue;
             }
-            // SECURITY FIX (WO-4): reject private/reserved-range IPs from the
-            // client-facing XFF entry (spoofable, never a legitimate public client).
-            // This flag is intentionally applied only here, not to the trusted-proxy
-            // match below, since configured trusted proxies are commonly private IPs.
-            if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+            // Trusted proxies (commonly private IPs) are peeled off; the private/
+            // reserved-range check below is intentionally applied only to the
+            // untrusted client hop, not to this trusted-proxy match.
+            if (self::isTrustedProxy($ip)) {
                 continue;
             }
-            if (!self::isTrustedProxy($ip)) {
+            // First untrusted hop = the real client. Accept it only when it is a
+            // valid PUBLIC IP; a private/reserved/malformed value here is spoofed
+            // (a legitimate public client is never private), so stop and fall
+            // back to REMOTE_ADDR instead of walking further left.
+            if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
                 return $ip;
             }
+            break;
         }
 
         return $remoteAddr;

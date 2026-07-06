@@ -117,6 +117,17 @@ class IpResolverTest extends TestCase
         $this->assertSame('127.0.0.1', IpResolver::resolve());
     }
 
+    public function test_resolve_stops_at_first_untrusted_hop_and_ignores_forged_left(): void
+    {
+        // XFF: forged-client, untrusted private hop, trusted proxy (loopback).
+        // The untrusted private hop terminates the chain of trust — the forged
+        // leftmost value must NOT be returned; fall back to REMOTE_ADDR.
+        $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
+        $_SERVER['HTTP_X_FORWARDED_FOR'] = '1.2.3.4, 10.0.0.9, 127.0.0.1';
+
+        $this->assertSame('127.0.0.1', IpResolver::resolve());
+    }
+
     // --- resolve(): WHMCS native path (WO-TP) ---
 
     public function test_resolve_prefers_native_ip_behind_trusted_proxy(): void
