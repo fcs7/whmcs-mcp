@@ -41,11 +41,15 @@ final class ResponseRedactor
     }
 
     /**
-     * Pay methods: ALLOWLIST de campos seguros (substitui o denylist frágil que
-     * só removia 3 campos e vazava last-four/validade/ACH).
+     * Pay methods: ALLOWLIST alinhada ao payload real de GetPayMethods (WHMCS).
+     * Qualquer campo fora desta lista é descartado — inclui remote_token,
+     * card_number, cvv e tokens de gateway, que nunca são devolvidos.
+     * card_last_four já é mascarado pelo próprio WHMCS (só 4 dígitos).
      */
     private const PAYMETHOD_SAFE_KEYS = [
-        'id', 'payment_method_type', 'description', 'is_default', 'created_at', 'updated_at',
+        'id', 'type', 'description', 'gateway_name',
+        'contact_type', 'contact_id', 'card_last_four', 'expiry_date',
+        'start_date', 'issue_number', 'card_type', 'last_updated',
     ];
     public static function stripPayMethods(array &$result): void
     {
@@ -56,8 +60,6 @@ final class ResponseRedactor
             foreach (self::PAYMETHOD_SAFE_KEYS as $k) {
                 if (array_key_exists($k, $pm)) $safe[$k] = $pm[$k];
             }
-            // último dígito mascarado, se existir de forma explícita
-            if (isset($pm['card_last_four'])) $safe['card_last_four'] = $pm['card_last_four'];
             $pm = $safe;
         }
         unset($pm);

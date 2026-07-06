@@ -69,19 +69,43 @@ class CapsuleClient
         }
     }
 
+    /** Override do gate de escrita para testes (null = usa config WHMCS). */
+    private ?bool $writableOverride = null;
+    public function setWritableForTests(bool $writable): void { $this->writableOverride = $writable; }
+
     private function assertWritable(): void
     {
-        $readonly = $this->boolCfg('nt_mcp_readonly', false);
-        $writeOn  = $this->boolCfg('nt_mcp_enable_write', true);
-        if ($readonly || !$writeOn) {
+        if ($this->writableOverride !== null) {
+            if (!$this->writableOverride) {
+                throw new \InvalidArgumentException('CapsuleClient: writes disabled (read-only / write gate).');
+            }
+            return;
+        }
+        if ($this->isReadonly() || !$this->boolCfg('nt_mcp_enable_write', true)) {
             throw new \InvalidArgumentException('CapsuleClient: writes disabled (read-only / write gate).');
+        }
+    }
+
+    /**
+     * readonly master switch — FAIL-CLOSED: qualquer falha de leitura de config
+     * é tratada como read-only (bloqueia escrita), para não liberar writes num
+     * ambiente que deveria permanecer somente-leitura.
+     */
+    private function isReadonly(): bool
+    {
+        try {
+            $v = \WHMCS\Config\Setting::getValue('nt_mcp_readonly');
+            return $v === '1' || $v === 1 || $v === true;
+        } catch (\Throwable $e) {
+            error_log('NT MCP CapsuleClient: readonly config read failed — failing closed: ' . $e->getMessage());
+            return true;
         }
     }
 
     private function boolCfg(string $key, bool $default): bool
     {
         try {
-            $v = \WHMCS\Database\Capsule::connection() ? \WHMCS\Config\Setting::getValue($key) : null;
+            $v = \WHMCS\Config\Setting::getValue($key);
             if ($v === null || $v === '') return $default;
             return $v === '1' || $v === 1 || $v === true;
         } catch (\Throwable $e) { return $default; }

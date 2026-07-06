@@ -69,8 +69,12 @@ class Server
             return;
         }
 
-        $input = file_get_contents('php://input');
-        if (strlen($input) > 1048576) {
+        // Read at most 1 MB + 1 byte so an oversized body is rejected without
+        // materializing the whole payload (covers missing/incorrect Content-Length
+        // and chunked Transfer-Encoding). The header guard above still runs first.
+        $maxBytes = 1048576; // 1 MB
+        $input = (string) file_get_contents('php://input', false, null, 0, $maxBytes + 1);
+        if (strlen($input) > $maxBytes) {
             http_response_code(413);
             header('Content-Type: application/json');
             echo json_encode(['error' => 'Request body too large (max 1 MB)']);

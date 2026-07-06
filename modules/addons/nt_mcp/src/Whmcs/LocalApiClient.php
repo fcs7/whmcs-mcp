@@ -173,10 +173,11 @@ class LocalApiClient
 
     private ?array $gatesOverride = null; // teste: ['write'=>bool,'destructive'=>bool,...,'readonly'=>bool]
     private const IMPERSONATION_COMMANDS = [
-        'AddTicketReply','CreateProject','AddProjectTask','StartTaskTimer',
-        'EndTaskTimer','AddProjectMessage','UpdateToDoItem',
+        'AddTicketReply','CreateProject','UpdateProject','AddProjectTask',
+        'UpdateProjectTask','StartTaskTimer','EndTaskTimer','AddProjectMessage',
+        'UpdateToDoItem',
     ];
-    private static array $adminIdCache = [];
+    private array $adminIdCache = [];
     private $adminIdResolver = null; // teste: fn(string $username): ?int
 
     public function __construct(private readonly string $adminUser = 'admin') {}
@@ -259,16 +260,16 @@ class LocalApiClient
 
     private function resolveAdminId(string $username): ?int
     {
-        if (array_key_exists($username, self::$adminIdCache)) return self::$adminIdCache[$username];
+        if (array_key_exists($username, $this->adminIdCache)) return $this->adminIdCache[$username];
         if ($this->adminIdResolver !== null) {
             $id = ($this->adminIdResolver)($username);
-            if ($id !== null) self::$adminIdCache[$username] = $id;
+            if ($id !== null) $this->adminIdCache[$username] = $id;
             return $id;
         }
         try {
             $row = \WHMCS\Database\Capsule::table('tbladmins')->where('username', $username)->first();
             $id = $row ? (int) $row->id : null;
-            if ($id !== null) self::$adminIdCache[$username] = $id;
+            if ($id !== null) $this->adminIdCache[$username] = $id;
             return $id;
         } catch (\Throwable $e) {
             error_log('NT MCP: resolveAdminId failed: ' . $e->getMessage());
@@ -328,7 +329,7 @@ class LocalApiClient
             );
         }
 
-        \NtMcp\Whmcs\ResponseRedactor::scrubSensitive($result);  // D defense-in-depth
+        ResponseRedactor::scrubSensitive($result);  // D defense-in-depth
 
         return $result;
     }

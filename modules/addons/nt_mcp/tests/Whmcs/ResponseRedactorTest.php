@@ -35,21 +35,27 @@ class ResponseRedactorTest extends TestCase
 
     public function test_strip_pay_methods_keeps_only_allowlisted_keys(): void
     {
+        // Payload shaped like the real WHMCS GetPayMethods response.
         $result = [
             'paymethods' => [
                 [
                     'id' => 1,
-                    'payment_method_type' => 'creditcard',
-                    'description' => 'Visa ending in 1234',
-                    'is_default' => true,
-                    'created_at' => '2026-01-01',
-                    'updated_at' => '2026-02-01',
+                    'type' => 'RemoteCreditCard',
+                    'description' => 'Default Card',
+                    'gateway_name' => 'stripe',
+                    'contact_type' => 'Client',
+                    'contact_id' => 1,
+                    'card_last_four' => '4242',
+                    'expiry_date' => '02/30',
+                    'card_type' => 'Visa',
+                    'last_updated' => '2026-05-17 10:01',
+                    // sensitive — must be dropped by the allowlist:
                     'card_number' => '4111111111111111',
-                    'expiry' => '12/30',
-                    'account_number' => '000123456',
-                    'routing_number' => '021000021',
+                    'remote_token' => '{"customer":"cus_x","method":"pm_x"}',
                     'token' => 'tok_secret',
                     'gateway_customer_id' => 'cus_secret',
+                    'account_number' => '000123456',
+                    'routing_number' => '021000021',
                 ],
             ],
         ];
@@ -58,19 +64,17 @@ class ResponseRedactorTest extends TestCase
 
         $pm = $result['paymethods'][0];
 
-        $this->assertArrayNotHasKey('card_number', $pm);
-        $this->assertArrayNotHasKey('expiry', $pm);
-        $this->assertArrayNotHasKey('account_number', $pm);
-        $this->assertArrayNotHasKey('routing_number', $pm);
-        $this->assertArrayNotHasKey('token', $pm);
-        $this->assertArrayNotHasKey('gateway_customer_id', $pm);
+        foreach (['card_number', 'remote_token', 'token', 'gateway_customer_id', 'account_number', 'routing_number'] as $secret) {
+            $this->assertArrayNotHasKey($secret, $pm);
+        }
 
         $this->assertSame(1, $pm['id']);
-        $this->assertSame('creditcard', $pm['payment_method_type']);
-        $this->assertSame('Visa ending in 1234', $pm['description']);
-        $this->assertTrue($pm['is_default']);
-        $this->assertSame('2026-01-01', $pm['created_at']);
-        $this->assertSame('2026-02-01', $pm['updated_at']);
+        $this->assertSame('RemoteCreditCard', $pm['type']);
+        $this->assertSame('Default Card', $pm['description']);
+        $this->assertSame('stripe', $pm['gateway_name']);
+        $this->assertSame('4242', $pm['card_last_four']);
+        $this->assertSame('02/30', $pm['expiry_date']);
+        $this->assertSame('Visa', $pm['card_type']);
     }
 
     public function test_strip_pay_methods_keeps_card_last_four_when_present(): void
