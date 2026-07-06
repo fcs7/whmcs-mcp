@@ -199,7 +199,7 @@ class LocalApiClient
     private function gateEnabled(string $class): bool
     {
         if ($class === 'READ') return true;
-        if ($this->boolSetting('nt_mcp_readonly', false, 'readonly')) return false; // master switch
+        if ($this->isReadonly()) return false; // master switch (fail-closed)
         [$key, $default] = match ($class) {
             'WRITE'       => ['nt_mcp_enable_write', true],   // WRITE habilitado por padrão
             'DESTRUCTIVE' => ['nt_mcp_enable_destructive', false],
@@ -209,6 +209,31 @@ class LocalApiClient
             default       => ['nt_mcp_enable_write', false],
         };
         return $this->boolSetting($key, $default, strtolower($class));
+    }
+
+    /**
+     * readonly master switch — FAIL-CLOSED: qualquer falha de leitura de config
+     * é tratada como read-only (bloqueia escrita), consistente com
+     * CapsuleClient::isReadonly(). O override de teste tem precedência.
+     */
+    private function isReadonly(): bool
+    {
+        if ($this->gatesOverride !== null) {
+            return (bool) ($this->gatesOverride['readonly'] ?? false);
+        }
+        // Fora de um WHMCS bootstrapado (ex.: testes) não há config a proteger —
+        // usa o default seguro. Sob WHMCS, uma falha de leitura cai no catch
+        // abaixo e falha FECHADO (bloqueia escrita).
+        if (!class_exists('\WHMCS\Config\Setting')) {
+            return false;
+        }
+        try {
+            $v = \WHMCS\Config\Setting::getValue('nt_mcp_readonly');
+            return $v === '1' || $v === 1 || $v === true;
+        } catch (\Throwable $e) {
+            error_log('NT MCP LocalApiClient: readonly config read failed — failing closed: ' . $e->getMessage());
+            return true;
+        }
     }
 
     /** Lê config booleana com override de teste e default seguro. */

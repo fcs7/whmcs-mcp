@@ -126,6 +126,23 @@ class LocalApiClientGateTest extends TestCase
         $client->call('UpdateProject', ['projectid' => 5, 'adminid' => 999]);
 
         $this->assertSame(42, $captured['adminid']);
+        $this->assertArrayNotHasKey('adminusername', $captured);
+    }
+
+    public function test_update_project_task_clamps_adminid_via_resolver(): void
+    {
+        $client = new LocalApiClient('testadmin');
+        $client->setAdminIdResolver(fn(string $username) => 42);
+        $captured = null;
+        $client->setCallable(function (string $cmd, array $params) use (&$captured) {
+            $captured = $params;
+            return ['result' => 'success'];
+        });
+
+        $client->call('UpdateProjectTask', ['taskid' => 5, 'adminid' => 999]);
+
+        $this->assertSame(42, $captured['adminid']);
+        $this->assertArrayNotHasKey('adminusername', $captured);
     }
 
     // ---------------------------------------------------------------

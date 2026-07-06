@@ -93,6 +93,11 @@ class CapsuleClient
      */
     private function isReadonly(): bool
     {
+        // Fora de um WHMCS bootstrapado (ex.: testes) não há config a proteger.
+        // Sob WHMCS, uma falha de leitura cai no catch e falha FECHADO.
+        if (!class_exists('\WHMCS\Config\Setting')) {
+            return false;
+        }
         try {
             $v = \WHMCS\Config\Setting::getValue('nt_mcp_readonly');
             return $v === '1' || $v === 1 || $v === true;
