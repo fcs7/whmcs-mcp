@@ -8,7 +8,7 @@ class LocalApiClient
 {
     // ---------------------------------------------------------------
     // SECURITY FIX (F4 -- CVSS 9.1): Restrict callable WHMCS API
-    // commands to only those used by the 54 MCP tools.
+    // commands to only those used by the 86 MCP tools.
     //
     // Before this fix, call() accepted ANY command string, meaning a
     // compromised or malicious MCP tool caller could invoke destructive
