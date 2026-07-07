@@ -103,4 +103,50 @@ class PhpMcpV1AdapterTest extends TestCase
             $this->assertStringStartsWith('whmcs_', $t['name'] ?? '', 'tool sem prefixo whmcs_: ' . ($t['name'] ?? '?'));
         }
     }
+
+    // --- GC de clientes ociosos (raiz do storm queueMessageForAll) ---
+
+    private function seedCache(): \PhpMcp\Server\Defaults\FileCache
+    {
+        return new \PhpMcp\Server\Defaults\FileCache($this->cacheDir . '/mcp_state.json');
+    }
+
+    public function test_gc_prunes_stale_clients_and_deletes_their_message_queues(): void
+    {
+        $cache = $this->seedCache();
+        $stale = time() - 700; // > CLIENT_TTL (600s)
+        $cache->set('mcp_state_active_clients', ['old1' => $stale, 'old2' => $stale], 3600);
+        $cache->set('mcp_state_messages_old1', ['x' => str_repeat('a', 5000)], 3600);
+        $cache->set('mcp_state_messages_old2', ['x' => str_repeat('a', 5000)], 3600);
+        $cache->set('mcp_state_initialized_old1', true, 3600);
+
+        // Um request de um cliente novo dispara o GC no pre-seed.
+        $this->makeAdapter()->handle($this->toolsListRequest(1), 'freshclient01', 'tools/list');
+
+        $active = $this->seedCache()->get('mcp_state_active_clients');
+        $this->assertIsArray($active);
+        $this->assertArrayNotHasKey('old1', $active, 'cliente ocioso deve ser podado');
+        $this->assertArrayNotHasKey('old2', $active);
+        $this->assertArrayHasKey('freshclient01', $active, 'cliente atual deve permanecer');
+        $this->assertFalse($this->seedCache()->has('mcp_state_messages_old1'), 'fila do ocioso deve ser deletada');
+        $this->assertFalse($this->seedCache()->has('mcp_state_messages_old2'));
+        $this->assertFalse($this->seedCache()->has('mcp_state_initialized_old1'));
+    }
+
+    public function test_gc_enforces_hard_cap_on_active_clients(): void
+    {
+        $cache = $this->seedCache();
+        $now = time();
+        $many = [];
+        for ($i = 0; $i < 55; $i++) {
+            $many['c' . $i] = $now; // recentes (não podados por tempo) → força o teto
+        }
+        $cache->set('mcp_state_active_clients', $many, 3600);
+
+        $this->makeAdapter()->handle($this->toolsListRequest(1), 'freshcap0001', 'tools/list');
+
+        $active = $this->seedCache()->get('mcp_state_active_clients');
+        $this->assertLessThanOrEqual(50, count($active), 'teto rígido de 50 clientes ativos');
+        $this->assertArrayHasKey('freshcap0001', $active, 'cliente atual nunca é podado pelo teto');
+    }
 }

@@ -49,6 +49,12 @@ class PhpMcpV1Adapter implements ServerAdapterInterface
 
     private const CACHE_PREFIX = 'mcp_state_';
 
+    /** Sessão sem atividade além disto (s) é podada do fan-out. */
+    private const CLIENT_TTL = 600;
+
+    /** Teto rígido de clientes ativos (backstop contra flood de session-ids). */
+    private const MAX_ACTIVE_CLIENTS = 50;
+
     private readonly string $cacheDir;
 
     /**
@@ -147,13 +153,8 @@ class PhpMcpV1Adapter implements ServerAdapterInterface
             $initKey = self::CACHE_PREFIX . 'initialized_' . $clientId;
             if (!$cache->has($initKey)) {
                 $cache->set($initKey, true, 3600);
-
-                // Also register as active client so future requests work
-                $activeKey = self::CACHE_PREFIX . 'active_clients';
-                $active = $cache->get($activeKey, []);
-                $active[$clientId] = time();
-                $cache->set($activeKey, $active, 3600);
             }
+            $this->trackActiveClientAndGc($cache, $clientId);
         }
 
         $transport = new HttpTransportHandler($server);
@@ -161,5 +162,56 @@ class PhpMcpV1Adapter implements ServerAdapterInterface
 
         $state = $transport->getTransportState();
         return $state->getQueuedMessages($clientId);
+    }
+
+    /**
+     * Registra o cliente atual como ativo e faz GC dos abandonados.
+     *
+     * A lib enfileira uma cópia da resposta para CADA cliente ativo
+     * (queueMessageForAll). Um cliente que não volta nunca drena a própria
+     * fila (mcp_state_messages_<id>) → o cache single-file incha e a latência
+     * quadratiza — raiz do "módulo pesado" / cascata 504 sob múltiplas sessões
+     * (uma sessão única que reusa o session-id NÃO sofre disso). Poda por
+     * (i) inatividade (CLIENT_TTL) e (ii) teto rígido (MAX_ACTIVE_CLIENTS,
+     * backstop contra flood de session-ids distintos), deletando a fila e o
+     * flag de init de cada cliente removido. O cliente atual nunca é podado.
+     */
+    private function trackActiveClientAndGc(CacheInterface $cache, string $clientId): void
+    {
+        $activeKey = self::CACHE_PREFIX . 'active_clients';
+        $active = $cache->get($activeKey, []);
+        if (!is_array($active)) {
+            $active = [];
+        }
+
+        $now = time();
+        $active[$clientId] = $now; // refresh last-seen do cliente atual (sempre o mais novo)
+
+        // (i) poda por inatividade
+        foreach ($active as $cid => $lastSeen) {
+            if ($cid !== $clientId && ($now - (int) $lastSeen) > self::CLIENT_TTL) {
+                unset($active[$cid]);
+                $this->dropClientState($cache, $cid);
+            }
+        }
+
+        // (ii) teto rígido — remove os mais antigos (asort é estável em PHP 8,
+        // e o cliente atual é o mais novo, logo nunca fica em primeiro).
+        if (count($active) > self::MAX_ACTIVE_CLIENTS) {
+            asort($active);
+            while (count($active) > self::MAX_ACTIVE_CLIENTS) {
+                $cid = array_key_first($active);
+                unset($active[$cid]);
+                $this->dropClientState($cache, $cid);
+            }
+        }
+
+        $cache->set($activeKey, $active, 3600);
+    }
+
+    private function dropClientState(CacheInterface $cache, string $clientId): void
+    {
+        $cache->delete(self::CACHE_PREFIX . 'messages_' . $clientId);
+        $cache->delete(self::CACHE_PREFIX . 'initialized_' . $clientId);
     }
 }
