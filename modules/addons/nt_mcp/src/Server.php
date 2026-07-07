@@ -2,14 +2,7 @@
 // src/Server.php
 namespace NtMcp;
 
-use PhpMcp\Server\Server as McpServer;
-use PhpMcp\Server\Defaults\ArrayConfigurationRepository;
-use PhpMcp\Server\Defaults\FileCache;
-use PhpMcp\Server\Transports\HttpTransportHandler;
-use PhpMcp\Server\Contracts\ConfigurationRepositoryInterface;
-use Psr\SimpleCache\CacheInterface;
-use Psr\Log\LoggerInterface;
-use NtMcp\Whmcs\CompatContainer;
+use NtMcp\Mcp\PhpMcpV1Adapter;
 use NtMcp\Whmcs\LocalApiClient;
 use NtMcp\Whmcs\CapsuleClient;
 
@@ -133,92 +126,16 @@ class Server
 
         try {
             // ------------------------------------------------------------------
-            // 4. Build the MCP server (inside the lock — cache access is safe)
+            // 4. Build + run the request via the MCP adapter (inside the lock —
+            //    cache access is serialized here). The adapter (FASE 3) hides
+            //    the php-mcp/server v1 API; internally it skips the tool scan
+            //    when the elements cache is warm and pre-registers Tools (FASE 2).
             // ------------------------------------------------------------------
             $localApi = new LocalApiClient($adminUser);
             $capsule  = new CapsuleClient();
 
-            $config = new ArrayConfigurationRepository([
-                'mcp' => [
-                    'server' => ['name' => 'NT Web WHMCS MCP Server', 'version' => '1.0.0'],
-                    'protocol_version' => '2024-11-05',
-                    'pagination_limit' => 200,
-                    'capabilities' => [
-                        'tools' => ['enabled' => true, 'listChanged' => false],
-                        'resources' => ['enabled' => false],
-                        'prompts' => ['enabled' => false],
-                        'logging' => ['enabled' => false],
-                    ],
-                    'cache' => ['key' => 'mcp.elements.cache', 'ttl' => 3600, 'prefix' => 'mcp_state_'],
-                    'runtime' => ['log_level' => 'info'],
-                ],
-            ]);
-
-            $container = new CompatContainer();
-            $container->set(LocalApiClient::class, $localApi);
-            $container->set(CapsuleClient::class, $capsule);
-
-            $cacheDir = __DIR__ . '/../data/cache';
-            $container->set(CacheInterface::class, new FileCache($cacheDir . '/mcp_state.json'));
-
-            // WHMCS preloads Psr\Log\LoggerInterface v1 (untyped params).
-            // psr/log v3 NullLogger has typed params (string|\Stringable) which
-            // causes a fatal declaration compatibility error on PHP 8.1.
-            // Anonymous class with untyped params is compatible with both versions.
-            $container->set(LoggerInterface::class, new class implements LoggerInterface {
-                public function emergency($message, array $context = []): void {}
-                public function alert($message, array $context = []): void {}
-                public function critical($message, array $context = []): void {}
-                public function error($message, array $context = []): void {}
-                public function warning($message, array $context = []): void {}
-                public function notice($message, array $context = []): void {}
-                public function info($message, array $context = []): void {}
-                public function debug($message, array $context = []): void {}
-                public function log($level, $message, array $context = []): void {}
-            });
-
-            $container->set(ConfigurationRepositoryInterface::class, $config);
-
-            $server = McpServer::make();
-            $server = $server->withContainer($container);
-            $server = $server->withConfig($config);
-            $server = $server->withBasePath(__DIR__);
-            $server = $server->withScanDirectories(['Tools']);
-
-            $server->discover();
-
-            // ------------------------------------------------------------------
-            // PHP-FPM workaround: The library's Registry constructor calls
-            // loadElementsFromCache() which re-registers all 54 tools, each
-            // triggering queueMessageForAll(). This massive read/write storm
-            // on the single-file cache can corrupt session state.
-            // Pre-seed the initialization flag so tools/call never fails.
-            // ------------------------------------------------------------------
-            $mcpMethod = $decoded['method'] ?? '';
-            if ($mcpMethod !== 'initialize' && $mcpMethod !== 'notifications/initialized') {
-                $cache = $container->get(CacheInterface::class);
-                $prefix = 'mcp_state_';
-                $initKey = $prefix . 'initialized_' . $clientId;
-                if (!$cache->has($initKey)) {
-                    $cache->set($initKey, true, 3600);
-
-                    // Also register as active client so future requests work
-                    $activeKey = $prefix . 'active_clients';
-                    $active = $cache->get($activeKey, []);
-                    $active[$clientId] = time();
-                    $cache->set($activeKey, $active, 3600);
-                }
-            }
-
-            $transport = new HttpTransportHandler($server);
-
-            // ------------------------------------------------------------------
-            // 5. Process the request and collect response
-            // ------------------------------------------------------------------
-            $transport->handleInput($input, $clientId);
-
-            $state = $transport->getTransportState();
-            $messages = $state->getQueuedMessages($clientId);
+            $adapter  = new PhpMcpV1Adapter($localApi, $capsule, __DIR__);
+            $messages = $adapter->handle($input, $clientId, $decoded['method'] ?? '');
         } finally {
             flock($lock, LOCK_UN);
             fclose($lock);
