@@ -114,12 +114,20 @@ class Server
             echo json_encode(['error' => 'Internal server error: lock acquisition failed']);
             return;
         }
-        if (!flock($lock, LOCK_EX)) {
-            error_log('NT MCP Server: Cannot acquire exclusive lock: ' . $lockFile);
+        // PERF/AVAILABILITY FIX: bounded lock acquisition. A slow request must
+        // fail fast (503 + Retry-After) instead of parking this PHP-FPM worker
+        // on an unbounded LOCK_EX wait. An unbounded queue exhausts the FPM
+        // pool and cascades 504s onto unrelated admin pages (observed on
+        // /admin/configaddonmods.php). Correctness is unchanged — the lock is
+        // still exclusive while held; under contention the client simply
+        // retries (MCP clients honor 503/Retry-After).
+        if (!self::acquireLockWithTimeout($lock, 5.0)) {
+            error_log('NT MCP Server: lock busy after 5s, returning 503: ' . $lockFile);
             fclose($lock);
-            http_response_code(500);
+            http_response_code(503);
             header('Content-Type: application/json');
-            echo json_encode(['error' => 'Internal server error: lock acquisition failed']);
+            header('Retry-After: 2');
+            echo json_encode(['error' => 'Server busy, retry shortly']);
             return;
         }
 
@@ -255,5 +263,30 @@ class Server
         } else {
             http_response_code(202);
         }
+    }
+
+    /**
+     * Acquire an exclusive lock with a bounded wait.
+     *
+     * Polls flock(LOCK_EX | LOCK_NB) until it succeeds or $timeoutSec elapses,
+     * sleeping 100ms between attempts. Returns true if the lock was acquired,
+     * false on timeout — the caller must then fail fast (503) rather than
+     * block indefinitely, so a single slow request cannot exhaust the PHP-FPM
+     * pool. Extracted as a pure helper so the timeout behaviour is unit
+     * testable without a live WHMCS bootstrap.
+     *
+     * @param resource $handle  An open file handle from fopen().
+     */
+    private static function acquireLockWithTimeout($handle, float $timeoutSec): bool
+    {
+        $deadline = microtime(true) + $timeoutSec;
+        do {
+            if (flock($handle, LOCK_EX | LOCK_NB)) {
+                return true;
+            }
+            usleep(100000); // 100ms
+        } while (microtime(true) < $deadline);
+
+        return false;
     }
 }
