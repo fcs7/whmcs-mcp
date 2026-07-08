@@ -38,7 +38,7 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 
 - `mcp.php` chama `BearerAuth::authenticate()` → retorna admin username vinculado ao token
 - Admin propagado para `Server::run($adminUser)` → usado em todas as LocalAPI calls
-- Fallback chain: per-token admin_user → global `nt_mcp_admin_user` config → hardcoded 'admin'
+- Fallback chain: per-token admin_user → global `nt_mcp_admin_user` config → fail closed (401)
 - Static token: admin lido de `nt_mcp_bearer_token_admin` (tblconfiguration)
 - OAuth token: admin lido de `mod_nt_mcp_oauth_tokens.admin_user` (propagado de `approved_by` na aprovação)
 

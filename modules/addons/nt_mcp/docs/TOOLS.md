@@ -1,7 +1,7 @@
 # Catálogo de Tools — NT MCP (86 tools)
 
 > Gerado em 2026-07-07. Fonte de verdade: atributos `#[McpTool(...)]` em
-> `src/Tools/*.php`. Contagem: `grep -c '#\[McpTool(' src/Tools/*.php` = **86**.
+> `src/Tools/*.php`. Contagem: `grep -Roh '#\[McpTool(' src/Tools | wc -l` = **86**.
 
 Este documento lista **todas as 86 tools** uma a uma, com o comando WHMCS que
 cada uma invoca, a classe do gate de segurança (WO-2), se está **ligada por
@@ -25,8 +25,9 @@ decide se a chamada passa:
 | `COMMS` | ⛔ off | `nt_mcp_enable_comms` | Envia e-mail ao cliente |
 
 Master switch: `nt_mcp_readonly` (fail-closed) bloqueia **tudo** exceto READ.
-Comandos fora do mapa caem em `WRITE` (fail-safe). Impersonação (`adminid`/
-`adminusername`) é clampada ao admin do token.
+Todo comando precisa estar na allowlist e possuir classificação explícita em
+`COMMAND_CLASS`; ausência em qualquer uma das duas estruturas nega a chamada.
+Impersonação (`adminid`/`adminusername`) é clampada ao admin do token.
 
 **Ponto de atenção:** `WRITE` é **on por padrão**. Tools de classe WRITE que
 mexem no serviço do cliente rodam sem opt-in — ver seção "Recomendação de corte".
