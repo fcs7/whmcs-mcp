@@ -11,7 +11,7 @@ use PHPUnit\Framework\TestCase;
  * Integração real do adapter contra a lib php-mcp/server (sem WHMCS).
  *
  * Prova a otimização de risco da FASE 2: com o cache de elementos QUENTE o
- * adapter pula $server->discover() e mesmo assim tools/list devolve as 86
+ * adapter pula $server->discover() e mesmo assim tools/list devolve as 73
  * tools — ou seja, o Registry rehidrata do cache. Cobre cold (descobre) e
  * warm (pula discover) no mesmo cacheDir.
  */
@@ -63,20 +63,20 @@ class PhpMcpV1AdapterTest extends TestCase
         ]);
     }
 
-    public function test_cold_cache_discovers_and_lists_86_tools(): void
+    public function test_cold_cache_discovers_and_lists_73_tools(): void
     {
         $adapter = $this->makeAdapter();
         $messages = $adapter->handle($this->toolsListRequest(1), 'client-cold-000000', 'tools/list');
 
         $tools = $this->toolsFrom($messages, 1);
         $this->assertIsArray($tools, 'tools/list deve retornar array de tools');
-        $this->assertCount(86, $tools, 'cold start deve descobrir 86 tools');
+        $this->assertCount(73, $tools, 'cold start deve descobrir 73 tools');
 
         // Cache de elementos foi persistido → arquivo existe.
         $this->assertFileExists($this->cacheDir . '/mcp_state.json');
     }
 
-    public function test_warm_cache_skips_discover_but_still_lists_86_tools(): void
+    public function test_warm_cache_skips_discover_but_still_lists_73_tools(): void
     {
         // 1ª chamada: cold → popula o cache de elementos.
         $this->makeAdapter()->handle($this->toolsListRequest(1), 'client-warm-000001', 'tools/list');
@@ -89,7 +89,7 @@ class PhpMcpV1AdapterTest extends TestCase
 
         $tools = $this->toolsFrom($messages, 2);
         $this->assertIsArray($tools, 'warm cache deve retornar tools do cache');
-        $this->assertCount(86, $tools, 'skip-discover com cache quente deve preservar as 86 tools');
+        $this->assertCount(73, $tools, 'skip-discover com cache quente deve preservar as 73 tools');
     }
 
     public function test_every_tool_name_is_prefixed_whmcs(): void

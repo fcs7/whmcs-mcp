@@ -22,34 +22,4 @@ class ServiceTools
         return json_encode($result, JSON_PRETTY_PRINT);
     }
 
-    #[McpTool(name: 'whmcs_suspend_service', description: 'Suspende um serviço de hospedagem/servidor')]
-    public function suspendService(int $serviceid, string $reason = ''): string
-    {
-        $params = ['serviceid' => $serviceid];
-        if ($reason !== '') $params['suspendreason'] = $reason;
-        return json_encode($this->api->call('ModuleSuspend', $params), JSON_PRETTY_PRINT);
-    }
-
-    #[McpTool(name: 'whmcs_unsuspend_service', description: 'Reativa um serviço suspenso')]
-    public function unsuspendService(int $serviceid): string
-    {
-        return json_encode($this->api->call('ModuleUnsuspend', ['serviceid' => $serviceid]), JSON_PRETTY_PRINT);
-    }
-
-    #[McpTool(name: 'whmcs_upgrade_service', description: 'Faz upgrade de plano de um serviço')]
-    public function upgradeService(
-        int $serviceid,
-        int $newproductid,
-        string $paymentmethod,
-        string $newproductbillingcycle = 'monthly',
-        string $type = 'product'
-    ): string {
-        return json_encode($this->api->call('UpgradeProduct', [
-            'serviceid' => $serviceid,
-            'type' => $type,
-            'newproductid' => $newproductid,
-            'newproductbillingcycle' => $newproductbillingcycle,
-            'paymentmethod' => $paymentmethod,
-        ]), JSON_PRETTY_PRINT);
-    }
 }

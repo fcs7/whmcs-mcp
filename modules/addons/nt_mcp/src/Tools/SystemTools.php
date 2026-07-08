@@ -15,15 +15,6 @@ class SystemTools
         return json_encode($this->api->call('GetStats', []), JSON_PRETTY_PRINT);
     }
 
-    #[McpTool(name: 'whmcs_send_email', description: 'Envia um email usando template do WHMCS')]
-    public function sendEmail(int $id, string $messagename, string $customtype = 'general', string $customsubject = '', string $customvars = ''): string
-    {
-        $params = compact('id', 'messagename', 'customtype');
-        if ($customsubject !== '') $params['customsubject'] = $customsubject;
-        if ($customvars !== '') $params['customvars'] = $customvars;
-        return json_encode($this->api->call('SendEmail', $params), JSON_PRETTY_PRINT);
-    }
-
     #[McpTool(name: 'whmcs_get_activity_log', description: 'Obtém log de atividades do sistema')]
     public function getActivityLog(int $limitnum = 25, int $limitstart = 0, string $user = '', string $description = '', string $date = ''): string
     {

@@ -8,7 +8,7 @@ class LocalApiClient
 {
     // ---------------------------------------------------------------
     // SECURITY FIX (F4 -- CVSS 9.1): Restrict callable WHMCS API
-    // commands to only those used by the 86 MCP tools.
+    // commands to only those used by the 73 MCP tools.
     //
     // Before this fix, call() accepted ANY command string, meaning a
     // compromised or malicious MCP tool caller could invoke destructive
@@ -38,11 +38,6 @@ class LocalApiClient
         'GetCredits',
         'GetPayMethods',
 
-        // ServiceTools
-        'ModuleSuspend',
-        'ModuleUnsuspend',
-        'UpgradeProduct',
-
         // TicketTools
         'GetTickets',
         'GetTicket',
@@ -52,27 +47,20 @@ class LocalApiClient
 
         // OrderTools
         'GetOrders',
-        'AcceptOrder',
         'CancelOrder',
-        'AddOrder',
         'GetOrderStatuses',
         'GetProducts',
         'GetPromotions',
         'PendingOrder',
 
         // DomainTools
-        'DomainRegister',
-        'DomainRenew',
-        'DomainUpdateNameservers',
         'DomainGetNameservers',
         'DomainGetLockingStatus',
         'DomainGetWhoisInfo',
         'GetTLDPricing',
-        'UpdateClientDomain',
 
         // SystemTools
         'GetStats',
-        'SendEmail',
         'GetActivityLog',
         'GetAdminDetails',
         'GetCurrencies',
@@ -90,7 +78,6 @@ class LocalApiClient
         'UpdateProject',
         'AddProjectTask',
         'UpdateProjectTask',
-        'DeleteProjectTask',
         'StartTaskTimer',
         'EndTaskTimer',
         'AddProjectMessage',
@@ -99,8 +86,6 @@ class LocalApiClient
         'GetQuotes',
         'CreateQuote',
         'UpdateQuote',
-        'SendQuote',
-        'AcceptQuote',
 
         // SupportInfoTools
         'GetSupportDepartments',
@@ -140,24 +125,18 @@ class LocalApiClient
         'GetTicketAttachment'=>'READ',
         // WRITE (reversível)
         'AddClient'=>'WRITE','UpdateClient'=>'WRITE','AddContact'=>'WRITE','UpdateContact'=>'WRITE',
-        'ModuleSuspend'=>'WRITE','ModuleUnsuspend'=>'WRITE','OpenTicket'=>'WRITE',
-        'AddTicketReply'=>'WRITE','UpdateTicket'=>'WRITE','CancelOrder'=>'WRITE','PendingOrder'=>'WRITE',
-        'DomainUpdateNameservers'=>'WRITE','UpdateClientDomain'=>'WRITE','UpdateToDoItem'=>'WRITE',
-        'LogActivity'=>'WRITE','CreateProject'=>'WRITE','UpdateProject'=>'WRITE','AddProjectTask'=>'WRITE',
-        'UpdateProjectTask'=>'WRITE','StartTaskTimer'=>'WRITE','EndTaskTimer'=>'WRITE',
-        'AddProjectMessage'=>'WRITE','CreateQuote'=>'WRITE','UpdateQuote'=>'WRITE',
-        // DESTRUCTIVE (irreversível) — os comandos destrutivos/financeiros de
-        // client/order/invoice foram REMOVIDOS do allowlist (não apenas desativados
-        // pelo gate); resta apenas DeleteProjectTask, ainda coberto pelo gate WO-2.
-        'DeleteProjectTask'=>'DESTRUCTIVE',
-        // FINANCIAL — AcceptQuote gera fatura/pedido, logo é efeito financeiro.
-        // (Único comando financeiro remanescente: os demais foram removidos.)
-        'AcceptQuote'=>'FINANCIAL',
-        // COST (custo/provisionamento externo)
-        'DomainRegister'=>'COST','DomainRenew'=>'COST','UpgradeProduct'=>'COST',
-        'AcceptOrder'=>'COST','AddOrder'=>'COST',
-        // COMMS (envio de e-mail)
-        'SendEmail'=>'COMMS','SendQuote'=>'COMMS',
+        'OpenTicket'=>'WRITE','AddTicketReply'=>'WRITE','UpdateTicket'=>'WRITE','CancelOrder'=>'WRITE',
+        'PendingOrder'=>'WRITE','UpdateToDoItem'=>'WRITE','LogActivity'=>'WRITE','CreateProject'=>'WRITE',
+        'UpdateProject'=>'WRITE','AddProjectTask'=>'WRITE','UpdateProjectTask'=>'WRITE',
+        'StartTaskTimer'=>'WRITE','EndTaskTimer'=>'WRITE','AddProjectMessage'=>'WRITE',
+        'CreateQuote'=>'WRITE','UpdateQuote'=>'WRITE',
+
+        // DESTRUCTIVE/FINANCIAL/COST/COMMS — TODOS os comandos dessas classes
+        // foram REMOVIDOS fisicamente do allowlist (cortes 2026-04 e 2026-07),
+        // não apenas desativados pelo gate. As classes e seus switches
+        // (nt_mcp_enable_*) permanecem no gate WO-2 como defesa em profundidade:
+        // qualquer comando futuro classificado nelas nasce bloqueado (default-DENY),
+        // e comando fora do mapa cai em WRITE (fail-safe).
     ];
 
     /** @var callable|null Para injecao em testes */

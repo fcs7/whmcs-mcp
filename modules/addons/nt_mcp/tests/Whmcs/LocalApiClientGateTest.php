@@ -22,58 +22,27 @@ class LocalApiClientGateTest extends TestCase
         $this->assertSame('success', $result['result']);
     }
 
-    // Nota: os comandos destrutivos/financeiros de client/order/invoice
-    // (CloseClient, ModuleTerminate, DeleteOrder, CreateInvoice, AddCredit...)
-    // foram REMOVIDOS do allowlist — não apenas gated. Os testes de gate abaixo
-    // usam os únicos comandos remanescentes de cada classe: DeleteProjectTask
-    // (DESTRUCTIVE) e AcceptQuote (FINANCIAL). A remoção física é garantida pelo
-    // regression guard em test_removed_*_rejected_by_allowlist.
-
-    public function test_delete_project_task_blocked_when_destructive_gate_off(): void
-    {
-        $client = new LocalApiClient('testadmin');
-        $client->setGates(['destructive' => false]);
-        $client->setCallable(fn() => ['result' => 'success']);
-
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('blocked');
-        $client->call('DeleteProjectTask', ['projectid' => 1, 'taskid' => 1]);
-    }
-
-    public function test_delete_project_task_allowed_when_destructive_gate_on(): void
-    {
-        $client = new LocalApiClient('testadmin');
-        $client->setGates(['destructive' => true]);
-        $client->setCallable(fn() => ['result' => 'success']);
-
-        $result = $client->call('DeleteProjectTask', ['projectid' => 1, 'taskid' => 1]);
-
-        $this->assertSame('success', $result['result']);
-    }
-
-    public function test_accept_quote_blocked_by_default_financial_gate(): void
-    {
-        $client = new LocalApiClient('testadmin');
-        $client->setGates([]); // financial off by default
-        $client->setCallable(fn() => ['result' => 'success']);
-
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('blocked');
-        $client->call('AcceptQuote', ['quoteid' => 1]);
-    }
-
     /**
-     * Regression guard: as 10 tools destrutivas/financeiras foram REMOVIDAS
-     * fisicamente do allowlist. Mesmo com todos os gates habilitados, o
-     * allowlist rejeita esses comandos antes de qualquer classificação —
-     * é a defesa que teria pego o merge incoerente que reintroduziu o gate.
+     * Regression guard: 23 comandos de risco foram REMOVIDOS fisicamente do
+     * allowlist (10 destrutivos/financeiros no corte de 2026-04 + 13 no corte
+     * de 2026-07: suspend/unsuspend/upgrade de serviço, registro/renovação/
+     * alteração de domínio, envio de e-mail/orçamento, aceite de orçamento/
+     * pedido, criação de pedido, deleção de tarefa). Mesmo com todos os gates
+     * habilitados, o allowlist rejeita esses comandos antes de qualquer
+     * classificação.
      */
-    public function test_removed_destructive_financial_commands_rejected_by_allowlist_even_with_gates_on(): void
+    public function test_removed_commands_rejected_by_allowlist_even_with_gates_on(): void
     {
         $removed = [
+            // corte 2026-04 (10 destrutivas/financeiras)
             'CloseClient', 'ModuleTerminate', 'DeleteOrder', 'CreateInvoice',
             'AddInvoicePayment', 'UpdateInvoice', 'AddCredit', 'AddTransaction',
             'UpdateTransaction', 'AddBillableItem',
+            // corte 2026-07 (13 tools de risco)
+            'ModuleSuspend', 'ModuleUnsuspend', 'UpgradeProduct',
+            'DomainRegister', 'DomainRenew', 'DomainUpdateNameservers',
+            'UpdateClientDomain', 'SendEmail', 'SendQuote', 'AcceptQuote',
+            'AcceptOrder', 'AddOrder', 'DeleteProjectTask',
         ];
 
         foreach ($removed as $cmd) {

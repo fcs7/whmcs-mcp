@@ -25,18 +25,6 @@ class OrderTools
         return json_encode($this->api->call('GetOrders', ['id' => $orderid]), JSON_PRETTY_PRINT);
     }
 
-    #[McpTool(name: 'whmcs_accept_order', description: 'Aceita um pedido pendente e provisiona os serviços')]
-    public function acceptOrder(int $orderid, bool $sendEmail = true, bool $autosetup = false, int $serverid = 0): string
-    {
-        $params = [
-            'orderid' => $orderid,
-            'sendemail' => $sendEmail,
-        ];
-        if ($autosetup) $params['autosetup'] = true;
-        if ($serverid > 0) $params['serverid'] = $serverid;
-        return json_encode($this->api->call('AcceptOrder', $params), JSON_PRETTY_PRINT);
-    }
-
     #[McpTool(name: 'whmcs_cancel_order', description: 'Cancela um pedido')]
     public function cancelOrder(int $orderid, bool $sendEmail = false): string
     {
@@ -44,38 +32,6 @@ class OrderTools
             'orderid' => $orderid,
             'sendemail' => $sendEmail,
         ]), JSON_PRETTY_PRINT);
-    }
-
-    #[McpTool(name: 'whmcs_add_order', description: 'Cria um novo pedido para um cliente')]
-    public function addOrder(
-        int $clientid,
-        string $paymentmethod,
-        array $pid = [],
-        array $domain = [],
-        array $billingcycle = [],
-        string $promocode = '',
-        bool $noinvoice = false,
-        bool $noinvoiceemail = false,
-        bool $noemail = false
-    ): string {
-        $params = ['clientid' => $clientid, 'paymentmethod' => $paymentmethod];
-        if (empty($pid) && empty($domain)) {
-            throw new \InvalidArgumentException('At least one product (pid) or domain is required');
-        }
-        foreach ($pid as $i => $p) {
-            $params["pid[{$i}]"] = (int) $p;
-        }
-        foreach ($domain as $i => $d) {
-            $params["domain[{$i}]"] = (string) $d;
-        }
-        foreach ($billingcycle as $i => $b) {
-            $params["billingcycle[{$i}]"] = (string) $b;
-        }
-        if ($promocode !== '') $params['promocode'] = $promocode;
-        if ($noinvoice) $params['noinvoice'] = true;
-        if ($noinvoiceemail) $params['noinvoiceemail'] = true;
-        if ($noemail) $params['noemail'] = true;
-        return json_encode($this->api->call('AddOrder', $params), JSON_PRETTY_PRINT);
     }
 
     #[McpTool(name: 'whmcs_get_order_statuses', description: 'Lista os status de pedidos disponíveis')]

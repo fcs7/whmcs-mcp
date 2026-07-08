@@ -112,15 +112,4 @@ class QuoteTools
         return json_encode($this->api->call('UpdateQuote', $params), JSON_PRETTY_PRINT);
     }
 
-    #[McpTool(name: 'whmcs_send_quote', description: 'Envia um orçamento por e-mail ao cliente')]
-    public function sendQuote(int $quoteid): string
-    {
-        return json_encode($this->api->call('SendQuote', ['quoteid' => $quoteid]), JSON_PRETTY_PRINT);
-    }
-
-    #[McpTool(name: 'whmcs_accept_quote', description: 'Aceita um orçamento')]
-    public function acceptQuote(int $quoteid): string
-    {
-        return json_encode($this->api->call('AcceptQuote', ['quoteid' => $quoteid]), JSON_PRETTY_PRINT);
-    }
 }
