@@ -154,8 +154,8 @@ class PhpMcpV1Adapter implements ServerAdapterInterface
             if (!$cache->has($initKey)) {
                 $cache->set($initKey, true, 3600);
             }
-            $this->trackActiveClientAndGc($cache, $clientId);
         }
+        $this->trackActiveClientAndGc($cache, $clientId);
 
         $transport = new HttpTransportHandler($server);
         $transport->handleInput($input, $clientId);

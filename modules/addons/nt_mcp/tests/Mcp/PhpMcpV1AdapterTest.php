@@ -63,6 +63,20 @@ class PhpMcpV1AdapterTest extends TestCase
         ]);
     }
 
+    private function initializeRequest(int $id): string
+    {
+        return json_encode([
+            'jsonrpc' => '2.0',
+            'id' => $id,
+            'method' => 'initialize',
+            'params' => [
+                'protocolVersion' => '2024-11-05',
+                'capabilities' => new \stdClass(),
+                'clientInfo' => ['name' => 'phpunit', 'version' => '1.0'],
+            ],
+        ]);
+    }
+
     public function test_cold_cache_discovers_and_lists_86_tools(): void
     {
         $adapter = $this->makeAdapter();
@@ -133,6 +147,34 @@ class PhpMcpV1AdapterTest extends TestCase
         $this->assertFalse($this->seedCache()->has('mcp_state_initialized_old1'));
     }
 
+    public function test_initialize_tracks_client_and_prunes_excess_client_queues(): void
+    {
+        $cache = $this->seedCache();
+        $active = [];
+        for ($i = 0; $i < 55; $i++) {
+            $clientId = sprintf('abandoned%02d', $i);
+            $active[$clientId] = time() - 1;
+            $cache->set('mcp_state_messages_' . $clientId, [['orphan' => true]], 3600);
+            $cache->set('mcp_state_initialized_' . $clientId, true, 3600);
+        }
+        $cache->set('mcp_state_active_clients', $active, 3600);
+
+        $this->makeAdapter()->handle(
+            $this->initializeRequest(1),
+            'initonly0001',
+            'initialize'
+        );
+
+        $cache = $this->seedCache();
+        $active = $cache->get('mcp_state_active_clients');
+
+        $this->assertCount(50, $active);
+        $this->assertArrayHasKey('initonly0001', $active);
+        $this->assertArrayNotHasKey('abandoned00', $active);
+        $this->assertFalse($cache->has('mcp_state_messages_abandoned00'));
+        $this->assertFalse($cache->has('mcp_state_initialized_abandoned00'));
+    }
+
     public function test_gc_enforces_hard_cap_on_active_clients(): void
     {
         $cache = $this->seedCache();
@@ -146,7 +188,7 @@ class PhpMcpV1AdapterTest extends TestCase
         $this->makeAdapter()->handle($this->toolsListRequest(1), 'freshcap0001', 'tools/list');
 
         $active = $this->seedCache()->get('mcp_state_active_clients');
-        $this->assertLessThanOrEqual(50, count($active), 'teto rígido de 50 clientes ativos');
+        $this->assertCount(50, $active, 'teto rígido de 50 clientes ativos');
         $this->assertArrayHasKey('freshcap0001', $active, 'cliente atual nunca é podado pelo teto');
     }
 }
