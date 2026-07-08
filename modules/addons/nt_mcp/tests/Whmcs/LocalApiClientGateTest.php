@@ -11,6 +11,31 @@ class LocalApiClientGateTest extends TestCase
     // A) Gate de classe
     // ---------------------------------------------------------------
 
+    public function test_every_allowed_command_has_an_explicit_security_class(): void
+    {
+        $reflection = new \ReflectionClass(LocalApiClient::class);
+        $allowed = $reflection->getReflectionConstant('ALLOWED_COMMANDS')->getValue();
+        $classified = array_keys(
+            $reflection->getReflectionConstant('COMMAND_CLASS')->getValue()
+        );
+
+        sort($allowed);
+        sort($classified);
+
+        $this->assertSame($allowed, $classified);
+    }
+
+    public function test_unclassified_command_fails_closed(): void
+    {
+        $client = new LocalApiClient('testadmin');
+        $method = new \ReflectionMethod(LocalApiClient::class, 'classOf');
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('has no explicit security classification');
+
+        $method->invoke($client, 'FutureUnclassifiedCommand');
+    }
+
     public function test_read_command_always_passes_regardless_of_gates(): void
     {
         $client = new LocalApiClient('testadmin');

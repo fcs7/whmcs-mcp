@@ -122,7 +122,7 @@ class LocalApiClient
         'securityqans', 'tax_id',
     ];
 
-    /** Classe de efeito colateral por comando. Fail-safe: ausente ⇒ WRITE. */
+    /** Classe de efeito colateral por comando. Ausência de classe ⇒ negar. */
     private const COMMAND_CLASS = [
         // READ
         'GetClients'=>'READ','GetClientsDetails'=>'READ','GetClientsProducts'=>'READ',
@@ -185,7 +185,13 @@ class LocalApiClient
 
     private function classOf(string $command): string
     {
-        return self::COMMAND_CLASS[$command] ?? 'WRITE'; // fail-safe
+        if (!array_key_exists($command, self::COMMAND_CLASS)) {
+            throw new \RuntimeException(
+                "LocalApiClient: command '{$command}' has no explicit security classification."
+            );
+        }
+
+        return self::COMMAND_CLASS[$command];
     }
 
     private function gateEnabled(string $class): bool
