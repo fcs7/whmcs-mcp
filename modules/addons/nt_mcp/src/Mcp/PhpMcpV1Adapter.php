@@ -30,7 +30,7 @@ use NtMcp\Tools\TicketTools;
  * de um request via HttpTransportHandler.
  *
  * FASE 2 (deixar leve): duas otimizações contra o overhead por request —
- *  - 2a: só chama $server->discover() (scan filesystem + reflexão das 86 tools)
+ *  - 2a: só chama $server->discover() (scan filesystem + reflexão das 73 tools)
  *        quando o cache de elementos está frio. saveElementsToCache() persiste
  *        sem TTL (nunca expira), então após o 1º request o Registry rehidrata
  *        do cache no construtor e o scan é pulado. Auto-curável: cache ausente
