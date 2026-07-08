@@ -22,7 +22,7 @@ function nt_mcp_config(): array
     return [
         'name'        => 'NT MCP Server',
         'description' => 'Model Context Protocol server para integrar Claude Code ao WHMCS.',
-        'version'     => '1.0.0',
+        'version'     => '1.1.0',
         'author'      => 'NT Web',
         'language'    => 'english',
         'fields'      => [], // Configuracoes gerenciadas na tela _output
