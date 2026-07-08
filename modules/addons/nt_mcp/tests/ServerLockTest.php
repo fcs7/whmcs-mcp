@@ -90,4 +90,15 @@ class ServerLockTest extends TestCase
         flock($b, LOCK_UN);
         fclose($b);
     }
+
+    public function test_retry_after_uses_jitter_aligned_with_lock_timeout(): void
+    {
+        $method = new \ReflectionMethod(Server::class, 'retryAfterSeconds');
+
+        for ($i = 0; $i < 100; $i++) {
+            $delay = $method->invoke(null);
+            $this->assertGreaterThanOrEqual(5, $delay);
+            $this->assertLessThanOrEqual(8, $delay);
+        }
+    }
 }

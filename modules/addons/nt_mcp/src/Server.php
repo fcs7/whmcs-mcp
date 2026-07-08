@@ -8,6 +8,10 @@ use NtMcp\Whmcs\CapsuleClient;
 
 class Server
 {
+    private const LOCK_TIMEOUT_SECONDS = 5;
+    private const RETRY_AFTER_MIN_SECONDS = 5;
+    private const RETRY_AFTER_MAX_SECONDS = 8;
+
     public static function run(string $adminUser = ''): void
     {
         // ------------------------------------------------------------------
@@ -114,12 +118,17 @@ class Server
         // /admin/configaddonmods.php). Correctness is unchanged — the lock is
         // still exclusive while held; under contention the client simply
         // retries (MCP clients honor 503/Retry-After).
-        if (!self::acquireLockWithTimeout($lock, 5.0)) {
-            error_log('NT MCP Server: lock busy after 5s, returning 503: ' . $lockFile);
+        if (!self::acquireLockWithTimeout($lock, self::LOCK_TIMEOUT_SECONDS)) {
+            error_log(
+                'NT MCP Server: lock busy after '
+                . self::LOCK_TIMEOUT_SECONDS
+                . 's, returning 503: '
+                . $lockFile
+            );
             fclose($lock);
             http_response_code(503);
             header('Content-Type: application/json');
-            header('Retry-After: 2');
+            header('Retry-After: ' . self::retryAfterSeconds());
             echo json_encode(['error' => 'Server busy, retry shortly']);
             return;
         }
@@ -205,5 +214,13 @@ class Server
         } while (microtime(true) < $deadline);
 
         return false;
+    }
+
+    private static function retryAfterSeconds(): int
+    {
+        return random_int(
+            self::RETRY_AFTER_MIN_SECONDS,
+            self::RETRY_AFTER_MAX_SECONDS
+        );
     }
 }
