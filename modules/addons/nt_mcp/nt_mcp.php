@@ -38,6 +38,33 @@ function nt_mcp_config(): array
  */
 function nt_mcp_activate(): array
 {
+    // FASE 4b (6A): guarda de ordem de autoload. Se vendor/autoload.php não
+    // carregou antes do init.php do WHMCS, as classes da lib php-mcp/server
+    // (psr/log v3) não resolvem e o runtime falha silenciosamente. Detecta na
+    // ativação, onde o erro é visível ao operador.
+    if (!class_exists(\PhpMcp\Server\Server::class)) {
+        return [
+            'status'      => 'error',
+            'description' => 'NT MCP: autoloader nao inicializado corretamente '
+                . '(vendor/autoload.php deve carregar ANTES de init.php). Ativacao abortada.',
+        ];
+    }
+
+    // FASE 4c (9.3): o servidor grava lock global + cache em data/. Se o
+    // diretorio nao for gravavel, o addon fica inoperante em runtime (HTTP 500
+    // sem contexto). Valida agora, na ativacao, em vez de por request.
+    $dataDir = __DIR__ . '/data';
+    if (!is_dir($dataDir)) {
+        @mkdir($dataDir, 0700, true);
+    }
+    if (!is_dir($dataDir) || !is_writable($dataDir)) {
+        return [
+            'status'      => 'error',
+            'description' => 'NT MCP: diretorio data/ nao gravavel (' . $dataDir . '). '
+                . 'Ajuste as permissoes e reative.',
+        ];
+    }
+
     $token = bin2hex(random_bytes(32)); // 64 chars hex
     $hash  = hash('sha256', $token);
     \WHMCS\Config\Setting::setValue('nt_mcp_bearer_token', $hash);
@@ -68,6 +95,18 @@ function nt_mcp_deactivate(): array
 function nt_mcp_upgrade(array $vars): array
 {
     $version = $vars['version'] ?? 'unknown';
+
+    // FASE 2/4c (9.4): invalida o cache de elementos (tool registry). O cache é
+    // persistido SEM TTL (nunca expira), então uma versão nova com tools
+    // alteradas precisa forçar novo discovery — senão o servidor continuaria
+    // servindo o registro antigo. Deletar o arquivo também zera o estado de
+    // sessão (compartilha o mesmo arquivo); aceitável no upgrade — clientes
+    // reinicializam e o próximo request re-descobre e regrava.
+    $registryCache = __DIR__ . '/data/cache/mcp_state.json';
+    if (is_file($registryCache)) {
+        @unlink($registryCache);
+    }
+
     if (!OAuthMigration::ensureTables()) {
         logActivity("NT MCP: FALHA na migracao de schema para versao {$version} — verifique o error log do PHP");
         return ['status' => 'error', 'description' => 'NT MCP: falha na migracao de schema. Verifique o log de erros do PHP.'];

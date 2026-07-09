@@ -23,7 +23,8 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 - `oauth.php` — Slim entry: TLS → headers → CORS → OAuthMigration → OAuthRouter::dispatch()
 - `nt_mcp.php` — WHMCS addon entry (_config/_activate/_output → AdminController/OAuthApprovalController)
 - `.well-known/openid-configuration/index.php` — RFC 8414 metadata discovery (redireciona para oauth.php)
-- `src/Server.php` — Bootstrap php-mcp/server, DI via CompatContainer, global LOCK_EX (resources e prompts desabilitados)
+- `src/Server.php` — Entry: auth → lock (timeout 5s) → `PhpMcpV1Adapter::handle()` → resposta; body >1MB rejeitado (resources e prompts desabilitados)
+- `src/Mcp/` — `ServerAdapterInterface` + `PhpMcpV1Adapter`: isola a lib php-mcp/server pinada; discovery condicional (pula `discover()` com cache quente) + 11 Tools pré-registradas no container
 - `src/Auth/BearerAuth.php` — Bearer token auth: `authenticate(): ?string` (static + OAuth), per-token admin binding
 - `src/Security/` — CsrfProtection (HMAC nonce), RateLimiter (TransientData + file fallback)
 - `src/Http/` — IpResolver, IpAllowlist, TlsEnforcer, SecurityHeaders, CorsHandler
@@ -37,7 +38,7 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 
 - `mcp.php` chama `BearerAuth::authenticate()` → retorna admin username vinculado ao token
 - Admin propagado para `Server::run($adminUser)` → usado em todas as LocalAPI calls
-- Fallback chain: per-token admin_user → global `nt_mcp_admin_user` config → hardcoded 'admin'
+- Fallback chain: per-token admin_user → global `nt_mcp_admin_user` config → fail closed (401)
 - Static token: admin lido de `nt_mcp_bearer_token_admin` (tblconfiguration)
 - OAuth token: admin lido de `mod_nt_mcp_oauth_tokens.admin_user` (propagado de `approved_by` na aprovação)
 
@@ -99,7 +100,9 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 - **Sempre comparar git vs prod** antes e depois de deploy — servidor pode ter arquivos extras ou versões antigas
 - **lftp requer senha interativa** — sem senha, falha silenciosamente ("assume anonymous login")
 - **php-mcp/server pinado em ^1.0** (atual 1.1.0) — v3.x é breaking change, não atualizar sem branch dedicada
-- **Global lock serializa requests** — Server.php usa LOCK_EX em `data/nt_mcp_global.lock`; aceitável para 1-3 admins, gargalo para 5+
+- **Lock global com timeout** — `Server::acquireLockWithTimeout()` faz `LOCK_EX|LOCK_NB` por até 5s → responde 503+`Retry-After` no timeout em vez de bloquear o worker FPM indefinidamente (era a causa da cascata 504 no `/admin`). Ainda serializa requests
+- **Custo por request (perfilado)** — dominante NÃO era o discovery, e sim `queueMessageForAll`: a lib enfileira uma cópia da resposta (~5.5KB) para CADA cliente ativo; clientes que não voltam nunca drenam `mcp_state_messages_<id>` → cache single-file incha e a latência quadratiza (sessão única que reusa o session-id é FLAT ~120ms; o storm só aparece com múltiplas sessões/flood de session-ids). Mitigações: (i) `PhpMcpV1Adapter::trackActiveClientAndGc()` poda clientes ociosos (`CLIENT_TTL=600s`) + teto rígido (`MAX_ACTIVE_CLIENTS=50`), deletando filas órfãs; (ii) `discover()` só no cold cache (`mcp_state_elements` sem TTL, invalidado no `nt_mcp_upgrade()`). **Débito #1 remanescente:** o single-file FileCache continua o gargalo real p/ alta concorrência — fix definitivo é cache por-cliente/Redis
+- **Débito deferido conscientemente** — split do IpResolver (322L) NÃO feito (recém-unificado no WO-TP e testado; risco > ganho); o `str_replace('"properties":[]'→'{}')` em Server.php e o `LoggerInterface` anônimo são workarounds de compat mantidos de propósito. Constructor injection dos seams do BearerAuth adicionado, setters mantidos como back-compat
 - **Audit fix IDs** — comentários `// SECURITY FIX (F1)` a `(F8)` + `(M-02)` referenciam findings da auditoria de production readiness; não remover
 - **Excluir do deploy**: `.full-review/`, `.security-hardening*/`, `.phpunit.cache/`, `data/` (runtime state)
 - **property_exists() guard** — colunas novas (`admin_user`, `approved_by`, `last_used_at`) podem não existir em DBs pré-migration; usar `property_exists($row, 'col')` antes de acessar

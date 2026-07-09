@@ -16,19 +16,24 @@ class BearerAuth
     private const MIN_TOKEN_LENGTH = 32;
 
     /**
-     * @param string $expectedHash  SHA-256 hex-digest of the real bearer token,
-     *                              as stored in tblconfiguration.
+     * FASE 4a (débito #5 — 5B): os seams de teste viram constructor injection
+     * (caminho preferido, explícito). Os setters setXCallable() abaixo
+     * permanecem como back-compat para os testes existentes e apenas reatribuem
+     * estas mesmas propriedades — nenhuma lógica de auth (B1/B4/WO-7) muda.
+     *
+     * @param string       $expectedHash    SHA-256 hex-digest do bearer token real
+     *                                       (armazenado em tblconfiguration).
+     * @param \Closure|null $oauthLookup     Seam: fn(string $tokenHash): ?object
+     *                                       (substitui Capsule em authenticateOAuthToken()).
+     * @param \Closure|null $adminValidator  Seam (B1): fn(string $username): bool.
+     * @param \Closure|null $tokenRevoker    Seam (B1): fn(int $tokenId): void.
      */
-    public function __construct(private readonly string $expectedHash) {}
-
-    /** Injectable para testes — substitui a consulta Capsule::table() em authenticateOAuthToken(). */
-    private ?\Closure $oauthLookup = null;
-
-    /** Injectable para testes — substitui Capsule::table('tbladmins') em validateAdminActive() (B1). */
-    private ?\Closure $adminValidator = null;
-
-    /** Injectable para testes — substitui Capsule::table()->update(revoked=1) em authenticateOAuthToken() (B1). */
-    private ?\Closure $tokenRevoker = null;
+    public function __construct(
+        private readonly string $expectedHash,
+        private ?\Closure $oauthLookup = null,
+        private ?\Closure $adminValidator = null,
+        private ?\Closure $tokenRevoker = null,
+    ) {}
 
     /** Injeta callable para testes: fn(string $tokenHash): ?object */
     public function setOAuthLookupCallable(\Closure $fn): void

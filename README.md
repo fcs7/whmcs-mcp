@@ -4,6 +4,8 @@ Servidor MCP (Model Context Protocol) que expoe 86 ferramentas WHMCS como ferram
 
 > **Para a experiencia completa**, combine este Conector com a **Habilidade** (Skill) que ensina o Claude a usar os 86 tools → **[fcs7/whmcs-mcp-plugin](https://github.com/fcs7/whmcs-mcp-plugin)**
 
+> 📖 **Catalogo completo das 86 tools** (comando WHMCS, classe de gate, risco e recomendacao de corte 1-a-1): **[modules/addons/nt_mcp/docs/TOOLS.md](modules/addons/nt_mcp/docs/TOOLS.md)**
+
 ### Como os componentes se encaixam
 
 | Conceito | O que faz | Repositorio |

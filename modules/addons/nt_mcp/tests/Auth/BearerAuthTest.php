@@ -140,4 +140,27 @@ class BearerAuthTest extends TestCase
         // isValid() should return true when authenticate() returns non-null
         $this->assertSame($auth->authenticate() !== null, $auth->isValid());
     }
+
+    // --- FASE 4a: constructor injection dos seams (5B) ---
+
+    public function test_constructor_injection_of_oauth_seams_resolves_admin(): void
+    {
+        // Seams injetados via CONSTRUTOR (não setters): um token OAuth cujo row
+        // carrega admin_user='ctoradmin' + adminValidator "ativo" deve autenticar
+        // e retornar esse admin — provando o caminho de constructor injection.
+        $oauthToken = str_repeat('b7', 32); // 64 hex, != self::TOKEN
+        $oauthHash  = hash('sha256', $oauthToken);
+        $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . $oauthToken;
+
+        $row = (object) ['id' => 1, 'admin_user' => 'ctoradmin', 'expires_at' => time() + 3600];
+
+        $auth = new BearerAuth(
+            $this->tokenHash,                                       // static hash (não bate)
+            fn(string $hash) => $hash === $oauthHash ? $row : null, // oauthLookup
+            fn(string $u) => true,                                  // adminValidator (B1) ativo
+            function (int $id): void {},                            // tokenRevoker (não usado)
+        );
+
+        $this->assertSame('ctoradmin', $auth->authenticate());
+    }
 }
