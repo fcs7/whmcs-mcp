@@ -1,0 +1,458 @@
+<?php
+
+declare(strict_types=1);
+
+namespace NtMcp\Tests\Tools;
+
+use NtMcp\Tools\QuoteTools;
+use NtMcp\Whmcs\LocalApiClient;
+use PHPUnit\Framework\TestCase;
+
+class QuoteToolsTest extends TestCase
+{
+    /**
+     * Os gates nascem DESLIGADOS. Cada teste declara a classe de efeito que
+     * exercita: WRITE para criar/atualizar/duplicar, FINANCIAL para a conversão
+     * e DESTRUCTIVE para a exclusão.
+     */
+    private function makeTools(?callable $callable = null, array $gates = ['write' => true]): QuoteTools
+    {
+        $api = new LocalApiClient('testadmin');
+        $api->setGates($gates);
+        $api->setCallable($callable ?? function (string $cmd, array $params) {
+            return ['result' => 'success'];
+        });
+
+        return new QuoteTools($api);
+    }
+
+    /** Resposta GetQuotes de uma cotação ainda não aceita. */
+    private static function quoteResponse(int $id = 10, string $stage = 'Delivered', array $extra = []): array
+    {
+        return [
+            'result' => 'success',
+            'quotes' => ['quote' => [array_merge([
+                'id' => $id,
+                'userid' => 3,
+                'subject' => 'Original quote',
+                'stage' => $stage,
+                'validuntil' => '2026-08-01',
+                'datecreated' => '2026-07-01',
+                'currency' => 1,
+                'proposal' => 'Original proposal',
+                'customernotes' => 'Customer note',
+                'adminnotes' => 'Admin note',
+            ], $extra)]],
+        ];
+    }
+
+    // ---------------------------------------------------------------
+    // Lineitems (WRITE)
+    // ---------------------------------------------------------------
+
+    public function test_create_quote_serializes_lineitems_for_whmcs_localapi(): void
+    {
+        $captured = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$captured) {
+            $captured = ['cmd' => $cmd, 'params' => $params];
+            return ['result' => 'success', 'quoteid' => 10];
+        });
+
+        $tools->createQuote(
+            subject: 'New quote',
+            stage: 'Draft',
+            proposal: 'Proposal',
+            userid: 7,
+            currencyid: 2,
+            lineitems: [[
+                'description' => 'Setup',
+                'quantity' => 1,
+                'unitprice' => 100.0,
+                'discount' => 0,
+                'taxable' => false,
+            ]]
+        );
+
+        $this->assertSame('CreateQuote', $captured['cmd']);
+        $this->assertSame(2, $captured['params']['currency']);
+        $this->assertArrayNotHasKey('currencyid', $captured['params']);
+
+        $lineitems = unserialize(base64_decode($captured['params']['lineitems']));
+        $this->assertSame([[
+            'desc' => 'Setup',
+            'qty' => 1,
+            'up' => 100.0,
+            'discount' => 0,
+            'taxable' => false,
+        ]], $lineitems);
+    }
+
+    public function test_update_quote_accepts_existing_lineitem_id(): void
+    {
+        $captured = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$captured) {
+            $captured = ['cmd' => $cmd, 'params' => $params];
+            return ['result' => 'success'];
+        });
+
+        $tools->updateQuote(quoteid: 3, lineitems: [[
+            'id' => 9,
+            'description' => 'Updated service',
+            'quantity' => 2,
+            'unitprice' => 50,
+            'discount' => 5,
+            'taxable' => true,
+        ]]);
+
+        $this->assertSame('UpdateQuote', $captured['cmd']);
+        $lineitems = unserialize(base64_decode($captured['params']['lineitems']));
+        $this->assertSame([[
+            'id' => 9,
+            'desc' => 'Updated service',
+            'qty' => 2,
+            'up' => 50,
+            'discount' => 5,
+            'taxable' => true,
+        ]], $lineitems);
+    }
+
+    public function test_update_quote_rejects_unknown_lineitem_key(): void
+    {
+        $tools = $this->makeTools();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('not an allowed key');
+
+        $tools->updateQuote(quoteid: 3, lineitems: [['description' => 'Item', 'amount' => 10]]);
+    }
+
+    public function test_create_quote_blocked_when_write_gate_off(): void
+    {
+        $tools = $this->makeTools(null, []); // defaults de produção
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('class WRITE disabled');
+
+        $tools->createQuote(subject: 'x', stage: 'Draft', proposal: 'p');
+    }
+
+    // ---------------------------------------------------------------
+    // duplicate_quote (WRITE)
+    // ---------------------------------------------------------------
+
+    public function test_duplicate_quote_fetches_and_creates_copy_with_overrides(): void
+    {
+        $calls = [];
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$calls) {
+            $calls[] = ['cmd' => $cmd, 'params' => $params];
+
+            if ($cmd === 'GetQuotes') {
+                return self::quoteResponse(extra: [
+                    'lineitems' => [
+                        'lineitem' => [[
+                            'id' => 44,
+                            'description' => 'Hosting',
+                            'quantity' => 1,
+                            'unitprice' => '100.00',
+                            'discount' => '0.00',
+                            'taxable' => '0',
+                        ]],
+                    ],
+                ]);
+            }
+
+            return ['result' => 'success', 'quoteid' => 11];
+        });
+
+        $json = $tools->duplicateQuote(
+            quoteid: 10,
+            subject: 'Copied quote',
+            stage: 'Draft',
+            userid: 4,
+            adminnotes: 'New admin note'
+        );
+        $result = json_decode($json, true);
+
+        $this->assertSame('success', $result['result']);
+        $this->assertSame('GetQuotes', $calls[0]['cmd']);
+        $this->assertSame(['quoteid' => 10], $calls[0]['params']);
+        $this->assertSame('CreateQuote', $calls[1]['cmd']);
+
+        $createParams = $calls[1]['params'];
+        $this->assertSame('Copied quote', $createParams['subject']);
+        $this->assertSame('Draft', $createParams['stage']);
+        $this->assertSame(4, $createParams['userid']);
+        $this->assertSame('Original proposal', $createParams['proposal']);
+        $this->assertSame('Customer note', $createParams['customernotes']);
+        $this->assertSame('New admin note', $createParams['adminnotes']);
+        $this->assertSame('2026-08-01', $createParams['validuntil']);
+        $this->assertSame('2026-07-01', $createParams['datecreated']);
+        $this->assertSame(1, $createParams['currency']);
+
+        $lineitems = unserialize(base64_decode($createParams['lineitems']));
+        $this->assertArrayNotHasKey('id', $lineitems[0]);
+        $this->assertSame('Hosting', $lineitems[0]['desc']);
+    }
+
+    public function test_duplicate_quote_returns_error_when_quote_not_found(): void
+    {
+        $tools = $this->makeTools(function (string $cmd, array $params) {
+            return ['result' => 'success', 'quotes' => ['quote' => []]];
+        });
+
+        $json = $tools->duplicateQuote(quoteid: 999);
+        $result = json_decode($json, true);
+
+        $this->assertSame('error', $result['result']);
+        $this->assertSame(999, $result['quoteid']);
+        $this->assertSame('Quote not found', $result['message']);
+    }
+
+    // ---------------------------------------------------------------
+    // convert_quote_to_invoice (FINANCIAL)
+    // ---------------------------------------------------------------
+
+    private function makeConverter(callable $callable): QuoteTools
+    {
+        return $this->makeTools($callable, ['financial' => true]);
+    }
+
+    public function test_convert_quote_to_invoice_accepts_quote(): void
+    {
+        $calls = [];
+        $tools = $this->makeConverter(function (string $cmd, array $params) use (&$calls) {
+            $calls[] = ['cmd' => $cmd, 'params' => $params];
+            if ($cmd === 'GetQuotes') {
+                return self::quoteResponse();
+            }
+            return ['result' => 'success', 'invoiceid' => 99];
+        });
+
+        $json = $tools->convertQuoteToInvoice(quoteid: 10);
+        $result = json_decode($json, true);
+
+        $this->assertSame(['GetQuotes', 'AcceptQuote'], array_column($calls, 'cmd'));
+        $this->assertSame(['quoteid' => 10], $calls[1]['params']);
+        $this->assertSame('success', $result['result']);
+        $this->assertSame(10, $result['quoteid']);
+        $this->assertSame(99, $result['invoiceid']);
+    }
+
+    public function test_convert_quote_to_invoice_updates_invoice_options(): void
+    {
+        $calls = [];
+        $tools = $this->makeConverter(function (string $cmd, array $params) use (&$calls) {
+            $calls[] = ['cmd' => $cmd, 'params' => $params];
+            if ($cmd === 'GetQuotes') {
+                return self::quoteResponse();
+            }
+            if ($cmd === 'AcceptQuote') {
+                return ['result' => 'success', 'invoiceid' => 99];
+            }
+
+            return ['result' => 'success'];
+        });
+
+        $tools->convertQuoteToInvoice(
+            quoteid: 10,
+            paymentmethod: 'banktransfer',
+            duedate: '2026-08-10',
+            taxrate: 12.5
+        );
+
+        $this->assertSame('UpdateInvoice', $calls[2]['cmd']);
+        $this->assertSame([
+            'invoiceid' => 99,
+            'paymentmethod' => 'banktransfer',
+            'duedate' => '2026-08-10',
+            'taxrate' => 12.5,
+        ], $calls[2]['params']);
+    }
+
+    /** Decisão fechada: a conversão não produz efeito COMMS. */
+    public function test_convert_quote_to_invoice_never_sends_email(): void
+    {
+        $calls = [];
+        $tools = $this->makeConverter(function (string $cmd, array $params) use (&$calls) {
+            $calls[] = ['cmd' => $cmd, 'params' => $params];
+            if ($cmd === 'GetQuotes') {
+                return self::quoteResponse();
+            }
+            if ($cmd === 'AcceptQuote') {
+                return ['result' => 'success', 'invoiceid' => 99];
+            }
+            return ['result' => 'success'];
+        });
+
+        $tools->convertQuoteToInvoice(quoteid: 10, paymentmethod: 'banktransfer');
+
+        foreach ($calls as $call) {
+            $this->assertArrayNotHasKey('publishandsendemail', $call['params']);
+            $this->assertArrayNotHasKey('sendinvoice', $call['params']);
+        }
+    }
+
+    public function test_convert_quote_to_invoice_has_no_sendinvoice_parameter(): void
+    {
+        $params = (new \ReflectionMethod(QuoteTools::class, 'convertQuoteToInvoice'))->getParameters();
+        $names = array_map(fn(\ReflectionParameter $p) => $p->getName(), $params);
+
+        $this->assertSame(['quoteid', 'paymentmethod', 'duedate', 'taxrate'], $names);
+    }
+
+    public function test_convert_quote_to_invoice_reports_partial_update_error(): void
+    {
+        $tools = $this->makeConverter(function (string $cmd, array $params) {
+            if ($cmd === 'GetQuotes') {
+                return self::quoteResponse();
+            }
+            if ($cmd === 'AcceptQuote') {
+                return ['result' => 'success', 'invoiceid' => 99];
+            }
+
+            return ['result' => 'error', 'message' => 'Invalid payment method'];
+        });
+
+        $json = $tools->convertQuoteToInvoice(quoteid: 10, paymentmethod: 'missing');
+        $result = json_decode($json, true);
+
+        $this->assertSame('error', $result['result']);
+        $this->assertTrue($result['partial'], 'falha após efeito parcial deve ser sinalizada');
+        $this->assertSame(10, $result['quoteid']);
+        $this->assertSame(99, $result['invoiceid']);
+        $this->assertStringContainsString('Quote converted, but invoice update failed', $result['message']);
+        $this->assertStringContainsString('NÃO repetir', $result['warning']);
+        $this->assertSame('Invalid payment method', $result['invoice_update']['message']);
+    }
+
+    public function test_convert_quote_to_invoice_reports_partial_when_invoiceid_missing(): void
+    {
+        $tools = $this->makeConverter(function (string $cmd, array $params) {
+            if ($cmd === 'GetQuotes') {
+                return self::quoteResponse();
+            }
+            return ['result' => 'success']; // AcceptQuote sem invoiceid
+        });
+
+        $json = $tools->convertQuoteToInvoice(quoteid: 10, paymentmethod: 'banktransfer');
+        $result = json_decode($json, true);
+
+        $this->assertSame('error', $result['result']);
+        $this->assertTrue($result['partial']);
+        $this->assertSame(10, $result['quoteid']);
+        $this->assertStringContainsString('NÃO repetir', $result['warning']);
+    }
+
+    /** Argumentos são validados ANTES do primeiro efeito persistente. */
+    public function test_convert_quote_to_invoice_validates_arguments_before_any_effect(): void
+    {
+        foreach ([
+            ['duedate' => 'ontem'],
+            ['duedate' => '2026-02-31'],
+            ['taxrate' => 150.0],
+            ['taxrate' => -1.0],
+        ] as $badArgs) {
+            $called = [];
+            $tools = $this->makeConverter(function (string $cmd) use (&$called) {
+                $called[] = $cmd;
+                return ['result' => 'success', 'invoiceid' => 1];
+            });
+
+            try {
+                $tools->convertQuoteToInvoice(
+                    quoteid: 10,
+                    duedate: $badArgs['duedate'] ?? '',
+                    taxrate: $badArgs['taxrate'] ?? null,
+                );
+                $this->fail('argumento inválido deveria ser rejeitado: ' . json_encode($badArgs));
+            } catch (\InvalidArgumentException $e) {
+                $this->assertSame([], $called, 'nenhuma chamada pode ocorrer antes da validação');
+            }
+        }
+    }
+
+    /** Guarda de repetição: cotação já aceita não é convertida de novo. */
+    public function test_convert_quote_to_invoice_refuses_already_accepted_quote(): void
+    {
+        $calls = [];
+        $tools = $this->makeConverter(function (string $cmd, array $params) use (&$calls) {
+            $calls[] = $cmd;
+            if ($cmd === 'GetQuotes') {
+                return self::quoteResponse(stage: 'Accepted');
+            }
+            return ['result' => 'success', 'invoiceid' => 99];
+        });
+
+        $json = $tools->convertQuoteToInvoice(quoteid: 10);
+        $result = json_decode($json, true);
+
+        $this->assertSame(['GetQuotes'], $calls, 'AcceptQuote não pode ser chamado');
+        $this->assertSame('error', $result['result']);
+        $this->assertSame('Accepted', $result['stage']);
+        $this->assertStringContainsString('already in stage', $result['message']);
+    }
+
+    public function test_convert_quote_to_invoice_blocked_when_financial_gate_off(): void
+    {
+        $tools = $this->makeTools(function (string $cmd, array $params) {
+            if ($cmd === 'GetQuotes') {
+                return self::quoteResponse();
+            }
+            return ['result' => 'success', 'invoiceid' => 99];
+        }, ['write' => true]); // WRITE on, FINANCIAL off
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('class FINANCIAL disabled');
+
+        $tools->convertQuoteToInvoice(quoteid: 10);
+    }
+
+    // ---------------------------------------------------------------
+    // delete_quote (DESTRUCTIVE)
+    // ---------------------------------------------------------------
+
+    public function test_delete_quote_requires_confirm_true(): void
+    {
+        $called = false;
+        $tools = $this->makeTools(function () use (&$called) {
+            $called = true;
+            return ['result' => 'success'];
+        }, ['destructive' => true]);
+
+        $json = $tools->deleteQuote(quoteid: 7, confirm: false);
+        $result = json_decode($json, true);
+
+        $this->assertFalse($called);
+        $this->assertSame('error', $result['result']);
+        $this->assertSame(7, $result['quoteid']);
+        $this->assertSame('Deletion requires confirm=true', $result['message']);
+    }
+
+    public function test_delete_quote_calls_delete_quote_when_confirmed(): void
+    {
+        $captured = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$captured) {
+            $captured = ['cmd' => $cmd, 'params' => $params];
+            return ['result' => 'success'];
+        }, ['destructive' => true]);
+
+        $json = $tools->deleteQuote(quoteid: 7, confirm: true);
+        $result = json_decode($json, true);
+
+        $this->assertSame('DeleteQuote', $captured['cmd']);
+        $this->assertSame(['quoteid' => 7], $captured['params']);
+        $this->assertSame('success', $result['result']);
+        $this->assertSame(7, $result['quoteid']);
+    }
+
+    /** confirm=true é defesa adicional — NÃO substitui o gate. */
+    public function test_delete_quote_blocked_by_gate_even_with_confirm_true(): void
+    {
+        $tools = $this->makeTools(null, ['write' => true]); // DESTRUCTIVE off
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('class DESTRUCTIVE disabled');
+
+        $tools->deleteQuote(quoteid: 7, confirm: true);
+    }
+}

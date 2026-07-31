@@ -26,8 +26,15 @@ class TicketTools
         return json_encode($this->api->call('GetTicket', ['ticketid' => $ticketid]), JSON_PRETTY_PRINT);
     }
 
-    #[McpTool(name: 'whmcs_open_ticket', description: 'Abre um novo ticket de suporte')]
-    public function openTicket(int $deptid, string $subject, string $message, int $clientid = 0, string $name = '', string $email = '', string $priority = 'Medium', int $serviceid = 0, int $domainid = 0, bool $markdown = false, bool $noemail = false): string
+    /**
+     * A classe primária é WRITE. `notify_client` é um efeito ORTOGONAL: o
+     * default é NÃO notificar (`noemail=true`); pedir `notify_client=true`
+     * exige, além do gate WRITE, o gate COMMS — verificado centralmente em
+     * LocalApiClient, não aqui, para que nenhuma refatoração (ou chamada
+     * direta ao cliente local) contorne a autorização.
+     */
+    #[McpTool(name: 'whmcs_open_ticket', description: 'Abre um novo ticket de suporte. notify_client=true envia e-mail ao cliente e exige o gate COMMS; o default não notifica.')]
+    public function openTicket(int $deptid, string $subject, string $message, int $clientid = 0, string $name = '', string $email = '', string $priority = 'Medium', int $serviceid = 0, int $domainid = 0, bool $markdown = false, bool $notify_client = false): string
     {
         $params = ['deptid' => $deptid, 'subject' => $subject, 'message' => $message, 'priority' => $priority];
         if ($clientid > 0) $params['clientid'] = $clientid;
@@ -36,12 +43,13 @@ class TicketTools
         if ($serviceid > 0) $params['serviceid'] = $serviceid;
         if ($domainid > 0) $params['domainid'] = $domainid;
         if ($markdown) $params['markdown'] = true;
-        if ($noemail) $params['noemail'] = true;
+        if (!$notify_client) $params['noemail'] = true;
         return json_encode($this->api->call('OpenTicket', $params), JSON_PRETTY_PRINT);
     }
 
-    #[McpTool(name: 'whmcs_reply_ticket', description: 'Adiciona resposta a um ticket existente')]
-    public function replyTicket(int $ticketid, string $message, string $status = '', int $adminid = 0, string $adminusername = '', string $name = '', string $email = '', int $clientid = 0, bool $markdown = false, bool $noemail = false): string
+    /** Mesma política de notificação de openTicket — ver nota acima. */
+    #[McpTool(name: 'whmcs_reply_ticket', description: 'Adiciona resposta a um ticket existente. notify_client=true envia e-mail ao cliente e exige o gate COMMS; o default não notifica.')]
+    public function replyTicket(int $ticketid, string $message, string $status = '', int $adminid = 0, string $adminusername = '', string $name = '', string $email = '', int $clientid = 0, bool $markdown = false, bool $notify_client = false): string
     {
         $params = compact('ticketid', 'message');
         if ($status !== '') $params['status'] = $status;
@@ -51,7 +59,7 @@ class TicketTools
         if ($email !== '') $params['email'] = $email;
         if ($clientid > 0) $params['clientid'] = $clientid;
         if ($markdown) $params['markdown'] = true;
-        if ($noemail) $params['noemail'] = true;
+        if (!$notify_client) $params['noemail'] = true;
         return json_encode($this->api->call('AddTicketReply', $params), JSON_PRETTY_PRINT);
     }
 

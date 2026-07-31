@@ -81,7 +81,10 @@ class CapsuleClient
             }
             return;
         }
-        if ($this->isReadonly() || !$this->boolCfg('nt_mcp_enable_write', true)) {
+        // Espelha LocalApiClient::gateEnabled(): o gate WRITE tem default
+        // DESLIGADO no rollout, e uma falha de leitura da config cai no mesmo
+        // default (fail-closed).
+        if ($this->isReadonly() || !$this->boolCfg('nt_mcp_enable_write', false)) {
             throw new \InvalidArgumentException('CapsuleClient: writes disabled (read-only / write gate).');
         }
     }

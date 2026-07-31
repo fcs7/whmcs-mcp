@@ -8,12 +8,18 @@ class LocalApiClient
 {
     // ---------------------------------------------------------------
     // SECURITY FIX (F4 -- CVSS 9.1): Restrict callable WHMCS API
-    // commands to only those used by the 86 MCP tools.
+    // commands to only those used by the 64 MCP tools.
     //
     // Before this fix, call() accepted ANY command string, meaning a
     // compromised or malicious MCP tool caller could invoke destructive
     // or data-exfiltrating API actions such as AddAdmin, EncryptPassword,
     // WhoAmI, DecryptPassword, CreateSsoToken, etc.
+    //
+    // T1: reduzido de 73 para os 51 comandos efetivamente requeridos pela
+    // superfície canônica de 64 tools. Comandos de custo/provisionamento
+    // (ModuleSuspend, UpgradeProduct, DomainRegister, AcceptOrder, AddOrder...),
+    // de comunicação (SendEmail, SendQuote) e lookups auxiliares saíram do
+    // allowlist — não foram apenas desligados por gate.
     // ---------------------------------------------------------------
 
     /** Exhaustive allowlist of WHMCS API commands used by the addon tools. */
@@ -38,11 +44,6 @@ class LocalApiClient
         'GetCredits',
         'GetPayMethods',
 
-        // ServiceTools
-        'ModuleSuspend',
-        'ModuleUnsuspend',
-        'UpgradeProduct',
-
         // TicketTools
         'GetTickets',
         'GetTicket',
@@ -52,36 +53,21 @@ class LocalApiClient
 
         // OrderTools
         'GetOrders',
-        'AcceptOrder',
         'CancelOrder',
-        'AddOrder',
-        'GetOrderStatuses',
-        'GetProducts',
-        'GetPromotions',
         'PendingOrder',
 
         // DomainTools
-        'DomainRegister',
-        'DomainRenew',
-        'DomainUpdateNameservers',
         'DomainGetNameservers',
         'DomainGetLockingStatus',
         'DomainGetWhoisInfo',
         'GetTLDPricing',
-        'UpdateClientDomain',
 
         // SystemTools
         'GetStats',
-        'SendEmail',
         'GetActivityLog',
         'GetAdminDetails',
-        'GetCurrencies',
-        'GetEmailTemplates',
-        'GetPaymentMethods',
         'GetToDoItems',
-        'GetToDoItemStatuses',
         'UpdateToDoItem',
-        'LogActivity',
 
         // ProjectManagerTools
         'GetProjects',
@@ -90,7 +76,6 @@ class LocalApiClient
         'UpdateProject',
         'AddProjectTask',
         'UpdateProjectTask',
-        'DeleteProjectTask',
         'StartTaskTimer',
         'EndTaskTimer',
         'AddProjectMessage',
@@ -99,17 +84,14 @@ class LocalApiClient
         'GetQuotes',
         'CreateQuote',
         'UpdateQuote',
-        'SendQuote',
         'AcceptQuote',
+        'UpdateInvoice',
+        'DeleteQuote',
 
         // SupportInfoTools
         'GetSupportDepartments',
         'GetSupportStatuses',
         'GetTicketCounts',
-        'GetTicketNotes',
-        'GetTicketPredefinedCats',
-        'GetTicketPredefinedReplies',
-        'GetTicketAttachment',
     ];
 
     /**
@@ -122,43 +104,50 @@ class LocalApiClient
         'securityqans', 'tax_id',
     ];
 
-    /** Classe de efeito colateral por comando. Ausência de classe ⇒ negar. */
+    /**
+     * Classe de efeito colateral por comando. Ausência de classe ⇒ negar
+     * (ver classOf()). TODO comando do allowlist tem entrada explícita aqui:
+     * nenhuma ausência degrada para WRITE.
+     */
     private const COMMAND_CLASS = [
-        // READ
+        // READ (38 tools de leitura mapeiam nestes comandos)
         'GetClients'=>'READ','GetClientsDetails'=>'READ','GetClientsProducts'=>'READ',
         'GetClientsDomains'=>'READ','GetContacts'=>'READ','GetClientGroups'=>'READ',
         'GetClientsAddons'=>'READ','GetInvoices'=>'READ','GetInvoice'=>'READ',
         'GetTransactions'=>'READ','GetCredits'=>'READ','GetPayMethods'=>'READ',
-        'GetTickets'=>'READ','GetTicket'=>'READ','GetOrders'=>'READ','GetOrderStatuses'=>'READ',
-        'GetProducts'=>'READ','GetPromotions'=>'READ','DomainGetNameservers'=>'READ',
-        'DomainGetLockingStatus'=>'READ','DomainGetWhoisInfo'=>'READ','GetTLDPricing'=>'READ',
-        'GetStats'=>'READ','GetActivityLog'=>'READ','GetAdminDetails'=>'READ','GetCurrencies'=>'READ',
-        'GetEmailTemplates'=>'READ','GetPaymentMethods'=>'READ','GetToDoItems'=>'READ',
-        'GetToDoItemStatuses'=>'READ','GetProjects'=>'READ','GetProject'=>'READ','GetQuotes'=>'READ',
+        'GetTickets'=>'READ','GetTicket'=>'READ','GetOrders'=>'READ',
+        'DomainGetNameservers'=>'READ','DomainGetLockingStatus'=>'READ',
+        'DomainGetWhoisInfo'=>'READ','GetTLDPricing'=>'READ',
+        'GetStats'=>'READ','GetActivityLog'=>'READ','GetAdminDetails'=>'READ',
+        'GetToDoItems'=>'READ','GetProjects'=>'READ','GetProject'=>'READ','GetQuotes'=>'READ',
         'GetSupportDepartments'=>'READ','GetSupportStatuses'=>'READ','GetTicketCounts'=>'READ',
-        'GetTicketNotes'=>'READ','GetTicketPredefinedCats'=>'READ','GetTicketPredefinedReplies'=>'READ',
-        'GetTicketAttachment'=>'READ',
-        // WRITE (reversível)
+        // WRITE (mutação reversível)
         'AddClient'=>'WRITE','UpdateClient'=>'WRITE','AddContact'=>'WRITE','UpdateContact'=>'WRITE',
-        'ModuleSuspend'=>'WRITE','ModuleUnsuspend'=>'WRITE','OpenTicket'=>'WRITE',
-        'AddTicketReply'=>'WRITE','UpdateTicket'=>'WRITE','CancelOrder'=>'WRITE','PendingOrder'=>'WRITE',
-        'DomainUpdateNameservers'=>'WRITE','UpdateClientDomain'=>'WRITE','UpdateToDoItem'=>'WRITE',
-        'LogActivity'=>'WRITE','CreateProject'=>'WRITE','UpdateProject'=>'WRITE','AddProjectTask'=>'WRITE',
+        'OpenTicket'=>'WRITE','AddTicketReply'=>'WRITE','UpdateTicket'=>'WRITE',
+        'PendingOrder'=>'WRITE','UpdateToDoItem'=>'WRITE',
+        'CreateProject'=>'WRITE','UpdateProject'=>'WRITE','AddProjectTask'=>'WRITE',
         'UpdateProjectTask'=>'WRITE','StartTaskTimer'=>'WRITE','EndTaskTimer'=>'WRITE',
         'AddProjectMessage'=>'WRITE','CreateQuote'=>'WRITE','UpdateQuote'=>'WRITE',
-        // DESTRUCTIVE (irreversível) — os comandos destrutivos/financeiros de
-        // client/order/invoice foram REMOVIDOS do allowlist (não apenas desativados
-        // pelo gate); resta apenas DeleteProjectTask, ainda coberto pelo gate WO-2.
-        'DeleteProjectTask'=>'DESTRUCTIVE',
-        // FINANCIAL — AcceptQuote gera fatura/pedido, logo é efeito financeiro.
-        // (Único comando financeiro remanescente: os demais foram removidos.)
-        'AcceptQuote'=>'FINANCIAL',
-        // COST (custo/provisionamento externo)
-        'DomainRegister'=>'COST','DomainRenew'=>'COST','UpgradeProduct'=>'COST',
-        'AcceptOrder'=>'COST','AddOrder'=>'COST',
-        // COMMS (envio de e-mail)
-        'SendEmail'=>'COMMS','SendQuote'=>'COMMS',
+        // DESTRUCTIVE (irreversível) — as tools que os usam exigem também confirm=true.
+        'CancelOrder'=>'DESTRUCTIVE','DeleteQuote'=>'DESTRUCTIVE',
+        // FINANCIAL — AcceptQuote gera a fatura; UpdateInvoice ajusta a cobrança
+        // gerada. Ambos são passos da mesma conversão e compartilham a classe.
+        'AcceptQuote'=>'FINANCIAL','UpdateInvoice'=>'FINANCIAL',
+        // COST e COMMS: nenhum comando da superfície canônica pertence a estas
+        // classes como efeito PRIMÁRIO. COST saiu inteiramente do allowlist.
+        // COMMS permanece como requisito ORTOGONAL — ver NOTIFYING_COMMANDS.
     ];
+
+    /**
+     * Comandos que notificam o cliente por e-mail salvo bloqueio explícito via
+     * `noemail`. Nenhum deles é COMMS como classe primária (são WRITE), mas
+     * pedir a notificação adiciona o gate COMMS como requisito.
+     *
+     * A verificação vive aqui — no ponto CENTRAL de autorização — e não na
+     * camada da tool: assim uma chamada direta ao LocalApiClient (ou uma
+     * refatoração futura das tools) não consegue contornar o gate.
+     */
+    private const NOTIFYING_COMMANDS = ['AddClient', 'OpenTicket', 'AddTicketReply'];
 
     /** @var callable|null Para injecao em testes */
     private $callable = null;
@@ -194,19 +183,26 @@ class LocalApiClient
         return self::COMMAND_CLASS[$command];
     }
 
+    /**
+     * TODA classe não-READ tem default DESLIGADO (rollout read-only). Habilitar
+     * WRITE é uma etapa operacional auditada; DESTRUCTIVE, FINANCIAL, COST e
+     * COMMS exigem opt-in separado e independente.
+     */
     private function gateEnabled(string $class): bool
     {
         if ($class === 'READ') return true;
         if ($this->isReadonly()) return false; // master switch (fail-closed)
-        [$key, $default] = match ($class) {
-            'WRITE'       => ['nt_mcp_enable_write', true],   // WRITE habilitado por padrão
-            'DESTRUCTIVE' => ['nt_mcp_enable_destructive', false],
-            'FINANCIAL'   => ['nt_mcp_enable_financial', false],
-            'COST'        => ['nt_mcp_enable_cost', false],
-            'COMMS'       => ['nt_mcp_enable_comms', false],
-            default       => ['nt_mcp_enable_write', false],
+        $key = match ($class) {
+            'WRITE'       => 'nt_mcp_enable_write',
+            'DESTRUCTIVE' => 'nt_mcp_enable_destructive',
+            'FINANCIAL'   => 'nt_mcp_enable_financial',
+            'COST'        => 'nt_mcp_enable_cost',
+            'COMMS'       => 'nt_mcp_enable_comms',
+            // Fail-closed: uma classe nova sem entrada aqui nunca é liberada.
+            default       => null,
         };
-        return $this->boolSetting($key, $default, strtolower($class));
+        if ($key === null) return false;
+        return $this->boolSetting($key, false, strtolower($class));
     }
 
     /**
@@ -249,15 +245,37 @@ class LocalApiClient
         }
     }
 
-    private function assertModeAllows(string $command): void
+    private function assertModeAllows(string $command, array $params = []): void
     {
         $class = $this->classOf($command);
         if (!$this->gateEnabled($class)) {
-            self::auditLog("MCP BLOCKED {$class} '{$command}' (gate disabled)", []);
+            self::auditLog("MCP BLOCKED {$class} '{$command}' (gate disabled)", $params);
             throw new \RuntimeException(
                 "LocalApiClient: command '{$command}' is blocked (class {$class} disabled by config)."
             );
         }
+
+        // Requisito ORTOGONAL: notificar o cliente exige COMMS ALÉM da classe
+        // primária. Vale para qualquer caminho que chegue até aqui, inclusive
+        // uma chamada direta ao LocalApiClient que omita 'noemail'.
+        if ($this->sendsNotification($command, $params) && !$this->gateEnabled('COMMS')) {
+            self::auditLog("MCP BLOCKED COMMS '{$command}' (notification requested, comms gate disabled)", $params);
+            throw new \RuntimeException(
+                "LocalApiClient: command '{$command}' is blocked (client notification requires the COMMS gate)."
+            );
+        }
+    }
+
+    /** true quando o comando enviará e-mail ao cliente com os params dados. */
+    private function sendsNotification(string $command, array $params): bool
+    {
+        if (!in_array($command, self::NOTIFYING_COMMANDS, true)) {
+            return false;
+        }
+
+        $noemail = $params['noemail'] ?? false;
+
+        return !($noemail === true || $noemail === 1 || $noemail === '1' || $noemail === 'true');
     }
 
     private function clampImpersonation(string $command, array $params): array
@@ -312,7 +330,7 @@ class LocalApiClient
             );
         }
 
-        $this->assertModeAllows($command);                       // A
+        $this->assertModeAllows($command, $params);              // A
         $params = $this->clampImpersonation($command, $params);  // B
 
         // ---------------------------------------------------------------

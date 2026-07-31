@@ -42,9 +42,16 @@ class ClientTools
         return json_encode($result, JSON_PRETTY_PRINT);
     }
 
+    /**
+     * A classe primária é WRITE. `notify_client` é um efeito ORTOGONAL: o
+     * default é NÃO notificar (`noemail=true`); pedir `notify_client=true`
+     * exige, além do gate WRITE, o gate COMMS — verificado centralmente em
+     * LocalApiClient, não aqui, para que nenhuma refatoração (ou chamada
+     * direta ao cliente local) contorne a autorização.
+     */
     #[McpTool(
         name: 'whmcs_create_client',
-        description: 'Cria um novo cliente no WHMCS. Aceita customfields como JSON object mapeando field ID ao valor, ex: {"4":"valor","134":"valor"}'
+        description: 'Cria um novo cliente no WHMCS. Aceita customfields como JSON object mapeando field ID ao valor, ex: {"4":"valor","134":"valor"}. notify_client=true envia o e-mail de boas-vindas e exige o gate COMMS; o default não notifica.'
     )]
     public function createClient(
         string $firstname,
@@ -62,7 +69,7 @@ class ClientTools
         string $address2 = '',
         string $notes = '',
         string $tax_id = '',
-        bool $noemail = false
+        bool $notify_client = false
     ): string {
         $params = compact('firstname', 'lastname', 'email', 'password2');
         foreach (['address1', 'city', 'state', 'postcode', 'country', 'phonenumber', 'companyname', 'address2', 'notes', 'tax_id'] as $field) {
@@ -73,7 +80,7 @@ class ClientTools
         if ($customfields !== '') {
             $params['customfields'] = self::validateAndEncodeCustomFields($customfields);
         }
-        if ($noemail) {
+        if (!$notify_client) {
             $params['noemail'] = true;
         }
         return json_encode($this->api->call('AddClient', $params), JSON_PRETTY_PRINT);

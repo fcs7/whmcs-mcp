@@ -8,9 +8,15 @@ use PHPUnit\Framework\TestCase;
 
 class TicketToolsTest extends TestCase
 {
-    private function makeTools(?callable $callable = null): TicketTools
+    /**
+     * As tools de ticket são WRITE e o gate WRITE tem default DESLIGADO
+     * (rollout read-only), então os testes de comportamento precisam habilitá-lo
+     * explicitamente. COMMS fica desligado — é o default de produção.
+     */
+    private function makeTools(?callable $callable = null, array $gates = ['write' => true]): TicketTools
     {
         $api = new LocalApiClient('testadmin');
+        $api->setGates($gates);
         $api->setCallable($callable ?? function (string $cmd, array $params) {
             return ['result' => 'success', 'ticketid' => 1];
         });
@@ -48,7 +54,7 @@ class TicketToolsTest extends TestCase
         $this->assertSame('testadmin', $capturedParams['adminusername']);
     }
 
-    public function test_reply_ticket_sends_noemail_when_true(): void
+    public function test_reply_ticket_suppresses_email_by_default(): void
     {
         $capturedParams = null;
         $tools = $this->makeTools(function (string $cmd, array $params) use (&$capturedParams) {
@@ -56,9 +62,78 @@ class TicketToolsTest extends TestCase
             return ['result' => 'success'];
         });
 
-        $tools->replyTicket(10, 'Hello', noemail: true);
+        $tools->replyTicket(10, 'Hello');
 
-        $this->assertTrue($capturedParams['noemail']);
+        $this->assertTrue($capturedParams['noemail'], 'default é NÃO notificar o cliente');
+    }
+
+    public function test_open_ticket_suppresses_email_by_default(): void
+    {
+        $capturedParams = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$capturedParams) {
+            $capturedParams = $params;
+            return ['result' => 'success'];
+        });
+
+        $tools->openTicket(1, 'Subject', 'Body');
+
+        $this->assertTrue($capturedParams['noemail'], 'default é NÃO notificar o cliente');
+    }
+
+    // ---------------------------------------------------------------
+    // COMMS ortogonal: notify_client=true exige WRITE **e** COMMS.
+    // ---------------------------------------------------------------
+
+    public function test_reply_ticket_with_notify_client_blocked_when_comms_gate_off(): void
+    {
+        $called = false;
+        $tools = $this->makeTools(function () use (&$called) {
+            $called = true;
+            return ['result' => 'success'];
+        }, ['write' => true, 'comms' => false]);
+
+        try {
+            $tools->replyTicket(10, 'Hello', notify_client: true);
+            $this->fail('notify_client=true deveria ser bloqueado sem o gate COMMS');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('COMMS gate', $e->getMessage());
+        }
+
+        $this->assertFalse($called, 'a chamada não pode chegar à LocalAPI');
+    }
+
+    public function test_open_ticket_with_notify_client_blocked_when_comms_gate_off(): void
+    {
+        $tools = $this->makeTools(null, ['write' => true, 'comms' => false]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('COMMS gate');
+
+        $tools->openTicket(1, 'Subject', 'Body', notify_client: true);
+    }
+
+    public function test_reply_ticket_with_notify_client_allowed_when_write_and_comms_on(): void
+    {
+        $capturedParams = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$capturedParams) {
+            $capturedParams = $params;
+            return ['result' => 'success'];
+        }, ['write' => true, 'comms' => true]);
+
+        $tools->replyTicket(10, 'Hello', notify_client: true);
+
+        $this->assertArrayNotHasKey('noemail', $capturedParams, 'notificação liberada: sem bloqueio de e-mail');
+    }
+
+    public function test_notify_client_still_requires_the_primary_write_gate(): void
+    {
+        // COMMS ligado não substitui a classe primária: WRITE off ⇒ bloqueado.
+        $tools = $this->makeTools(null, ['write' => false, 'comms' => true]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('class WRITE disabled');
+
+        $tools->replyTicket(10, 'Hello', notify_client: true);
     }
 
     public function test_reply_ticket_omits_optional_params_by_default(): void
@@ -73,8 +148,9 @@ class TicketToolsTest extends TestCase
 
         // adminusername is always injected by LocalApiClient's anti-impersonation
         // clamp (WO-2) for AddTicketReply, even when the caller supplies none.
+        // noemail=true is the notification default (notify_client=false).
         $this->assertSame(
-            ['ticketid' => 10, 'message' => 'Hello', 'adminusername' => 'testadmin'],
+            ['ticketid' => 10, 'message' => 'Hello', 'noemail' => true, 'adminusername' => 'testadmin'],
             $capturedParams
         );
     }

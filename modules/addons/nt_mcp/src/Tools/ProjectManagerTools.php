@@ -93,12 +93,6 @@ class ProjectManagerTools
         return json_encode($this->api->call('UpdateProjectTask', $params), JSON_PRETTY_PRINT);
     }
 
-    #[McpTool(name: 'whmcs_delete_project_task', description: 'Remove uma tarefa de um projeto')]
-    public function deleteProjectTask(int $projectid, int $taskid): string
-    {
-        return json_encode($this->api->call('DeleteProjectTask', compact('projectid', 'taskid')), JSON_PRETTY_PRINT);
-    }
-
     #[McpTool(name: 'whmcs_start_task_timer', description: 'Inicia cronômetro de uma tarefa (time tracking)')]
     public function startTaskTimer(int $projectid, int $taskid, int $adminid): string
     {

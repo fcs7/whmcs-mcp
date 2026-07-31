@@ -8,9 +8,15 @@ use PHPUnit\Framework\TestCase;
 
 class ClientToolsValidationTest extends TestCase
 {
-    private function makeTools(?callable $callable = null): ClientTools
+    /**
+     * As tools de escrita de cliente são WRITE e o gate WRITE tem default
+     * DESLIGADO (rollout read-only), então os testes de comportamento precisam
+     * habilitá-lo. COMMS fica desligado — é o default de produção.
+     */
+    private function makeTools(?callable $callable = null, array $gates = ['write' => true]): ClientTools
     {
         $api = new LocalApiClient('testadmin');
+        $api->setGates($gates);
         $api->setCallable($callable ?? function (string $cmd, array $params) {
             return ['result' => 'success', 'clientid' => 1];
         });
@@ -133,7 +139,7 @@ class ClientToolsValidationTest extends TestCase
         $tools->updateClient(42, customfields: 'not-json');
     }
 
-    public function test_create_client_sends_companyname_and_noemail(): void
+    public function test_create_client_sends_companyname_and_suppresses_email_by_default(): void
     {
         $capturedParams = null;
         $tools = $this->makeTools(function (string $cmd, array $params) use (&$capturedParams) {
@@ -141,10 +147,45 @@ class ClientToolsValidationTest extends TestCase
             return ['result' => 'success', 'clientid' => 1];
         });
 
-        $tools->createClient('John', 'Doe', 'john@example.com', 'pass123', companyname: 'ACME', noemail: true);
+        $tools->createClient('John', 'Doe', 'john@example.com', 'pass123', companyname: 'ACME');
 
         $this->assertSame('ACME', $capturedParams['companyname']);
-        $this->assertTrue($capturedParams['noemail']);
+        $this->assertTrue($capturedParams['noemail'], 'default é NÃO notificar o cliente');
+    }
+
+    // ---------------------------------------------------------------
+    // COMMS ortogonal: notify_client=true exige WRITE **e** COMMS.
+    // ---------------------------------------------------------------
+
+    public function test_create_client_with_notify_client_blocked_when_comms_gate_off(): void
+    {
+        $called = false;
+        $tools = $this->makeTools(function () use (&$called) {
+            $called = true;
+            return ['result' => 'success'];
+        }, ['write' => true, 'comms' => false]);
+
+        try {
+            $tools->createClient('John', 'Doe', 'john@example.com', 'pass123', notify_client: true);
+            $this->fail('notify_client=true deveria ser bloqueado sem o gate COMMS');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('COMMS gate', $e->getMessage());
+        }
+
+        $this->assertFalse($called, 'a chamada não pode chegar à LocalAPI');
+    }
+
+    public function test_create_client_with_notify_client_allowed_when_write_and_comms_on(): void
+    {
+        $capturedParams = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$capturedParams) {
+            $capturedParams = $params;
+            return ['result' => 'success', 'clientid' => 1];
+        }, ['write' => true, 'comms' => true]);
+
+        $tools->createClient('John', 'Doe', 'john@example.com', 'pass123', notify_client: true);
+
+        $this->assertArrayNotHasKey('noemail', $capturedParams, 'notificação liberada: sem bloqueio de e-mail');
     }
 
     public function test_list_clients_sends_status_filter(): void

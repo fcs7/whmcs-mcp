@@ -32,34 +32,4 @@ class SupportInfoTools
         if ($includeCountsByStatus) $params['includeCountsByStatus'] = true;
         return json_encode($this->api->call('GetTicketCounts', $params), JSON_PRETTY_PRINT);
     }
-
-    #[McpTool(name: 'whmcs_get_ticket_notes', description: 'Obtém notas internas de um ticket')]
-    public function getTicketNotes(int $ticketid): string
-    {
-        return json_encode($this->api->call('GetTicketNotes', ['ticketid' => $ticketid]), JSON_PRETTY_PRINT);
-    }
-
-    #[McpTool(name: 'whmcs_get_ticket_predefined_cats', description: 'Lista categorias de respostas predefinidas')]
-    public function getTicketPredefinedCats(): string
-    {
-        return json_encode($this->api->call('GetTicketPredefinedCats', []), JSON_PRETTY_PRINT);
-    }
-
-    #[McpTool(name: 'whmcs_get_ticket_predefined_replies', description: 'Lista respostas predefinidas de tickets')]
-    public function getTicketPredefinedReplies(int $catid = 0): string
-    {
-        $params = [];
-        if ($catid > 0) $params['catid'] = $catid;
-        return json_encode($this->api->call('GetTicketPredefinedReplies', $params), JSON_PRETTY_PRINT);
-    }
-
-    #[McpTool(name: 'whmcs_get_ticket_attachment', description: 'Obtém anexo de ticket (type: 0=ticket, 1=reply, 2=note)')]
-    public function getTicketAttachment(int $relatedid, int $type = 0, int $index = 0): string
-    {
-        return json_encode($this->api->call('GetTicketAttachment', [
-            'relatedid' => $relatedid,
-            'type' => $type,
-            'index' => $index,
-        ]), JSON_PRETTY_PRINT);
-    }
 }
