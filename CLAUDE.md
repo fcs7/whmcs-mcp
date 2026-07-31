@@ -8,13 +8,13 @@ Repo: `git@github.com:fcs7/whmcs-mcp.git`
 ```bash
 cd modules/addons/nt_mcp
 composer install --ignore-platform-req=ext-iconv
-./vendor/bin/phpunit --testdox                    # 103+ tests
+./vendor/bin/phpunit --testdox                    # tests
 composer audit                                    # check dependency CVEs
-grep -c '#\[McpTool(' src/Tools/*.php    # 86 tools total
+rg -o '#\[McpTool' src/Tools/*.php | wc -l        # 86 tools total
 # Deploy manual via FTP (senha interativa — from modules/addons/nt_mcp/)
-lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror -R --only-newer --exclude .git/ --exclude vendor/ --exclude .phpunit.cache/ --exclude .full-review/ --exclude .security-hardening/ --exclude .security-hardening-archive-20260329/ --exclude data/ . /httpdocs/modules/addons/nt_mcp/; bye" desenv.ntweb.com.br
-# Verify: download prod and diff against git
-lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/ --exclude .git/ --exclude data/ --exclude .phpunit.cache/ /httpdocs/modules/addons/nt_mcp/ /tmp/nt_mcp_prod_check/; bye" desenv.ntweb.com.br && for f in $(find . -name '*.php' -not -path './vendor/*' | sort); do diff -q "$f" "/tmp/nt_mcp_prod_check/$f" 2>/dev/null && echo "OK $f" || echo "DIFF $f"; done; rm -rf /tmp/nt_mcp_prod_check
+lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror -R --only-newer --exclude .git/ --exclude vendor/ --exclude tests/ --exclude data/ --exclude .phpunit.cache/ --exclude .omc/ --exclude .full-review/ --exclude .security-hardening/ --exclude .security-hardening-archive-20260329/ . /httpdocs/modules/addons/nt_mcp/; bye" desenv.ntweb.com.br
+# Verify desenv: download deployed tools and count MCP attributes
+lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror /httpdocs/modules/addons/nt_mcp/src/Tools/ /tmp/nt_mcp_desenv_check/src/Tools/; bye" desenv.ntweb.com.br && test -f /tmp/nt_mcp_desenv_check/src/Tools/CrmTools.php && rg -o '#\[McpTool' /tmp/nt_mcp_desenv_check/src/Tools/*.php | wc -l
 ```
 
 ## Architecture
@@ -30,8 +30,8 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 - `src/Http/` — IpResolver, IpAllowlist, TlsEnforcer, SecurityHeaders, CorsHandler
 - `src/OAuth/` — OAuthRouter, OAuthMigration, OAuthHelper, Handlers/{Token,Authorization,Registration,Metadata}Handler
 - `src/Admin/` — AdminController (auth dashboard), OAuthApprovalController (5-layer approval)
-- `src/Whmcs/` — LocalApiClient (73 cmd allowlist, somente não-destrutivas), CapsuleClient (3 table allowlist), CompatContainer, SystemUrl, AdminSession
-- `src/Tools/*.php` — 11 classes, 86 tools: Client(12), System(11), ProjectManager(10), Order(9), Domain(9), CRM(8), SupportInfo(7), Quote(6), Billing(5), Ticket(5), Service(4) — tools destrutivas/financeiras removidas (close_client, delete_order, terminate_service, create_invoice, add_payment, update_invoice, add_credit, add_transaction, update_transaction, add_billable_item)
+- `src/Whmcs/` — LocalApiClient (73 cmd allowlist + gates READ/WRITE/DESTRUCTIVE/FINANCIAL/COST/COMMS), CapsuleClient (3 table allowlist), CompatContainer, SystemUrl, AdminSession
+- `src/Tools/*.php` — 11 tool classes, 86 tools: Client(12), System(11), ProjectManager(10), Order(9), Domain(9), CRM(8), SupportInfo(7), Quote(6), Billing(5), Ticket(5), Service(4)
 - `templates/admin/` — dashboard.php, oauth-approve.php (output escapado via htmlspecialchars)
 
 ### Admin Binding Flow
@@ -57,9 +57,16 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 ## Conventions
 
 - Tools: `#[McpTool(name: 'whmcs_*', description: '...')]` — retornam `json_encode(..., JSON_PRETTY_PRINT)`
-- LocalAPI tools injetam `LocalApiClient`, CRM tools injetam `CapsuleClient`
+- LocalAPI tools injetam `LocalApiClient`; CRM tools injetam `CapsuleClient`
 - Não usar try/catch nos tools — o framework captura exceções automaticamente
 - PHP 8.2+ obrigatório (PHPUnit 11)
+
+## Current Tool Policy
+
+- Expor CRM do ModulesGarden via `CapsuleClient`, respeitando allowlist de tabelas/colunas e readonly gate.
+- Tools LocalAPI passam por `LocalApiClient::ALLOWED_COMMANDS` e gates de classe de efeito colateral.
+- WRITE fica habilitado por padrão; DESTRUCTIVE/FINANCIAL/COST/COMMS ficam bloqueados por padrão e exigem opt-in.
+- Cotações cobrem hoje listar, obter, criar, atualizar, enviar e aceitar; `whmcs_accept_quote` passa pelo gate FINANCIAL. Duplicar, converter em fatura e excluir ainda não existem nesta superfície.
 
 ## Security Layers (do not remove)
 
@@ -91,7 +98,8 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror --exclude vendor/
 - **Addon access control** — cada addon precisa permissão explícita por role group (Setup > Addon Modules > Configure > Access Control)
 - **Deploy** — via `lftp` com `set ssl:verify-certificate no` (SSH indisponível no Plesk)
 - **Não commitar debug logs** — nunca usar `@file_put_contents('/tmp/...')` em código; usar logging estruturado
-- **CRM table names são placeholders** (`mod_mgcrm_*` em CrmTools.php) — verificar no banco real
+- **CRM table names são placeholders** (`mod_mgcrm_*` em CrmTools.php) — verificar no banco real se o ModulesGarden CRM mudar schema
+- **CRM dependency** — se `mod_mgcrm_contacts` não existir, apenas as tools CRM devem falhar com erro claro; o restante do conector continua operacional
 - **mcp.php** requer `__DIR__ . '/../../../init.php'` (3 níveis até raiz WHMCS)
 - **php-mcp/server API real** difere da documentação web: usar HttpTransportHandler, CompatContainer, ArrayConfigurationRepository
 - **ext-iconv** pode não estar habilitada — usar `--ignore-platform-req=ext-iconv` no composer
