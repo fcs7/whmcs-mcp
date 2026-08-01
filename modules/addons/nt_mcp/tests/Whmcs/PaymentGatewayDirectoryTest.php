@@ -31,6 +31,8 @@ class PaymentGatewayDirectoryTest extends TestCase
      */
     private function directoryFromCapsuleRows(array $gatewayValues): PaymentGatewayDirectory
     {
+        // Linhas no MESMO formato do driver (objetos com ->gateway), entregues
+        // CRUAS ao diretório: a desembalagem exercitada é a de produção.
         $rows = array_map(static function ($value) {
             $row = new \stdClass();
             $row->gateway = $value;
@@ -38,10 +40,7 @@ class PaymentGatewayDirectoryTest extends TestCase
         }, $gatewayValues);
 
         $d = new PaymentGatewayDirectory();
-        $d->setResolver(static fn() => array_map(
-            static fn(\stdClass $r) => $r->gateway,
-            $rows
-        ));
+        $d->setResolver(static fn() => $rows);
 
         return $d;
     }
@@ -62,10 +61,11 @@ class PaymentGatewayDirectoryTest extends TestCase
      */
     public function test_case_insensitive_input_resolves_to_the_exact_stored_value(): void
     {
-        $directory = $this->directory(['bankTransfer']);
+        $directory = $this->directory(['banktransfer']);
 
-        $this->assertSame('bankTransfer', $directory->resolve('BANKTRANSFER'));
-        $this->assertSame('bankTransfer', $directory->resolve('banktransfer'));
+        $this->assertSame('banktransfer', $directory->resolve('BANKTRANSFER'));
+        $this->assertSame('banktransfer', $directory->resolve('BankTransfer'));
+        $this->assertSame('banktransfer', $directory->resolve('banktransfer'));
     }
 
     public function test_input_is_trimmed_before_resolution(): void
@@ -112,14 +112,16 @@ class PaymentGatewayDirectoryTest extends TestCase
     public static function invalidInputProvider(): array
     {
         return [
-            'vazio'       => [''],
-            'só espaço'   => [' '],
-            'tabs'        => ["\t"],
-            'com espaço'  => ['bank transfer'],
-            'com barra'   => ['../etc/passwd'],
-            'com aspas'   => ["paypal'"],
-            'com ponto'   => ['pay.pal'],
-            'com hífen'   => ['bank-transfer'],
+            'vazio'            => [''],
+            'só espaço'        => [' '],
+            'tabs'             => ["\t"],
+            'com espaço'       => ['bank transfer'],
+            'com barra'        => ['../etc/passwd'],
+            'com aspas'        => ["paypal'"],
+            'com ponto'        => ['pay.pal'],
+            'com hífen'        => ['bank-transfer'],
+            'dígito inicial'   => ['1paypal'],
+            'underscore ini'   => ['_paypal'],
         ];
     }
 
@@ -148,6 +150,12 @@ class PaymentGatewayDirectoryTest extends TestCase
         $this->directory($rows)->resolve('paypal');
     }
 
+    /**
+     * A documentação oficial de gateway exige filename minúsculo começando por
+     * letra. `PayPal`, `1paypal` e `_paypal` não são system names carregáveis —
+     * se chegassem ao `UpdateInvoice`, a falha só apareceria DEPOIS da cotação
+     * aceita, recriando a parcial que o F3 existe para evitar.
+     */
     public static function invalidRowProvider(): array
     {
         return [
@@ -157,6 +165,11 @@ class PaymentGatewayDirectoryTest extends TestCase
             'sintaxe inválida' => [['paypal', 'bank transfer']],
             'não-string'       => [['paypal', 123]],
             'null'             => [['paypal', null]],
+            'maiúscula'        => [['paypal', 'PayPal']],
+            'toda maiúscula'   => [['paypal', 'STRIPE']],
+            'dígito inicial'   => [['paypal', '1paypal']],
+            'underscore ini'   => [['paypal', '_paypal']],
+            'hífen'            => [['paypal', 'bank-transfer']],
         ];
     }
 
@@ -172,15 +185,21 @@ class PaymentGatewayDirectoryTest extends TestCase
     }
 
     /**
-     * Duas linhas que só diferem por capitalização tornam o canônico
-     * indeterminável — não há como escolher qual mandar ao UpdateInvoice.
+     * Duas linhas que só diferem por capitalização são impossíveis agora — a
+     * de maiúscula já é rejeitada pela sintaxe canônica, antes de virar
+     * ambiguidade. De um jeito ou de outro, falha fechado.
      */
-    public function test_case_insensitive_duplicates_are_ambiguous_and_fail_closed(): void
+    public function test_case_differing_duplicates_fail_closed(): void
     {
         $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('ambiguous');
+        $this->expectExceptionMessage('unreliable directory');
 
         $this->directory(['PayPal', 'paypal'])->resolve('paypal');
+    }
+
+    public function test_exact_duplicates_of_a_canonical_name_are_accepted(): void
+    {
+        $this->assertSame('paypal', $this->directory(['paypal', 'paypal'])->resolve('paypal'));
     }
 
     // ---------------------------------------------------------------
@@ -231,10 +250,10 @@ class PaymentGatewayDirectoryTest extends TestCase
 
     public function test_unwraps_capsule_style_rows(): void
     {
-        $directory = $this->directoryFromCapsuleRows(['banktransfer', 'PayPalCheckout']);
+        $directory = $this->directoryFromCapsuleRows(['banktransfer', 'paypalcheckout']);
 
-        $this->assertSame(['banktransfer', 'PayPalCheckout'], $directory->configuredGateways());
-        $this->assertSame('PayPalCheckout', $directory->resolve('paypalcheckout'));
+        $this->assertSame(['banktransfer', 'paypalcheckout'], $directory->configuredGateways());
+        $this->assertSame('paypalcheckout', $directory->resolve('PayPalCheckout'));
     }
 
     public function test_resolver_is_only_consulted_once_per_instance(): void

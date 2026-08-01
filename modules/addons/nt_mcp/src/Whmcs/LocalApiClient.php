@@ -413,40 +413,76 @@ class LocalApiClient
                 $result = localAPI($command, $params, $this->adminUser);
             }
         } catch (\Throwable $e) {
-            self::auditLog("MCP API EXCEPTION {$command}", [], $correlationId);
-            self::logDetail($correlationId, $command, $e->getMessage(), $params);
-            throw $e;
-        }
+            // AuthorizationException é NOSSA e tem mensagem controlada: sobe
+            // intacta para o chamador distinguir negação de falha.
+            if ($e instanceof AuthorizationException) {
+                throw $e;
+            }
 
-        if (!is_array($result)) {
-            $type = gettype($result);
-            self::auditLog("MCP API ERROR {$command} (non-array {$type})", [], $correlationId);
-            throw new \RuntimeException(
-                "LocalApiClient: WHMCS API command '{$command}' returned unexpected type ({$type}). WHMCS may not be fully initialized."
+            self::auditLog("MCP API EXCEPTION {$command}", [], $correlationId);
+            Diagnostics::log($correlationId, Diagnostics::CATEGORY_API_EXCEPTION, $command, $e);
+
+            // F2: a exceção original NÃO é relançada — o adapter a converteria
+            // em "Tool execution failed: <mensagem crua>", entregando texto
+            // arbitrário (token, CPF, path, SQL) ao chamador MCP.
+            throw new DownstreamFailureException(
+                self::publicFailureMessage($command, $correlationId),
+                0,
+                $e
             );
         }
 
         // ---------------------------------------------------------------
-        // SECURITY FIX (F15 -- revised): a resposta do WHMCS é devolvida como
-        // veio, para o chamador MCP não perder diagnósticos úteis ("Email
-        // already exists", "Client Not Found").
-        //
-        // F2: o TEXTO dessa mensagem, porém, NÃO vai para o Activity Log. Ele é
-        // arbitrário — WHMCS, hook ou módulo de terceiro podem ecoar de volta o
-        // input recebido, e a redação de parâmetros não alcança uma string que
-        // já veio com o segredo interpolado. O Activity Log guarda só o desfecho
-        // estável + correlação; o texto vai redigido para o error_log.
+        // Só `result === 'success'` conta como sucesso. Qualquer outro array —
+        // `[]`, `result` ausente, null ou desconhecido — é INDETERMINADO e
+        // falha fechado. Antes, esses casos geravam um `OK` falso e devolviam a
+        // resposta malformada como se tivesse dado certo.
         // ---------------------------------------------------------------
-        if (($result['result'] ?? '') === 'error') {
-            self::auditLog("MCP API ERROR {$command}", [], $correlationId);
-            self::logDetail($correlationId, $command, (string) ($result['message'] ?? 'Unknown error'), $params);
-        } else {
+        $outcome = is_array($result) ? ($result['result'] ?? null) : null;
+
+        if ($outcome === 'success') {
             self::auditLog("MCP API OK {$command}", [], $correlationId);
+            ResponseRedactor::scrubSensitive($result);  // D defense-in-depth
+
+            return $result;
         }
 
-        ResponseRedactor::scrubSensitive($result);  // D defense-in-depth
+        if ($outcome === 'error') {
+            self::auditLog("MCP API ERROR {$command}", [], $correlationId);
+            Diagnostics::log(
+                $correlationId,
+                Diagnostics::CATEGORY_API_ERROR,
+                $command,
+                null,
+                is_array($result) ? (string) ($result['message'] ?? '') : null
+            );
 
-        return $result;
+            // F2: o `message` do WHMCS é texto arbitrário — hook ou módulo de
+            // terceiro podem ecoar o input recebido. O chamador MCP recebe um
+            // contrato ESTÁVEL com a correlação para o operador achar o
+            // incidente no log; o texto original não atravessa.
+            return [
+                'result' => 'error',
+                'message' => self::publicFailureMessage($command, $correlationId),
+                'correlation_id' => $correlationId,
+            ];
+        }
+
+        // Indeterminado: não-array, ou array sem `result` canônico.
+        $type = is_array($result) ? 'array without canonical result' : gettype($result);
+        self::auditLog("MCP API ERROR {$command} (malformed response: {$type})", [], $correlationId);
+        Diagnostics::log($correlationId, Diagnostics::CATEGORY_API_MALFORMED, $command);
+
+        throw new DownstreamFailureException(
+            self::publicFailureMessage($command, $correlationId)
+        );
+    }
+
+    /** Mensagem pública ESTÁVEL — nada aqui vem de fora. */
+    private static function publicFailureMessage(string $command, string $correlationId): string
+    {
+        return "The WHMCS API call '{$command}' did not complete successfully. "
+            . "Details were recorded in the operator log under correlation id {$correlationId}.";
     }
 
     /** Correlação curta e sem valor semântico — não deriva de dado da chamada. */
@@ -457,22 +493,6 @@ class LocalApiClient
         } catch (\Throwable) {
             return str_pad(dechex(mt_rand(0, 0xFFFFFFFF)), 8, '0', STR_PAD_LEFT);
         }
-    }
-
-    /**
-     * Diagnóstico detalhado — SOMENTE no error_log (canal protegido), e ainda
-     * assim redigido: o texto downstream pode conter o input sensível ecoado.
-     *
-     * @param array<string, mixed> $params
-     */
-    private static function logDetail(string $correlationId, string $command, string $message, array $params): void
-    {
-        error_log(sprintf(
-            '[NT-MCP] [corr:%s] %s: %s',
-            $correlationId,
-            $command,
-            TextRedactor::scrub($message, $params)
-        ));
     }
 
     // ---------------------------------------------------------------
@@ -513,9 +533,14 @@ class LocalApiClient
                 logActivity($entry);
             }
         } catch (\Throwable $e) {
-            // Logging must never break the request flow, but we must
-            // never lose forensic visibility silently either.
-            error_log("[NT-MCP] auditLog FAILED: {$e->getMessage()} | entry: {$entry}");
+            // Logging must never break the request flow, but we must never lose
+            // forensic visibility silently either.
+            //
+            // O que NÃO pode acontecer aqui: concatenar `$entry` (que carrega o
+            // dump de params) nem a mensagem da exceção. O sink que falhou é o
+            // que redige — cair para o error_log com o texto cru transformaria
+            // uma falha de log num vazamento.
+            Diagnostics::log($correlationId, Diagnostics::CATEGORY_AUDIT_SINK, 'activity_log', $e);
         }
 
         return $correlationId;

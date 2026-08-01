@@ -36,11 +36,23 @@ namespace NtMcp\Whmcs;
 class PaymentGatewayDirectory
 {
     /**
-     * Sintaxe de system name de módulo de gateway. O valor é o nome do arquivo
-     * em `modules/gateways/<name>.php`, portanto alfanumérico com underscore.
-     * Qualquer coisa fora disso na coluna indica linha corrompida.
+     * Sintaxe CANÔNICA de system name de gateway, conforme a documentação
+     * oficial: o valor é o nome do arquivo em `modules/gateways/<name>.php`,
+     * que a WHMCS exige em minúsculas e começando por letra.
+     *
+     * `PayPal`, `1paypal` e `_paypal` NÃO são system names carregáveis. Aceitar
+     * qualquer um deles deixaria uma linha corrompida chegar ao primeiro efeito
+     * financeiro — e a falha só apareceria no `UpdateInvoice`, depois da
+     * cotação já aceita, recriando exatamente a parcial que o F3 evita.
      */
-    private const SYSTEM_NAME_PATTERN = '/^[A-Za-z0-9_]+$/';
+    private const CANONICAL_NAME_PATTERN = '/^[a-z][a-z0-9_]*$/';
+
+    /**
+     * Sintaxe aceitável de INPUT. Mais frouxa só quanto a maiúsculas — o
+     * casamento é case-insensitive —, mas ainda exige começar por letra. O
+     * retorno continua sendo o canônico exato do banco.
+     */
+    private const INPUT_NAME_PATTERN = '/^[A-Za-z][A-Za-z0-9_]*$/';
 
     /** @var callable|null Injeção para testes: fn(): array<string> */
     private $resolver = null;
@@ -117,10 +129,28 @@ class PaymentGatewayDirectory
 
         $rows = [];
         foreach ($result as $row) {
-            $rows[] = is_array($row) ? ($row['gateway'] ?? null) : ($row->gateway ?? null);
+            $rows[] = $row;
         }
 
         return $rows;
+    }
+
+    /**
+     * Desembala a linha da projeção. Aplicado aos DOIS caminhos — Capsule real e
+     * resolver de teste — para que um fake devolvendo linhas no formato do
+     * driver exercite exatamente este código, e não um atalho.
+     */
+    private function unwrapRow(mixed $row): mixed
+    {
+        if (is_array($row)) {
+            return $row['gateway'] ?? null;
+        }
+
+        if ($row instanceof \stdClass || is_object($row)) {
+            return $row->gateway ?? null;
+        }
+
+        return $row;
     }
 
     /**
@@ -132,7 +162,9 @@ class PaymentGatewayDirectory
         $canonical = [];
         $byLower = [];
 
-        foreach ($rows as $raw) {
+        foreach ($rows as $row) {
+            $raw = $this->unwrapRow($row);
+
             if (!is_string($raw)) {
                 throw new \RuntimeException(
                     'PaymentGatewayDirectory: payment gateway list contains a non-string entry; '
@@ -141,9 +173,10 @@ class PaymentGatewayDirectory
             }
 
             $name = trim($raw);
-            if ($name === '' || preg_match(self::SYSTEM_NAME_PATTERN, $name) !== 1) {
+            if ($name === '' || preg_match(self::CANONICAL_NAME_PATTERN, $name) !== 1) {
                 throw new \RuntimeException(
-                    'PaymentGatewayDirectory: payment gateway list contains an invalid entry; '
+                    'PaymentGatewayDirectory: payment gateway list contains an entry that is not a '
+                    . 'valid WHMCS gateway system name (lowercase, starting with a letter); '
                     . 'refusing to validate against an unreliable directory.'
                 );
             }
@@ -181,9 +214,10 @@ class PaymentGatewayDirectory
     public function resolve(string $systemName, string $field = 'paymentmethod'): string
     {
         $input = trim($systemName);
-        if ($input === '' || preg_match(self::SYSTEM_NAME_PATTERN, $input) !== 1) {
+        if ($input === '' || preg_match(self::INPUT_NAME_PATTERN, $input) !== 1) {
             throw new \InvalidArgumentException(
-                "{$field} must be a WHMCS gateway system name (letters, digits and underscore)."
+                "{$field} must be a WHMCS gateway system name: start with a letter and contain "
+                . 'only letters, digits and underscore.'
             );
         }
 

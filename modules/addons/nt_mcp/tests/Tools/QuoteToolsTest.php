@@ -484,12 +484,43 @@ class QuoteToolsTest extends TestCase
                 return self::quoteResponse();
             }
             return ['result' => 'success', 'invoiceid' => 99];
-        }, self::gatewayDirectory(['bankTransfer']));
+        }, self::gatewayDirectory(['banktransfer']));
 
-        $tools->convertQuoteToInvoice(quoteid: 10, paymentmethod: 'BANKTRANSFER');
+        $tools->convertQuoteToInvoice(quoteid: 10, paymentmethod: 'BankTransfer');
 
         $this->assertSame(['GetQuotes', 'AcceptQuote', 'UpdateInvoice'], array_column($calls, 'cmd'));
-        $this->assertSame('bankTransfer', $calls[2]['params']['paymentmethod']);
+        $this->assertSame('banktransfer', $calls[2]['params']['paymentmethod']);
+    }
+
+    /**
+     * Linha do banco fora da sintaxe oficial (maiúscula, dígito ou underscore
+     * inicial) invalida a introspecção ANTES de GetQuotes/AcceptQuote.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('invalidGatewayRowProvider')]
+    public function test_convert_fails_closed_on_non_canonical_gateway_rows(string $row): void
+    {
+        $calls = [];
+        $tools = $this->makeConverter(function (string $cmd) use (&$calls) {
+            $calls[] = $cmd;
+            return ['result' => 'success', 'invoiceid' => 99];
+        }, self::gatewayDirectory(['banktransfer', $row]));
+
+        $this->expectException(\RuntimeException::class);
+
+        try {
+            $tools->convertQuoteToInvoice(quoteid: 10, paymentmethod: 'banktransfer');
+        } finally {
+            $this->assertSame([], $calls, "linha '{$row}' não pode deixar nada rodar");
+        }
+    }
+
+    public static function invalidGatewayRowProvider(): array
+    {
+        return [
+            'maiúscula'      => ['PayPal'],
+            'dígito inicial' => ['1paypal'],
+            'underscore ini' => ['_paypal'],
+        ];
     }
 
     /** Gateway em branco é rejeitado antes de qualquer efeito. */

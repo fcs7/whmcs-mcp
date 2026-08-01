@@ -3,6 +3,7 @@
 namespace NtMcp\Tests\Whmcs;
 
 use NtMcp\Whmcs\LocalApiClient;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 class LocalApiClientTest extends TestCase
@@ -18,7 +19,12 @@ class LocalApiClientTest extends TestCase
         $this->assertEquals('success', $result['result']);
     }
 
-    public function test_call_returns_error_response(): void
+    /**
+     * F2: o `message` do WHMCS é texto arbitrário e não atravessa mais. O
+     * chamador recebe contrato estável + correlação para o operador achar o
+     * incidente no log protegido.
+     */
+    public function test_call_returns_stable_error_contract_without_downstream_text(): void
     {
         $client = new LocalApiClient('testadmin');
         $client->setCallable(function () {
@@ -26,8 +32,86 @@ class LocalApiClientTest extends TestCase
         });
 
         $result = $client->call('GetClientsDetails', ['clientid' => 999]);
-        $this->assertEquals('error', $result['result']);
-        $this->assertEquals('Client not found', $result['message']);
+
+        $this->assertSame('error', $result['result']);
+        $this->assertStringNotContainsString('Client not found', json_encode($result));
+        $this->assertStringContainsString('GetClientsDetails', $result['message']);
+        $this->assertMatchesRegularExpression('/^[0-9a-f]{8}$/', $result['correlation_id']);
+    }
+
+    /**
+     * m1.1 (P2): só `result === 'success'` é sucesso. Array malformado é
+     * indeterminado e falha fechado — antes gerava um `OK` falso.
+     *
+     * @param mixed $response
+     */
+    #[DataProvider('malformedResponseProvider')]
+    public function test_malformed_array_response_fails_closed(mixed $response): void
+    {
+        $client = new LocalApiClient('testadmin');
+        $client->setCallable(fn() => $response);
+
+        $this->expectException(\NtMcp\Whmcs\DownstreamFailureException::class);
+        $this->expectExceptionMessage('did not complete successfully');
+
+        $client->call('GetClients', []);
+    }
+
+    public static function malformedResponseProvider(): array
+    {
+        return [
+            'array vazio'        => [[]],
+            'sem result'         => [['numreturns' => 1]],
+            'result null'        => [[['result' => null]][0]],
+            'result desconhecido'=> [['result' => 'partial']],
+            'result vazio'       => [['result' => '']],
+            'não-array string'   => ['nope'],
+            'não-array null'     => [null],
+            'não-array bool'     => [false],
+        ];
+    }
+
+    public function test_success_response_passes_through(): void
+    {
+        $client = new LocalApiClient('testadmin');
+        $client->setCallable(fn() => ['result' => 'success', 'numreturns' => 2]);
+
+        $result = $client->call('GetClients', []);
+
+        $this->assertSame('success', $result['result']);
+        $this->assertSame(2, $result['numreturns']);
+    }
+
+    /** Exceção downstream vira contrato estável, sem texto arbitrário. */
+    public function test_downstream_exception_is_wrapped_in_a_stable_contract(): void
+    {
+        $client = new LocalApiClient('testadmin');
+        $client->setCallable(function () {
+            throw new \RuntimeException('SQLSTATE[42000] token=abcdef0123456789 /var/www/secret.php');
+        });
+
+        try {
+            $client->call('GetClients', []);
+            $this->fail('deveria lançar');
+        } catch (\NtMcp\Whmcs\DownstreamFailureException $e) {
+            $this->assertStringNotContainsString('SQLSTATE', $e->getMessage());
+            $this->assertStringNotContainsString('abcdef0123456789', $e->getMessage());
+            $this->assertStringNotContainsString('/var/www', $e->getMessage());
+            $this->assertStringContainsString('correlation id', $e->getMessage());
+            // A original continua acessível internamente, mas não serializada.
+            $this->assertInstanceOf(\RuntimeException::class, $e->getPrevious());
+        }
+    }
+
+    /** Negação de autorização mantém semântica própria (mensagem é nossa). */
+    public function test_authorization_exception_is_not_wrapped(): void
+    {
+        $client = new LocalApiClient('testadmin');
+        $client->setGates([]); // WRITE off
+        $client->setCallable(fn() => ['result' => 'success']);
+
+        $this->expectException(\NtMcp\Whmcs\AuthorizationException::class);
+        $client->call('AddClient', ['firstname' => 'a', 'noemail' => true]);
     }
 
     public function test_call_rejects_unlisted_command(): void

@@ -398,6 +398,118 @@ class PhpMcpV1AdapterTest extends TestCase
         $this->assertSame('2026-08-10', $captured['UpdateProject']['duedate'], 'UpdateProject documenta Y-m-d');
     }
 
+    /**
+     * `validuntil` aceita as três famílias pelo protocolo real. Seu schema é
+     * string livre (o nome não contém "date"), então a família localizada — a
+     * que a API oficial documenta — precisa continuar funcionando.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('validUntilInputProvider')]
+    public function test_validuntil_accepts_all_three_families_on_create_and_update(string $input): void
+    {
+        $captured = [];
+        $adapter = $this->makeCallableAdapter(['write' => true], function (string $cmd, array $params) use (&$captured) {
+            $captured[$cmd] = $params;
+            return ['result' => 'success'];
+        });
+
+        $adapter->handle(
+            $this->toolsCallRequest(1, 'whmcs_create_quote', [
+                'subject' => 'Q', 'stage' => 'Draft', 'proposal' => 'P', 'validuntil' => $input,
+            ]),
+            'client-vu-' . substr(md5($input . 'c'), 0, 7),
+            'tools/call'
+        );
+        $this->assertSame('10/08/2026', $captured['CreateQuote']['validuntil'] ?? null, "create com '{$input}'");
+
+        $adapter->handle(
+            $this->toolsCallRequest(2, 'whmcs_update_quote', ['quoteid' => 3, 'validuntil' => $input]),
+            'client-vu-' . substr(md5($input . 'u'), 0, 7),
+            'tools/call'
+        );
+        $this->assertSame('10/08/2026', $captured['UpdateQuote']['validuntil'] ?? null, "update com '{$input}'");
+    }
+
+    public static function validUntilInputProvider(): array
+    {
+        return [
+            'Y-m-d'         => ['2026-08-10'],
+            'ISO date-time' => ['2026-08-10T00:00:00Z'],
+            'localizado'    => ['10/08/2026'],
+        ];
+    }
+
+    /** O override do duplicate também aceita as três famílias. */
+    #[\PHPUnit\Framework\Attributes\DataProvider('validUntilInputProvider')]
+    public function test_validuntil_override_on_duplicate_accepts_all_three_families(string $input): void
+    {
+        $captured = [];
+        $adapter = $this->makeCallableAdapter(['write' => true], function (string $cmd, array $params) use (&$captured) {
+            $captured[$cmd] = $params;
+            if ($cmd === 'GetQuotes') {
+                return ['result' => 'success', 'quotes' => ['quote' => [[
+                    'id' => 10, 'subject' => 'S', 'stage' => 'Draft', 'proposal' => 'P', 'userid' => 3,
+                ]]]];
+            }
+            return ['result' => 'success', 'quoteid' => 11];
+        });
+
+        $adapter->handle(
+            $this->toolsCallRequest(1, 'whmcs_duplicate_quote', ['quoteid' => 10, 'validuntil' => $input]),
+            'client-vd-' . substr(md5($input), 0, 7),
+            'tools/call'
+        );
+
+        $this->assertSame('10/08/2026', $captured['CreateQuote']['validuntil'] ?? null);
+    }
+
+    /** A herança de GetQuotes (Y-m-d) também é localizada na duplicação. */
+    public function test_validuntil_inherited_from_getquotes_is_localised(): void
+    {
+        $captured = [];
+        $adapter = $this->makeCallableAdapter(['write' => true], function (string $cmd, array $params) use (&$captured) {
+            $captured[$cmd] = $params;
+            if ($cmd === 'GetQuotes') {
+                return ['result' => 'success', 'quotes' => ['quote' => [[
+                    'id' => 10, 'subject' => 'S', 'stage' => 'Draft', 'proposal' => 'P', 'userid' => 3,
+                    'validuntil' => '2026-08-10', 'datecreated' => '2026-07-01',
+                ]]]];
+            }
+            return ['result' => 'success', 'quoteid' => 11];
+        });
+
+        $adapter->handle(
+            $this->toolsCallRequest(1, 'whmcs_duplicate_quote', ['quoteid' => 10]),
+            'client-vinherit01',
+            'tools/call'
+        );
+
+        $this->assertSame('10/08/2026', $captured['CreateQuote']['validuntil']);
+        $this->assertSame('01/07/2026', $captured['CreateQuote']['datecreated']);
+    }
+
+    /** Sem o inverso documentado, a rota localizada falha antes da LocalAPI. */
+    public function test_validuntil_fails_closed_when_inverse_helper_is_broken(): void
+    {
+        \NtMcp\Tests\Support\WhmcsDateFormat::$parserAvailable = false;
+
+        $called = false;
+        $adapter = $this->makeCallableAdapter(['write' => true], function () use (&$called) {
+            $called = true;
+            return ['result' => 'success'];
+        });
+
+        $messages = $adapter->handle(
+            $this->toolsCallRequest(1, 'whmcs_create_quote', [
+                'subject' => 'Q', 'stage' => 'Draft', 'proposal' => 'P', 'validuntil' => '2026-08-10',
+            ]),
+            'client-vu-noparse',
+            'tools/call'
+        );
+
+        $this->assertTrue($this->callOutcome($messages, 1)['isError'] ?? false);
+        $this->assertFalse($called);
+    }
+
     /** A configuração de data da instalação é respeitada, sem hardcode. */
     public function test_localised_route_follows_the_installation_date_format(): void
     {

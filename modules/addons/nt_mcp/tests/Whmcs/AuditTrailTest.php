@@ -150,8 +150,24 @@ class AuditTrailTest extends TestCase
 
         $outcome = ActivityLogSpy::matching('MCP API ERROR AddClient');
         $this->assertCount(1, $outcome);
-        $this->assertStringContainsString('non-array', $outcome[0]);
+        $this->assertStringContainsString('malformed response', $outcome[0]);
         $this->assertStringNotContainsString('Zoe', $outcome[0]);
+    }
+
+    /** m1.1 (P2): array sem `result:success` não pode gerar `OK`. */
+    public function test_malformed_array_does_not_emit_a_false_ok(): void
+    {
+        $client = $this->client(['write' => true], fn() => []);
+
+        try {
+            $client->call('AddClient', ['firstname' => 'Zoe', 'noemail' => true]);
+            $this->fail('array malformado deveria falhar fechado');
+        } catch (\RuntimeException) {
+            // esperado
+        }
+
+        $this->assertFalse(ActivityLogSpy::hasEntryContaining('MCP API OK AddClient'));
+        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP API ERROR AddClient'));
     }
 
     /** m1.1: o outcome de ERRO também não pode repetir o dump de params. */

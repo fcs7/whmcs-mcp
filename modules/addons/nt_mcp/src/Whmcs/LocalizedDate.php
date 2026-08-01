@@ -35,9 +35,14 @@ namespace NtMcp\Whmcs;
  * Uma data mal convertida numa cotação é erro semântico silencioso — pior que
  * um erro explícito. Por isso qualquer dúvida aborta ANTES da LocalAPI:
  * helper ausente, exceção, retorno vazio/não-string, ou retorno que não
- * represente a mesma data civil. A verificação usa `toMySQLDate()` (o inverso
- * documentado) quando disponível; sem ele, exige que ano, mês e dia apareçam
- * no resultado.
+ * sobreviva ao round-trip.
+ *
+ * A verificação é SEMPRE `toMySQLDate()` — o inverso documentado. Não existe
+ * mais fallback heurístico. A tentativa anterior procurava ano, mês e dia como
+ * inteiros em qualquer ordem no resultado, o que aceita `08/10/2026` como
+ * conversão de `2026-08-10`: mesmos dígitos, data civil trocada (8 de outubro
+ * em vez de 10 de agosto). Presença de dígitos não é validação. Sem o inverso
+ * disponível, a operação falha.
  */
 class LocalizedDate
 {
@@ -95,8 +100,9 @@ class LocalizedDate
 
         if (!$this->representsSameDate($ymd, $localized)) {
             throw new \RuntimeException(
-                "LocalizedDate: the localised value produced for '{$field}' does not represent "
-                . 'the same calendar date; refusing to send it.'
+                "LocalizedDate: could not prove that the localised value produced for '{$field}' "
+                . 'represents the same calendar date (toMySQLDate() unavailable or round-trip '
+                . 'mismatch); refusing to send it.'
             );
         }
 
@@ -136,35 +142,102 @@ class LocalizedDate
     }
 
     /**
-     * O valor localizado precisa representar exatamente a mesma data civil.
-     * Preferimos o inverso documentado (`toMySQLDate`); sem ele, exigimos que
-     * ano, mês e dia apareçam como números no resultado — o que reprova
-     * formatos de ano com 2 dígitos e qualquer saída degenerada.
+     * O valor localizado precisa representar exatamente a mesma data civil,
+     * provado pelo inverso documentado. Sem inverso não há prova — e sem prova
+     * a operação falha.
      */
     private function representsSameDate(string $ymd, string $localized): bool
+    {
+        return $this->toMySQL($localized) === $ymd;
+    }
+
+    /**
+     * Aplica `toMySQLDate()` e devolve a parte `Y-m-d`, ou null se o inverso
+     * não estiver disponível ou não produzir uma data utilizável.
+     */
+    private function toMySQL(string $localized): ?string
     {
         $parser = $this->parser;
         if (!$this->parserConfigured && function_exists('toMySQLDate')) {
             $parser = static fn(string $value): string => (string) toMySQLDate($value);
         }
 
-        if ($parser !== null) {
-            try {
-                $roundTrip = $parser($localized);
-            } catch (\Throwable) {
-                return false;
-            }
-
-            return is_string($roundTrip) && substr(trim($roundTrip), 0, 10) === $ymd;
+        if ($parser === null) {
+            return null;
         }
 
-        [$year, $month, $day] = array_map('intval', explode('-', $ymd));
+        try {
+            $roundTrip = $parser($localized);
+        } catch (\Throwable) {
+            return null;
+        }
 
-        preg_match_all('/\d+/', $localized, $matches);
-        $numbers = array_map('intval', $matches[0] ?? []);
+        if (!is_string($roundTrip)) {
+            return null;
+        }
 
-        return in_array($year, $numbers, true)
-            && in_array($month, $numbers, true)
-            && in_array($day, $numbers, true);
+        $date = substr(trim($roundTrip), 0, 10);
+
+        // O inverso pode devolver lixo silenciosamente; exigimos data real.
+        $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $date);
+
+        return ($parsed !== false && $parsed->format('Y-m-d') === $date) ? $date : null;
+    }
+
+    /**
+     * Aceita as TRÊS famílias de entrada que o contrato público admite para um
+     * campo de data localizada (`validuntil` em Create/UpdateQuote):
+     *
+     *   1. `Y-m-d`               — forma canônica;
+     *   2. ISO-8601 date-time    — o que o schema da SDK publica em campos
+     *                              cujo nome contém "date";
+     *   3. já LOCALIZADO         — o formato que a API oficial documenta e que
+     *                              um cliente seguindo a doc da WHMCS envia.
+     *
+     * A família 3 é validada estritamente: `toMySQLDate()` para obter a data
+     * civil, validação de calendário, e então `fromMySQLDate()` de volta com
+     * igualdade EXATA contra o que o chamador mandou. Assim uma data escrita no
+     * formato de OUTRA configuração (`08/10/2026` numa instalação DD/MM/YYYY)
+     * não passa disfarçada de válida — ela volta diferente e é recusada.
+     *
+     * @throws \InvalidArgumentException entrada que não é data em nenhuma família
+     * @throws \RuntimeException         localização indisponível/não verificável
+     */
+    public function fromFlexibleInput(string $value, string $field): string
+    {
+        $input = trim($value);
+        if ($input === '') {
+            throw new \InvalidArgumentException("{$field} must not be empty.");
+        }
+
+        // Famílias 1 e 2: reconhecíveis pela própria sintaxe.
+        $canonical = DateNormalizer::tryNormalize($input);
+        if ($canonical !== null) {
+            return $this->fromWhmcsDate($canonical, $field);
+        }
+
+        // Família 3: assume-se localizado. Só é aceito se o round-trip fechar.
+        $ymd = $this->toMySQL($input);
+        if ($ymd === null) {
+            throw new \InvalidArgumentException(sprintf(
+                '%s must be a date as YYYY-MM-DD, an ISO-8601 date-time, or a date in the '
+                . 'WHMCS administrative date format; got "%s"',
+                $field,
+                $input
+            ));
+        }
+
+        $localized = $this->fromWhmcsDate($ymd, $field);
+
+        if ($localized !== $input) {
+            throw new \InvalidArgumentException(sprintf(
+                '%s "%s" is not written in this installation\'s WHMCS date format; '
+                . 'use YYYY-MM-DD to avoid ambiguity.',
+                $field,
+                $input
+            ));
+        }
+
+        return $localized;
     }
 }

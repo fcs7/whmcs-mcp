@@ -19,6 +19,14 @@ final class ActivityLogSpy
     /** @var array<string> */
     private static array $entries = [];
 
+    /** Quando setado, `record()` lança — simula o sink de auditoria falhando. */
+    private static ?\Throwable $failure = null;
+
+    public static function failWith(?\Throwable $e): void
+    {
+        self::$failure = $e;
+    }
+
     public static function start(): void
     {
         self::$capturing = true;
@@ -29,10 +37,15 @@ final class ActivityLogSpy
     {
         self::$capturing = false;
         self::$entries = [];
+        self::$failure = null;
     }
 
     public static function record(string $message): void
     {
+        if (self::$failure !== null) {
+            throw self::$failure;
+        }
+
         if (self::$capturing) {
             self::$entries[] = $message;
         }

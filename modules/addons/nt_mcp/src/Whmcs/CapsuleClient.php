@@ -148,6 +148,7 @@ class CapsuleClient
 
     private static function auditConfig(string $message): void
     {
+        // Mensagem escrita por nós (ConfigFlag), sem conteúdo de terceiro.
         error_log($message);
         LocalApiClient::auditLog($message, []);
     }
@@ -292,14 +293,16 @@ class CapsuleClient
             $affected = $operation();
         } catch (\Throwable $e) {
             LocalApiClient::auditLog("MCP DB {$verb} EXCEPTION: {$table}", [], $correlationId);
-            error_log(sprintf(
-                '[NT-MCP] [corr:%s] DB %s %s: %s',
-                $correlationId,
-                $verb,
-                $table,
-                TextRedactor::scrub($e->getMessage())
-            ));
-            throw $e;
+            // F2: a mensagem do driver pode carregar credencial de conexão,
+            // fragmento de SQL e valores da linha. Só classe e fingerprint saem.
+            Diagnostics::log($correlationId, Diagnostics::CATEGORY_DB_EXCEPTION, "{$verb}_{$table}", $e);
+
+            throw new DownstreamFailureException(
+                "CapsuleClient: the {$verb} on '{$table}' did not complete. "
+                . "Details were recorded in the operator log under correlation id {$correlationId}.",
+                0,
+                $e
+            );
         }
 
         LocalApiClient::auditLog("MCP DB {$verb} OK: {$table} (rows: {$affected})", [], $correlationId);
