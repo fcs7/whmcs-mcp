@@ -203,6 +203,57 @@ final class McpEndpointHttpTest extends TestCase
         $this->assertSame('Origin', $response['headers']['vary'] ?? null);
     }
 
+    #[DataProvider('realRequestedHeadersProvider')]
+    public function test_real_mcp_preflight_canonicalizes_requested_headers(
+        ?string $requestedHeaders,
+        int $expectedStatus,
+        bool $forceSapiValue = false,
+    ): void {
+        $root = $this->sandbox(
+            settings: ['nt_mcp_cors_origins' => 'https://client.example'],
+            forcedRequestedHeaders: $forceSapiValue ? $requestedHeaders : null,
+        );
+        $server = $this->startServer($root);
+        $headers = [
+            'Origin' => 'https://client.example',
+            'Access-Control-Request-Method' => 'POST',
+        ];
+        if ($requestedHeaders !== null && !$forceSapiValue) {
+            $headers['Access-Control-Request-Headers'] = $requestedHeaders;
+        }
+
+        $response = $this->request($server, 'OPTIONS', $headers);
+
+        $this->assertSame($expectedStatus, $response['status'], json_encode($response));
+        if ($expectedStatus === 204) {
+            $this->assertSame('', $response['body']);
+            $this->assertArrayNotHasKey('content-length', $response['headers']);
+            $this->assertSame('https://client.example', $response['headers']['access-control-allow-origin'] ?? null);
+        } else {
+            $this->assertSame('{"error":"Forbidden: origin not allowed."}', $response['body']);
+            $this->assertArrayNotHasKey('access-control-allow-origin', $response['headers']);
+        }
+    }
+
+    public static function realRequestedHeadersProvider(): array
+    {
+        return [
+            'absent' => [null, 204],
+            'empty' => ['', 403],
+            'OWS only' => [" \t ", 403],
+            'duplicate exact' => ['Content-Type, Content-Type', 403],
+            'duplicate case-insensitive' => ['Content-Type, content-type', 403],
+            'duplicate with OWS' => [" Content-Type\t,\t CONTENT-TYPE ", 403],
+            'allowed case and OWS' => [" authorization ,\tCONTENT-type, McP-PrOtOcOl-VeRsIoN , mcp-session-ID ", 204],
+            'Last-Event-ID remains denied' => ['Last-Event-ID', 403],
+            'trailing comma' => ['Content-Type,', 403],
+            // O servidor embutido normaliza/rejeita CRLF antes de preencher
+            // $_SERVER; o bootstrap força o valor SAPI adversarial e o request
+            // ainda atravessa o endpoint HTTP real completo.
+            'CRLF SAPI value' => ["Content-Type\r\nX-Poison: yes", 403, true],
+        ];
+    }
+
     public function test_real_rate_limit_preserves_429_and_retry_after(): void
     {
         $root = $this->sandbox();
@@ -375,6 +426,7 @@ final class McpEndpointHttpTest extends TestCase
         ?string $throwSetting = null,
         bool $contaminateBootstrap = false,
         bool $contaminateShutdown = false,
+        ?string $forcedRequestedHeaders = null,
     ): string {
         $root = sys_get_temp_dir() . '/nt_mcp_http_' . bin2hex(random_bytes(6));
         $module = $root . '/modules/addons/nt_mcp';
@@ -401,6 +453,9 @@ final class McpEndpointHttpTest extends TestCase
         $throw = var_export($throwSetting, true);
         $rateFile = var_export($root . '/transient.json', true);
         $secureCode = $secure ? '$_SERVER[\'HTTPS\'] = \'on\';' : 'unset($_SERVER[\'HTTPS\'], $_SERVER[\'HTTP_X_FORWARDED_PROTO\']);';
+        $requestedHeadersCode = $forcedRequestedHeaders === null
+            ? ''
+            : '$_SERVER[\'HTTP_ACCESS_CONTROL_REQUEST_HEADERS\'] = ' . var_export($forcedRequestedHeaders, true) . ';';
         $bootstrapPoison = $contaminateBootstrap
             ? 'http_response_code(418); header("Content-Type: text/html"); header("Content-Length: 999"); header("X-Bootstrap-Secret: present"); echo "bootstrap-secret<html>";'
             : '';
@@ -418,7 +473,7 @@ final class McpEndpointHttpTest extends TestCase
             . 'public function retrieve(string $key): mixed { $all = is_file(' . $rateFile . ') ? json_decode((string) file_get_contents(' . $rateFile . '), true) : []; return $all[$key] ?? false; } '
             . 'public function store(string $key, string $value, int $ttl): void { $all = is_file(' . $rateFile . ') ? json_decode((string) file_get_contents(' . $rateFile . '), true) : []; '
             . 'if (!is_array($all)) { $all = []; } $all[$key] = $value; file_put_contents(' . $rateFile . ', json_encode($all), LOCK_EX); } } } '
-            . 'namespace { ' . $secureCode . $bootstrapPoison . $shutdownPoison
+            . 'namespace { ' . $secureCode . $requestedHeadersCode . $bootstrapPoison . $shutdownPoison
             . 'function localAPI(string $command, array $params = [], string $admin = ""): array { return ["result" => "success", "command" => $command, "admin" => $admin]; } }';
         file_put_contents($root . '/init.php', $bootstrap);
 

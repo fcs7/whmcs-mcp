@@ -87,9 +87,12 @@ final class CorsHandler
 
     private static function allowsRequestedHeaders(): bool
     {
-        $requested = $_SERVER['HTTP_ACCESS_CONTROL_REQUEST_HEADERS'] ?? '';
-        if ($requested === '') {
+        if (!array_key_exists('HTTP_ACCESS_CONTROL_REQUEST_HEADERS', $_SERVER)) {
             return true;
+        }
+        $requested = $_SERVER['HTTP_ACCESS_CONTROL_REQUEST_HEADERS'];
+        if (!is_string($requested) || trim($requested) === '') {
+            return false;
         }
 
         $allowed = [
@@ -98,13 +101,17 @@ final class CorsHandler
             'mcp-protocol-version',
             'mcp-session-id',
         ];
+        $seen = [];
         foreach (explode(',', $requested) as $header) {
             $header = trim($header);
+            $normalized = strtolower($header);
             if ($header === ''
                 || preg_match('/^[!#$%&\'*+.^_`|~0-9A-Za-z-]+\z/D', $header) !== 1
-                || !in_array(strtolower($header), $allowed, true)) {
+                || !in_array($normalized, $allowed, true)
+                || isset($seen[$normalized])) {
                 return false;
             }
+            $seen[$normalized] = true;
         }
 
         return true;

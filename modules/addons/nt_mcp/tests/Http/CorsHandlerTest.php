@@ -6,13 +6,20 @@ namespace NtMcp\Tests\Http;
 
 use NtMcp\Http\CorsHandler;
 use NtMcp\Http\CorsDecision;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 class CorsHandlerTest extends TestCase
 {
     protected function tearDown(): void
     {
-        unset($_SERVER['HTTP_ORIGIN']);
+        unset(
+            $_SERVER['HTTP_ORIGIN'],
+            $_SERVER['REQUEST_METHOD'],
+            $_SERVER['HTTP_ACCESS_CONTROL_REQUEST_METHOD'],
+            $_SERVER['HTTP_ACCESS_CONTROL_REQUEST_HEADERS'],
+        );
+        \WHMCS\Config\Setting::reset();
     }
 
     // --- getAllowedOrigins() ---
@@ -150,5 +157,46 @@ class CorsHandlerTest extends TestCase
     {
         $this->expectException(\InvalidArgumentException::class);
         CorsDecision::proceed("https://client.example\r\nX-Poison: yes", [], 'POST, OPTIONS');
+    }
+
+    #[DataProvider('requestedHeadersProvider')]
+    public function test_preflight_requested_headers_are_canonical(
+        ?string $requestedHeaders,
+        bool $allowed,
+    ): void {
+        \WHMCS\Config\Setting::setValue('nt_mcp_cors_origins', 'https://client.example');
+        $_SERVER['REQUEST_METHOD'] = 'OPTIONS';
+        $_SERVER['HTTP_ORIGIN'] = 'https://client.example';
+        $_SERVER['HTTP_ACCESS_CONTROL_REQUEST_METHOD'] = 'POST';
+        if ($requestedHeaders !== null) {
+            $_SERVER['HTTP_ACCESS_CONTROL_REQUEST_HEADERS'] = $requestedHeaders;
+        }
+
+        $decision = CorsHandler::handle(['MCP-Session-Id'], 'POST, OPTIONS');
+        $terminal = $decision->terminalResponse();
+
+        $this->assertNotNull($terminal);
+        $this->assertSame($allowed ? 204 : 403, $terminal->status());
+        if ($allowed) {
+            $this->assertSame('https://client.example', $decision->headers()['Access-Control-Allow-Origin'] ?? null);
+        } else {
+            $this->assertSame([], $decision->headers());
+        }
+    }
+
+    public static function requestedHeadersProvider(): array
+    {
+        return [
+            'absent' => [null, true],
+            'empty' => ['', false],
+            'OWS only' => [" \t ", false],
+            'duplicate exact' => ['Content-Type, Content-Type', false],
+            'duplicate case-insensitive' => ['Content-Type, content-type', false],
+            'duplicate with OWS' => [" Content-Type\t,\t CONTENT-TYPE ", false],
+            'allowed case and OWS' => [" authorization ,\tCONTENT-type, McP-PrOtOcOl-VeRsIoN , mcp-session-ID ", true],
+            'Last-Event-ID remains denied' => ['Last-Event-ID', false],
+            'trailing comma' => ['Content-Type,', false],
+            'CRLF' => ["Content-Type\r\nX-Poison: yes", false],
+        ];
     }
 }
