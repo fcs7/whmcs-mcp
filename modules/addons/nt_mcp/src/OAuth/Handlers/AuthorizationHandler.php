@@ -23,7 +23,11 @@ final class AuthorizationHandler
     public static function handleGet(): void
     {
         // SECURITY FIX (M-03 -- MEDIUM): Rate limit authorization endpoint
-        (new RateLimiter('nt_mcp_auth_rl_', 20, 60, 'auth_', 'Too many authorization requests. Maximum 20 per minute.'))->enforce();
+        $terminal = (new RateLimiter('nt_mcp_auth_rl_', 20, 60, 'auth_', 'Too many authorization requests. Maximum 20 per minute.'))->enforce();
+        if ($terminal !== null) {
+            $terminal->emit();
+            return;
+        }
 
         $clientId      = $_GET['client_id'] ?? '';
         $redirectUri   = $_GET['redirect_uri'] ?? '';

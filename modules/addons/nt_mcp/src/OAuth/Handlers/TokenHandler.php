@@ -22,7 +22,11 @@ final class TokenHandler
         header('Content-Type: application/json');
 
         // SECURITY FIX (H-01 -- HIGH): Rate limit token endpoint
-        (new RateLimiter('nt_mcp_tok_rl_', 30, 60, 'tok_', 'Too many token requests. Maximum 30 per minute.'))->enforce();
+        $terminal = (new RateLimiter('nt_mcp_tok_rl_', 30, 60, 'tok_', 'Too many token requests. Maximum 30 per minute.'))->enforce();
+        if ($terminal !== null) {
+            $terminal->emit();
+            return;
+        }
 
         // Accept both form-urlencoded and JSON
         $contentType = $_SERVER['CONTENT_TYPE'] ?? '';

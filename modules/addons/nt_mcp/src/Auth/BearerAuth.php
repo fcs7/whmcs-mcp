@@ -6,6 +6,7 @@ use NtMcp\Whmcs\Diagnostics;
 use NtMcp\Whmcs\ActivityEvent;
 use NtMcp\Whmcs\ActivityLog;
 use NtMcp\Whmcs\AuditMetadata;
+use NtMcp\Http\TerminalResponse;
 
 use Illuminate\Database\Capsule\Manager as Capsule;
 
@@ -287,18 +288,8 @@ class BearerAuth
      * @param string $resourceMetadataUrl  Full URL to the Protected Resource
      *                                     Metadata endpoint (RFC 9728).
      */
-    public static function denyAndExit(string $resourceMetadataUrl = ''): never
+    public static function deniedResponse(string $resourceMetadataUrl = ''): TerminalResponse
     {
-        http_response_code(401);
-
-        if ($resourceMetadataUrl !== '') {
-            header('WWW-Authenticate: Bearer resource_metadata="' . $resourceMetadataUrl . '"');
-        } else {
-            header('WWW-Authenticate: Bearer realm="WHMCS MCP"');
-        }
-
-        header('Content-Type: application/json');
-        echo json_encode(['error' => 'Unauthorized']);
-        exit;
+        return TerminalResponse::unauthorized($resourceMetadataUrl);
     }
 }

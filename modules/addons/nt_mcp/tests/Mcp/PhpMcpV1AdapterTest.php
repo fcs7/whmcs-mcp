@@ -792,6 +792,32 @@ class PhpMcpV1AdapterTest extends TestCase
         }
     }
 
+    /** D9: o opcional financeiro aceita somente ausência byte-exata. */
+    public function test_financial_optional_date_whitespace_fails_before_first_localapi_call(): void
+    {
+        foreach ([' ', "\t", "\n", "\u{00A0}"] as $i => $badDate) {
+            $calls = 0;
+            $adapter = $this->makeCallableAdapter(['financial' => true], function () use (&$calls) {
+                $calls++;
+                return ['result' => 'success'];
+            });
+
+            $messages = $adapter->handle(
+                $this->toolsCallRequest(1, 'whmcs_convert_quote_to_invoice', [
+                    'quoteid' => 10,
+                    'duedate' => $badDate,
+                ]),
+                'client-d9-fin' . str_pad((string) $i, 4, '0'),
+                'tools/call'
+            );
+
+            $outcome = $this->callOutcome($messages, 1);
+            $rejected = isset($outcome['jsonrpc_error']) || ($outcome['isError'] ?? false);
+            $this->assertTrue($rejected, 'whitespace financeiro aceito: ' . json_encode($badDate));
+            $this->assertSame(0, $calls, 'LocalAPI chamada antes de rejeitar duedate');
+        }
+    }
+
     // ---------------------------------------------------------------
     // M2 — contrato parcial sobrevive a exceção, pelo protocolo real.
     // ---------------------------------------------------------------

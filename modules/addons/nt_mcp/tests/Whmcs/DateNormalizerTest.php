@@ -75,7 +75,23 @@ class DateNormalizerTest extends TestCase
     public function test_optional_keeps_empty_as_empty(): void
     {
         $this->assertSame('', DateNormalizer::optional('', 'duedate'));
-        $this->assertSame('', DateNormalizer::optional('   ', 'duedate'));
+    }
+
+    #[DataProvider('optionalWhitespaceProvider')]
+    public function test_optional_rejects_every_non_empty_whitespace(string $value): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        DateNormalizer::optional($value, 'duedate');
+    }
+
+    public static function optionalWhitespaceProvider(): array
+    {
+        return [
+            'space' => [' '],
+            'tab' => ["\t"],
+            'newline' => ["\n"],
+            'NBSP' => ["\u{00A0}"],
+        ];
     }
 
     public function test_optional_still_validates_non_empty(): void

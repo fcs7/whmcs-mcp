@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace NtMcp\Tests\Http;
 
 use NtMcp\Http\CorsHandler;
+use NtMcp\Http\CorsDecision;
 use PHPUnit\Framework\TestCase;
 
 class CorsHandlerTest extends TestCase
@@ -137,5 +138,17 @@ class CorsHandlerTest extends TestCase
     {
         $result = CorsHandler::resolveOriginHeader('https://not-allowed.example', ['https://claude.ai', 'https://app.example.com']);
         $this->assertNull($result);
+    }
+
+    public function test_closed_decision_rejects_unapproved_method_profile(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        CorsDecision::proceed('*', [], 'DELETE');
+    }
+
+    public function test_closed_decision_rejects_header_injection_origin(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        CorsDecision::proceed("https://client.example\r\nX-Poison: yes", [], 'POST, OPTIONS');
     }
 }

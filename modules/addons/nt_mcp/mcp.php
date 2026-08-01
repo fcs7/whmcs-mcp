@@ -25,10 +25,14 @@
 $ntMcpFailureJson = '{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal server error."},"id":null}';
 $ntMcpResponseState = 'pending';
 $ntMcpCapturedOutput = '';
+$ntMcpBodySnapshot = '';
+$ntMcpStatusSnapshot = 500;
+$ntMcpHeadersSnapshot = ['Content-Type' => 'application/json'];
 ob_start(
     static function (string $buffer, int $phase) use (
         &$ntMcpResponseState,
         &$ntMcpCapturedOutput,
+        &$ntMcpBodySnapshot,
         $ntMcpFailureJson,
     ): string {
         if (($phase & PHP_OUTPUT_HANDLER_CLEAN) !== 0) {
@@ -44,11 +48,10 @@ ob_start(
             return '';
         }
 
-        // O buffer raiz é o árbitro final. Buffers filhos já foram finalizados
-        // neste ponto, portanto nenhum callback hostil consegue transformar o
-        // JSON fixo de falha que nasce aqui.
-        return $ntMcpResponseState === 'success'
-            ? $ntMcpCapturedOutput
+        // Depois do snapshot, todo byte tardio é ignorado. O body final não é
+        // mais derivado do conteúdo recebido pelo callback.
+        return in_array($ntMcpResponseState, ['sealed', 'success'], true)
+            ? $ntMcpBodySnapshot
             : $ntMcpFailureJson;
     },
     0,
@@ -56,13 +59,96 @@ ob_start(
 );
 $ntMcpOwnedBufferLevel = ob_get_level();
 
-$ntMcpMarkFailure = static function () use (&$ntMcpResponseState): void {
+$ntMcpAllowedHeaders = [
+    'access-control-allow-origin' => 'Access-Control-Allow-Origin',
+    'access-control-allow-methods' => 'Access-Control-Allow-Methods',
+    'access-control-allow-headers' => 'Access-Control-Allow-Headers',
+    'access-control-expose-headers' => 'Access-Control-Expose-Headers',
+    'vary' => 'Vary',
+    'www-authenticate' => 'WWW-Authenticate',
+    'retry-after' => 'Retry-After',
+    'content-type' => 'Content-Type',
+    'mcp-session-id' => 'Mcp-Session-Id',
+    'allow' => 'Allow',
+    'x-content-type-options' => 'X-Content-Type-Options',
+    'x-frame-options' => 'X-Frame-Options',
+    'content-security-policy' => 'Content-Security-Policy',
+    'cache-control' => 'Cache-Control',
+    'strict-transport-security' => 'Strict-Transport-Security',
+    'x-permitted-cross-domain-policies' => 'X-Permitted-Cross-Domain-Policies',
+    'referrer-policy' => 'Referrer-Policy',
+];
+
+$ntMcpSelectHeaders = static function (array $extra = []) use ($ntMcpAllowedHeaders): array {
+    $selected = [];
+    $candidates = headers_list();
+    foreach ($extra as $name => $value) {
+        $candidates[] = $name . ': ' . $value;
+    }
+
+    foreach ($candidates as $line) {
+        if (!is_string($line) || !str_contains($line, ':')) {
+            continue;
+        }
+        [$name, $value] = explode(':', $line, 2);
+        $lower = strtolower(trim($name));
+        $value = trim($value);
+        if (!isset($ntMcpAllowedHeaders[$lower]) || preg_match('/[\r\n]/', $value) === 1) {
+            continue;
+        }
+        if ($lower === 'retry-after' && preg_match('/^[1-9]\d{0,4}\z/', $value) !== 1) {
+            continue;
+        }
+        if ($lower === 'mcp-session-id' && preg_match('/^[A-Za-z0-9._\-]{8,128}\z/', $value) !== 1) {
+            continue;
+        }
+        if ($lower === 'content-type' && preg_match('/^application\/json(?:;\s*charset=UTF-8)?\z/i', $value) !== 1) {
+            continue;
+        }
+
+        $selected[$ntMcpAllowedHeaders[$lower]] = $value;
+    }
+
+    return $selected;
+};
+
+$ntMcpApplyFinalHeaders = static function () use (
+    &$ntMcpResponseState,
+    &$ntMcpStatusSnapshot,
+    &$ntMcpHeadersSnapshot,
+    &$ntMcpBodySnapshot,
+    $ntMcpFailureJson,
+): void {
+    $completed = in_array($ntMcpResponseState, ['sealed', 'success'], true);
+    $status = $completed ? $ntMcpStatusSnapshot : 500;
+    $body = $completed ? $ntMcpBodySnapshot : $ntMcpFailureJson;
+    $headers = $completed ? $ntMcpHeadersSnapshot : ['Content-Type' => 'application/json'];
+
+    header_remove();
+    http_response_code($status);
+    foreach ($headers as $name => $value) {
+        header($name . ': ' . $value, true);
+    }
+    header('Content-Length: ' . strlen($body), true);
+};
+
+header_register_callback($ntMcpApplyFinalHeaders);
+
+$ntMcpMarkFailure = static function () use (
+    &$ntMcpResponseState,
+    &$ntMcpStatusSnapshot,
+    &$ntMcpHeadersSnapshot,
+    &$ntMcpBodySnapshot,
+    $ntMcpFailureJson,
+    $ntMcpApplyFinalHeaders,
+): void {
     $ntMcpResponseState = 'failure';
+    $ntMcpStatusSnapshot = 500;
+    $ntMcpHeadersSnapshot = ['Content-Type' => 'application/json'];
+    $ntMcpBodySnapshot = $ntMcpFailureJson;
 
     if (!headers_sent()) {
-        header_remove();
-        http_response_code(500);
-        header('Content-Type: application/json');
+        header_register_callback($ntMcpApplyFinalHeaders);
     }
 };
 
@@ -85,6 +171,41 @@ $ntMcpDiscardChildBuffers = static function () use ($ntMcpOwnedBufferLevel): boo
     return ob_get_level() === $ntMcpOwnedBufferLevel;
 };
 
+$ntMcpCommitSnapshot = static function (
+    string $state,
+    int $status,
+    string $body,
+    array $extraHeaders = [],
+) use (
+    &$ntMcpResponseState,
+    &$ntMcpStatusSnapshot,
+    &$ntMcpHeadersSnapshot,
+    &$ntMcpBodySnapshot,
+    $ntMcpDiscardChildBuffers,
+    $ntMcpSelectHeaders,
+    $ntMcpApplyFinalHeaders,
+    $ntMcpOwnedBufferLevel,
+): bool {
+    if (!in_array($state, ['sealed', 'success'], true)
+        || !$ntMcpDiscardChildBuffers()
+        || ob_get_level() !== $ntMcpOwnedBufferLevel) {
+        return false;
+    }
+
+    $headers = $ntMcpSelectHeaders($extraHeaders);
+    if (!@ob_clean()) {
+        return false;
+    }
+
+    $ntMcpStatusSnapshot = ($status >= 100 && $status <= 599) ? $status : 500;
+    $ntMcpHeadersSnapshot = $headers;
+    $ntMcpBodySnapshot = $body;
+    $ntMcpResponseState = $state;
+    header_register_callback($ntMcpApplyFinalHeaders);
+
+    return true;
+};
+
 @ini_set('display_errors', '0');
 @ini_set('display_startup_errors', '0');
 @ini_set('log_errors', '0');
@@ -92,7 +213,7 @@ $ntMcpDiscardChildBuffers = static function () use ($ntMcpOwnedBufferLevel): boo
 // Rede mínima para falha do PRÓPRIO autoload: não pode depender de nenhuma
 // classe do addon, porque elas ainda não existem.
 register_shutdown_function(static function () use (&$ntMcpResponseState, $ntMcpMarkFailure): void {
-    if ($ntMcpResponseState === 'success') {
+    if (in_array($ntMcpResponseState, ['sealed', 'success'], true)) {
         return;
     }
 
@@ -122,10 +243,13 @@ try {
 // Descartamos apenas o que veio antes da aplicação. Se algum buffer filho não
 // puder ser removido, não existe caminho de sucesso exclusivo: falhamos antes
 // de autenticar ou executar qualquer ferramenta.
-if (!$ntMcpDiscardChildBuffers() || !@ob_clean()) {
+if (!$ntMcpDiscardChildBuffers() || !@ob_clean() || headers_sent()) {
     $ntMcpMarkFailure();
-    exit;
+    return;
 }
+header_remove();
+http_response_code(200);
+header_register_callback($ntMcpApplyFinalHeaders);
 \NtMcp\Whmcs\Diagnostics::installExceptionHandler('mcp_endpoint', $ntMcpMarkFailure);
 
 use NtMcp\Auth\BearerAuth;
@@ -138,21 +262,41 @@ use NtMcp\Whmcs\Diagnostics;
 use NtMcp\Whmcs\SystemUrl;
 
 // SECURITY CONTROL (9.2 -- F13): TLS enforcement
-TlsEnforcer::enforce();
+$terminalResponse = TlsEnforcer::enforce();
 
 // CORS headers for browser-based MCP clients (Claude.ai Custom Connectors)
-if (CorsHandler::handle(['MCP-Session-Id'], 'POST, OPTIONS')) {
-    exit;
+if ($terminalResponse === null) {
+    $corsDecision = CorsHandler::handle(['MCP-Session-Id'], 'POST, OPTIONS');
+    $corsDecision->emitHeaders();
+    $terminalResponse = $corsDecision->terminalResponse();
 }
 
 // SECURITY CONTROL (9.4): Optional IP allowlist
-IpAllowlist::enforce();
+if ($terminalResponse === null) {
+    $terminalResponse = IpAllowlist::enforce();
+}
 
 // SECURITY FIX (F9 -- HIGH): Security response headers
-SecurityHeaders::emit();
+if ($terminalResponse === null) {
+    SecurityHeaders::emit();
+}
 
 // SECURITY FIX (F7 -- HIGH): IP-based rate limiting (60 req/min)
-(new RateLimiter('nt_mcp_rl_', 60, 60))->enforce();
+if ($terminalResponse === null) {
+    $terminalResponse = (new RateLimiter('nt_mcp_rl_', 60, 60))->enforce();
+}
+
+if ($terminalResponse !== null) {
+    if (!$ntMcpCommitSnapshot(
+        'sealed',
+        $terminalResponse->status(),
+        $terminalResponse->body(),
+        $terminalResponse->headers(),
+    )) {
+        $ntMcpMarkFailure();
+    }
+    return;
+}
 
 // 3. Autenticar ANTES de qualquer coisa
 // SECURITY (F17): The stored value is a SHA-256 hash, not the plaintext token.
@@ -162,19 +306,37 @@ $auth = new BearerAuth($storedHash);
 
 $_authenticatedAdmin = $auth->authenticate();
 if ($_authenticatedAdmin === null) {
-    BearerAuth::denyAndExit(SystemUrl::resourceMetadataUrl());
+    $terminalResponse = BearerAuth::deniedResponse(SystemUrl::resourceMetadataUrl());
+    if (!$ntMcpCommitSnapshot(
+        'sealed',
+        $terminalResponse->status(),
+        $terminalResponse->body(),
+        $terminalResponse->headers(),
+    )) {
+        $ntMcpMarkFailure();
+    }
+    return;
 }
 
 // 4. Iniciar MCP Server com o admin vinculado ao token
 NtMcp\Server::run($_authenticatedAdmin);
 
-// Somente o retorno normal do servidor autoriza a resposta MCP capturada. Um
-// exit/die em qualquer ponto anterior deixa a sentinela pendente e o shutdown
-// converte status, headers e corpo para a falha fixa.
+// O retorno normal do servidor é selado imediatamente. O buffer é limpo e o
+// snapshot passa a ser a única fonte do body; shutdown/destrutor tardio não
+// consegue anexar bytes ou alterar status/headers.
 if (!$ntMcpDiscardChildBuffers()) {
     $ntMcpMarkFailure();
-    exit;
+    return;
 }
-$ntMcpResponseState = 'success';
+$currentOutput = ob_get_contents();
+if ($currentOutput === false) {
+    $ntMcpMarkFailure();
+    return;
+}
+$responseBody = $ntMcpCapturedOutput . $currentOutput;
+$responseStatus = http_response_code();
+if (!$ntMcpCommitSnapshot('success', is_int($responseStatus) ? $responseStatus : 200, $responseBody)) {
+    $ntMcpMarkFailure();
+}
 
 // O buffer raiz é não-removível e será finalizado pelo próprio PHP.

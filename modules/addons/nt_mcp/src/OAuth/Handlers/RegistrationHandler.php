@@ -18,7 +18,11 @@ final class RegistrationHandler
 {
     public static function handle(): void
     {
-        (new RateLimiter('nt_mcp_reg_rl_', 20, 3600, 'reg_', 'Too many client registrations. Maximum 20 per hour.'))->enforce();
+        $terminal = (new RateLimiter('nt_mcp_reg_rl_', 20, 3600, 'reg_', 'Too many client registrations. Maximum 20 per hour.'))->enforce();
+        if ($terminal !== null) {
+            $terminal->emit();
+            return;
+        }
 
         // Max client count: prevent DB exhaustion
         $maxClients = 50;

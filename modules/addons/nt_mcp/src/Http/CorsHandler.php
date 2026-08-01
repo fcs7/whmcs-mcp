@@ -13,7 +13,7 @@ use NtMcp\Whmcs\Diagnostics;
  * Origin policy (F9):
  * - nt_mcp_cors_origins empty/unset → Access-Control-Allow-Origin: * (default, backward-compat)
  * - nt_mcp_cors_origins set + HTTP_ORIGIN in list → specific origin + Vary: Origin
- * - nt_mcp_cors_origins set + HTTP_ORIGIN not in list → no CORS header (browser blocks)
+ * - nt_mcp_cors_origins set + HTTP_ORIGIN not in list → envelope 403 sem ACAO
  * - nt_mcp_cors_origins set + no HTTP_ORIGIN (CLI) → Access-Control-Allow-Origin: *
  *
  * Fail-closed on config-read error (E): a real error reading nt_mcp_cors_origins
@@ -24,12 +24,12 @@ use NtMcp\Whmcs\Diagnostics;
 final class CorsHandler
 {
     /**
-     * Emit CORS headers. Returns true if this was an OPTIONS preflight (caller should exit).
-     * Responds 503 + exits if the CORS origins config could not be read (fail closed).
+     * Devolve headers CORS validados e eventual envelope terminal. Não escreve
+     * status, header, body nem encerra o processo.
      *
      * @param string[] $exposeHeaders Additional headers to expose
      */
-    public static function handle(array $exposeHeaders = [], string $methods = 'GET, POST, OPTIONS'): bool
+    public static function handle(array $exposeHeaders = [], string $methods = 'GET, POST, OPTIONS'): CorsDecision
     {
         $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
         $allowedOrigins = self::getAllowedOriginsOrFail();
@@ -37,33 +37,19 @@ final class CorsHandler
         if ($allowedOrigins === false) {
             // Config read failed (DB error etc.) — fail closed: deny rather than silently
             // falling back to Access-Control-Allow-Origin: *.
-            http_response_code(503);
-            header('Content-Type: application/json');
-            echo json_encode(['error' => 'Service temporarily unavailable.']);
-            exit;
+            return CorsDecision::terminal(TerminalResponse::serviceUnavailable());
         }
 
         $originHeader = self::resolveOriginHeader($origin, $allowedOrigins);
-        if ($originHeader !== null) {
-            header('Access-Control-Allow-Origin: ' . $originHeader);
-            if ($originHeader !== '*') {
-                header('Vary: Origin');
-            }
-        }
-
-        header('Access-Control-Allow-Methods: ' . $methods);
-        header('Access-Control-Allow-Headers: Content-Type, Authorization, MCP-Protocol-Version, MCP-Session-Id');
-
-        if ($exposeHeaders !== []) {
-            header('Access-Control-Expose-Headers: ' . implode(', ', $exposeHeaders));
+        if ($origin !== '' && $allowedOrigins !== [] && $originHeader === null) {
+            return CorsDecision::terminal(TerminalResponse::corsForbidden());
         }
 
         if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') {
-            http_response_code(204);
-            return true;
+            return CorsDecision::preflight($originHeader, $exposeHeaders, $methods);
         }
 
-        return false;
+        return CorsDecision::proceed($originHeader, $exposeHeaders, $methods);
     }
 
     /**

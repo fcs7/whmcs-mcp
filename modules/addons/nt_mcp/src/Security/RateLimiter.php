@@ -7,6 +7,7 @@ namespace NtMcp\Security;
 use NtMcp\Whmcs\Diagnostics;
 
 use NtMcp\Http\IpResolver;
+use NtMcp\Http\TerminalResponse;
 
 /**
  * SECURITY FIX (F7 -- HIGH): IP-based rate limiting.
@@ -27,7 +28,7 @@ final class RateLimiter
         private readonly ?string $errorDescription = null,
     ) {}
 
-    public function enforce(): void
+    public function enforce(): ?TerminalResponse
     {
         // SECURITY FIX (H-05): Use private data directory instead of world-writable /tmp
         $dataDir = dirname(__DIR__, 2) . '/data/rate';
@@ -50,7 +51,7 @@ final class RateLimiter
                         'count' => 1,
                         'window_start' => time(),
                     ]), $this->windowSeconds);
-                    return; // within limits
+                    return null; // within limits
                 }
 
                 $state = json_decode($data, true);
@@ -60,12 +61,12 @@ final class RateLimiter
                         'count' => 1,
                         'window_start' => time(),
                     ]), $this->windowSeconds);
-                    return;
+                    return null;
                 }
 
                 $state['count'] = ($state['count'] ?? 0) + 1;
                 if ($state['count'] > $this->maxRequests) {
-                    $this->denyAndExit();
+                    return $this->deniedResponse();
                 }
 
                 \WHMCS\TransientData::getInstance()->store(
@@ -73,7 +74,7 @@ final class RateLimiter
                     json_encode($state),
                     max(1, $this->windowSeconds - (time() - $state['window_start']))
                 );
-                return;
+                return null;
             }
         } catch (\Throwable $e) {
             // Fall through to file-based limiter
@@ -87,7 +88,7 @@ final class RateLimiter
             // Cannot open file; fail open to avoid blocking legitimate requests
             // O path embute o IP sanitizado — registrá-lo reintroduz a PII.
             Diagnostics::event(Diagnostics::CATEGORY_RUNTIME, 'rate_limit_file_open_failed');
-            return;
+            return null;
         }
 
         flock($fp, LOCK_EX);
@@ -110,25 +111,14 @@ final class RateLimiter
         fclose($fp);
 
         if ($state['count'] > $this->maxRequests) {
-            $this->denyAndExit();
+            return $this->deniedResponse();
         }
+
+        return null;
     }
 
-    private function denyAndExit(): never
+    private function deniedResponse(): TerminalResponse
     {
-        http_response_code(429);
-        header('Retry-After: ' . $this->windowSeconds);
-        header('Content-Type: application/json');
-
-        if ($this->errorDescription !== null) {
-            echo json_encode([
-                'error'             => 'rate_limit_exceeded',
-                'error_description' => $this->errorDescription,
-            ], JSON_UNESCAPED_SLASHES);
-        } else {
-            echo json_encode(['error' => 'Rate limit exceeded. Try again later.']);
-        }
-
-        exit;
+        return TerminalResponse::rateLimited($this->windowSeconds, $this->errorDescription);
     }
 }

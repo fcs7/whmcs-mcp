@@ -9,9 +9,8 @@ use NtMcp\Http\TlsEnforcer;
 use PHPUnit\Framework\TestCase;
 
 /**
- * SECURITY FIX (WO-4): TlsEnforcer::enforce() calls http_response_code()/
- * header()/exit, so it is not directly unit-testable. Its decision logic was
- * extracted into two pure, side-effect-free static methods —
+ * SECURITY FIX (WO-4): além do smoke HTTP do envelope terminal, a decisão foi
+ * extraída em dois métodos puros —
  * isRequestSecure() and isHttpBypassAllowed() — which this suite exercises
  * directly by manipulating $_SERVER / the NT_MCP_ALLOW_HTTP env var.
  */

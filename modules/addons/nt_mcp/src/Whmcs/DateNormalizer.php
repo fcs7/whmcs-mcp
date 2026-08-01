@@ -131,7 +131,7 @@ final class DateNormalizer
      */
     public static function optional(string $value, string $field): string
     {
-        if (trim($value) === '') {
+        if ($value === '') {
             return '';
         }
 

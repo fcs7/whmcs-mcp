@@ -32,19 +32,35 @@ use NtMcp\OAuth\OAuthMigration;
 use NtMcp\OAuth\OAuthRouter;
 
 // SECURITY FIX (F1 -- audit): TLS enforcement (RFC 6749 §3.1)
-TlsEnforcer::enforce();
+$terminalResponse = TlsEnforcer::enforce();
+if ($terminalResponse !== null) {
+    $terminalResponse->emit();
+    exit;
+}
 
 // SECURITY CONTROL (9.4): Optional IP allowlist (WO-6)
-IpAllowlist::enforce();
+$terminalResponse = IpAllowlist::enforce();
+if ($terminalResponse !== null) {
+    $terminalResponse->emit();
+    exit;
+}
 
 // SECURITY FIX (WO-6): IP-based rate limiting for OAuth entry points
-(new RateLimiter('nt_mcp_oauth_rl_', 60, 60))->enforce();
+$terminalResponse = (new RateLimiter('nt_mcp_oauth_rl_', 60, 60))->enforce();
+if ($terminalResponse !== null) {
+    $terminalResponse->emit();
+    exit;
+}
 
 // SECURITY FIX (F2 -- audit): Security response headers
 SecurityHeaders::emit();
 
 // CORS headers
-if (CorsHandler::handle()) {
+$corsDecision = CorsHandler::handle();
+$corsDecision->emitHeaders();
+$terminalResponse = $corsDecision->terminalResponse();
+if ($terminalResponse !== null) {
+    $terminalResponse->emit();
     exit;
 }
 

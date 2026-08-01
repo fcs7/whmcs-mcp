@@ -122,7 +122,9 @@ final class DiagnosticBoundaryTest extends TestCase
             withAutoload: true,
             bootstrap: '<?php ob_start(static fn (string $buffer): string => "transformed:" . $buffer); '
                 . 'echo "bootstrap-noise"; set_error_handler(static fn (): bool => true);',
-            afterReinstall: 'echo \'{"transport":"ok"}\'; $ntMcpResponseState = \'success\'; exit;'
+            afterReinstall: '$ntMcpBodySnapshot = \'{"transport":"ok"}\'; $ntMcpStatusSnapshot = 200; '
+                . '$ntMcpHeadersSnapshot = [\'Content-Type\' => \'application/json\']; '
+                . '$ntMcpResponseState = \'success\'; exit;'
         );
         $result = $this->runEndpoint($root);
 
@@ -186,7 +188,9 @@ final class DiagnosticBoundaryTest extends TestCase
         $afterReinstall = '';
 
         if ($outcome === 'success') {
-            $afterReinstall = 'echo \'{"transport":"ok"}\'; $ntMcpResponseState = \'success\'; exit;';
+            $afterReinstall = '$ntMcpBodySnapshot = \'{"transport":"ok"}\'; $ntMcpStatusSnapshot = 200; '
+                . '$ntMcpHeadersSnapshot = [\'Content-Type\' => \'application/json\']; '
+                . '$ntMcpResponseState = \'success\'; exit;';
         } elseif ($outcome === 'throwable') {
             $bootstrap .= 'throw new \\RuntimeException("throw-secret");';
         } elseif ($outcome === 'warning') {

@@ -13,27 +13,22 @@ use NtMcp\Whmcs\Diagnostics;
  */
 final class TlsEnforcer
 {
-    public static function enforce(): void
+    public static function enforce(): ?TerminalResponse
     {
         if (self::isRequestSecure()) {
-            return;
+            return null;
         }
 
         if (self::isHttpBypassAllowed()) {
-            return;
+            return null;
         }
 
-        http_response_code(421);
-        header('Content-Type: application/json');
-        echo json_encode([
-            'error' => 'TLS required. Plain HTTP requests are rejected for security.',
-        ]);
-        exit;
+        return TerminalResponse::tlsRequired();
     }
 
     /**
      * SECURITY FIX (WO-4): Pure decision logic, side-effect free, so it can be
-     * unit-tested without triggering enforce()'s exit.
+     * unit-tested without HTTP side effects.
      */
     public static function isRequestSecure(): bool
     {
