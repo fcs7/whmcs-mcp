@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace NtMcp\Http;
 
+use NtMcp\Whmcs\Diagnostics;
+
 /**
  * SECURITY CONTROL (9.2 -- F13): TLS enforcement.
  * Reject plain HTTP requests to prevent credential exposure in transit.
@@ -71,7 +73,9 @@ final class TlsEnforcer
         $trusted = IpResolver::isTrustedProxy($remoteAddr) || self::isLoopbackOrPrivate($remoteAddr);
 
         if ($trusted) {
-            error_log('NT MCP: TLS enforcement bypassed via NT_MCP_ALLOW_HTTP from ' . $remoteAddr);
+            // O IP do cliente NÃO é registrado: é PII e o evento não precisa dele
+            // para ser acionável — o que importa é que o bypass foi usado.
+            Diagnostics::event(Diagnostics::CATEGORY_TLS, 'allow_http_bypass');
         }
 
         return $trusted;

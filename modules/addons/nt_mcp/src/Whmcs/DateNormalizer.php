@@ -97,7 +97,7 @@ final class DateNormalizer
         // deixava passar `2026-08-10T99:99:99+99:99`, que atravessava o adapter
         // e virava uma data válida downstream — hora, minuto, segundo e offset
         // impossíveis simplesmente ignorados.
-        if (preg_match('/^(\d{4}-\d{2}-\d{2})[Tt ](\d{2}):(\d{2})(?::(\d{2})(\.\d+)?)?([Zz]|[+-]\d{2}:?\d{2})?$/', $value, $m) !== 1) {
+        if (preg_match('/^(\d{4}-\d{2}-\d{2})[Tt ](\d{2}):(\d{2})(?::(\d{2})(\.\d+)?)?([Zz]|[+-]\d{2}:?\d{2})?\z/', $value, $m) !== 1) {
             return null;
         }
 

@@ -189,8 +189,8 @@ final class IpResolver
         // is a likely unification no-op (native key named differently on this
         // WHMCS version?) — surface it instead of silently trusting nothing.
         if ($own === [] && $native === [] && !empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
-            error_log('NT MCP: X-Forwarded-For present but no trusted proxies configured '
-                . '(nt_mcp_trusted_proxies empty; WHMCS TrustedProxyIps not found/empty) — only loopback trusted');
+            // Sem o conteúdo do header: XFF é dado da request e carrega IPs.
+            Diagnostics::event(Diagnostics::CATEGORY_NETWORK_CONTEXT, 'xff_without_trusted_proxies');
         }
 
         return self::$trustedProxiesCache = array_values(array_unique(array_merge($own, $native)));

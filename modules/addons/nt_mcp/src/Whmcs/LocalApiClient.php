@@ -2,8 +2,6 @@
 // src/Whmcs/LocalApiClient.php
 namespace NtMcp\Whmcs;
 
-use NtMcp\Http\IpResolver;
-
 class LocalApiClient
 {
     // ---------------------------------------------------------------
@@ -280,7 +278,7 @@ class LocalApiClient
     private static function auditConfig(string $message, ?\Throwable $e = null): void
     {
         $correlationId = Diagnostics::report(Diagnostics::CATEGORY_CONFIG_READ, 'nt_mcp_config', $e);
-        self::auditLog($message, [], $correlationId);
+        self::auditLog($message, null, $correlationId);
     }
 
     private function assertModeAllows(string $command, array $params = []): void
@@ -431,7 +429,7 @@ class LocalApiClient
                 throw $e;
             }
 
-            self::auditLog("MCP API EXCEPTION {$command}", [], $correlationId);
+            self::auditLog("MCP API EXCEPTION {$command}", null, $correlationId);
             Diagnostics::log($correlationId, Diagnostics::CATEGORY_API_EXCEPTION, $command, $e);
 
             // F2: a exceção original NÃO é relançada nem encadeada — o adapter
@@ -455,7 +453,7 @@ class LocalApiClient
         $outcome = is_array($result) ? ($result['result'] ?? null) : null;
 
         if ($outcome === 'success') {
-            self::auditLog("MCP API OK {$command}", [], $correlationId);
+            self::auditLog("MCP API OK {$command}", null, $correlationId);
             ResponseRedactor::scrubSensitive($result);  // D defense-in-depth
 
             return $result;
@@ -466,11 +464,13 @@ class LocalApiClient
             // reduzir a um código do nosso enum. Nada derivado do texto sai
             // desta expressão — nem para o retorno, nem para o log.
             $downstreamMessage = is_array($result) ? (string) ($result['message'] ?? '') : '';
-            $classification = ErrorClassifier::classify($command, $downstreamMessage);
+            // Os params entram só para detectar eco exato do input — nenhum
+            // valor deles sai da classificação.
+            $classification = ErrorClassifier::classify($command, $downstreamMessage, $params);
 
             self::auditLog(
                 "MCP API ERROR {$command} ({$classification['code']})",
-                [],
+                null,
                 $correlationId
             );
             Diagnostics::log(
@@ -495,7 +495,7 @@ class LocalApiClient
 
         // Indeterminado: não-array, ou array sem `result` canônico.
         $type = is_array($result) ? 'array without canonical result' : gettype($result);
-        self::auditLog("MCP API ERROR {$command} (malformed response: {$type})", [], $correlationId);
+        self::auditLog("MCP API ERROR {$command} (malformed response: {$type})", null, $correlationId);
         Diagnostics::log($correlationId, Diagnostics::CATEGORY_API_MALFORMED, $command);
 
         throw new DownstreamFailureException(
@@ -532,29 +532,28 @@ class LocalApiClient
      * início, a de desfecho e o diagnóstico detalhado do error_log possam ser
      * ligadas sem repetir dado nenhum entre elas.
      *
-     * @param string      $message       Human-readable description (estável, sem texto downstream)
-     * @param array       $metadata      METADADOS já seguros (ver AuditMetadata) — nunca params crus
-     * @param string|null $correlationId Reusa uma correlação existente; gera uma nova se null
-     * @return string                    a correlação usada
+     * @param string             $message       Human-readable description (estável, sem texto downstream)
+     * @param AuditMetadata|null $metadata      D7: só o value object; array arbitrário é impossível por tipo
+     * @param string|null        $correlationId Reusa uma correlação existente; gera uma nova se null
+     * @return string                           a correlação usada
      */
-    public static function auditLog(string $message, array $metadata = [], ?string $correlationId = null): string
+    public static function auditLog(string $message, ?AuditMetadata $metadata = null, ?string $correlationId = null): string
     {
         $correlationId ??= self::newCorrelationId();
-        // SECURITY FIX (F3 -- audit, revised H1): Use IpResolver directly.
-        // Behind Plesk reverse proxy, REMOTE_ADDR is 127.0.0.1 — useless for
-        // forensics. IpResolver respects nt_mcp_trusted_proxies and walks XFF.
-        $ip = IpResolver::resolve();
-
-        // D7: o que chega aqui já deveria ser metadado de allowlist. Esta é a
-        // última barreira — qualquer string fora de token curto é descartada,
-        // para que um call-site futuro não reintroduza dump de valores.
-        $summary = json_encode(self::sanitizeMetadata($metadata), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        // D7: o value object já garante o shape. O render abaixo é a segunda
+        // barreira, agora fechada por CONTRATO e não por sintaxe de string.
+        $summary = json_encode(
+            (object) self::renderMetadata($metadata?->toArray() ?? []),
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+        );
 
         if (strlen($summary) > 1024) {
             $summary = substr($summary, 0, 1021) . '...';
         }
 
-        $entry = "[NT-MCP] [{$ip}] [corr:{$correlationId}] {$message} | meta: {$summary}";
+        // IP externo não é necessário para correlacionar o incidente e é PII.
+        // A correlação segura substitui o identificador de rede nos logs.
+        $entry = "[NT-MCP] [corr:{$correlationId}] {$message} | meta: {$summary}";
 
         try {
             if (function_exists('logActivity')) {
@@ -577,28 +576,91 @@ class LocalApiClient
     /**
      * Última barreira do Activity Log (D7).
      *
-     * `AuditMetadata` já entrega só metadado, mas esta função existe para que
-     * um call-site novo — ou um refactor distraído — não consiga passar valores
-     * de campo. Só sobrevivem: inteiros, booleanos, tokens curtos que casem
-     * `[A-Za-z0-9_]` e listas desses tokens. Qualquer outra coisa vira um
-     * marcador de tipo.
+     * `AuditMetadata` já entrega só metadado, mas esta função existe como
+     * segunda barreira. Só sobrevivem containers e campos explicitamente
+     * aprovados, com tipos fechados; qualquer outra chave ou valor é omitido.
      */
-    private static function sanitizeMetadata(array $metadata, int $depth = 0): array
+    private static function renderMetadata(array $shape, int $depth = 0): array
     {
-        $safe = [];
-        foreach ($metadata as $key => $value) {
-            $name = is_string($key) ? Diagnostics::safeToken($key) : (string) (int) $key;
+        if ($depth > 1) {
+            return [];
+        }
 
-            if (is_int($value) || is_bool($value)) {
-                $safe[$name] = $value;
-            } elseif (is_string($value)) {
-                $safe[$name] = preg_match('/^[A-Za-z0-9_]{1,64}\z/', $value) === 1 ? $value : '[omitted]';
-            } elseif (is_array($value)) {
-                $safe[$name] = $depth >= 4 ? '[nested]' : self::sanitizeMetadata($value, $depth + 1);
-            } elseif ($value === null) {
-                $safe[$name] = null;
-            } else {
-                $safe[$name] = '[' . gettype($value) . ']';
+        $safe = [];
+        foreach ($shape as $key => $value) {
+            $name = is_string($key) ? $key : '';
+
+            switch ($name) {
+                case 'ids':
+                    // Só nomes da allowlist e valores inteiros.
+                    $ids = [];
+                    foreach ((array) $value as $field => $id) {
+                        if (AuditMetadata::isIdField((string) $field) && is_int($id)) {
+                            $ids[(string) $field] = $id;
+                        }
+                    }
+                    if ($ids !== []) {
+                        $safe['ids'] = $ids;
+                    }
+                    break;
+
+                case 'flags':
+                    $flags = [];
+                    foreach ((array) $value as $field => $flag) {
+                        if (AuditMetadata::isFlagField((string) $field) && is_bool($flag)) {
+                            $flags[(string) $field] = $flag;
+                        }
+                    }
+                    if ($flags !== []) {
+                        $safe['flags'] = $flags;
+                    }
+                    break;
+
+                case 'fields':
+                    // Lista de NOMES, e só os que estão na allowlist estática.
+                    $fields = [];
+                    foreach ((array) $value as $field) {
+                        if (is_string($field) && AuditMetadata::isKnownField($field)) {
+                            $fields[] = $field;
+                        }
+                    }
+                    if ($fields !== []) {
+                        $safe['fields'] = array_values($fields);
+                    }
+                    break;
+
+                case 'counts':
+                    $counts = [];
+                    foreach ((array) $value as $field => $count) {
+                        if (AuditMetadata::isKnownField((string) $field) && is_int($count)) {
+                            $counts[(string) $field] = $count;
+                        }
+                    }
+                    if ($counts !== []) {
+                        $safe['counts'] = $counts;
+                    }
+                    break;
+
+                case 'unknown_fields':
+                case 'limit':
+                case 'offset':
+                    if (is_int($value)) {
+                        $safe[$name] = $value;
+                    }
+                    break;
+
+                case 'where':
+                case 'data':
+                    $nested = is_array($value) ? self::renderMetadata($value, $depth + 1) : [];
+                    if ($nested !== []) {
+                        $safe[$name] = $nested;
+                    }
+                    break;
+
+                // Qualquer outra chave é DESCARTADA — sem registrar o nome nem
+                // o valor. Um segredo token-like não entra nem como chave.
+                default:
+                    break;
             }
         }
 

@@ -51,106 +51,146 @@ final class ErrorClassifier
      */
     private const PATTERNS = [
         'AddClient' => [
-            ['/^email address already exists$/', 'client_email_exists', self::CONFLICT],
-            ['/^a client already exists with that email address$/', 'client_email_exists', self::CONFLICT],
-            ['/^invalid email address$/', 'client_email_invalid', self::VALIDATION],
-            ['/^first name is required$/', 'client_field_required', self::VALIDATION],
-            ['/^last name is required$/', 'client_field_required', self::VALIDATION],
-            ['/^password is required$/', 'client_field_required', self::VALIDATION],
+            ['/^email address already exists\z/', 'client_email_exists', self::CONFLICT],
+            ['/^a client already exists with that email address\z/', 'client_email_exists', self::CONFLICT],
+            ['/^invalid email address\z/', 'client_email_invalid', self::VALIDATION],
+            ['/^first name is required\z/', 'client_field_required', self::VALIDATION],
+            ['/^last name is required\z/', 'client_field_required', self::VALIDATION],
+            ['/^password is required\z/', 'client_field_required', self::VALIDATION],
         ],
         'UpdateClient' => [
-            ['/^client not found$/', 'client_not_found', self::NOT_FOUND],
-            ['/^email address already exists$/', 'client_email_exists', self::CONFLICT],
-            ['/^invalid email address$/', 'client_email_invalid', self::VALIDATION],
+            ['/^client not found\z/', 'client_not_found', self::NOT_FOUND],
+            ['/^email address already exists\z/', 'client_email_exists', self::CONFLICT],
+            ['/^invalid email address\z/', 'client_email_invalid', self::VALIDATION],
         ],
         'GetClientsDetails' => [
-            ['/^client not found$/', 'client_not_found', self::NOT_FOUND],
+            ['/^client not found\z/', 'client_not_found', self::NOT_FOUND],
         ],
         'GetClientsProducts' => [
-            ['/^client not found$/', 'client_not_found', self::NOT_FOUND],
+            ['/^client not found\z/', 'client_not_found', self::NOT_FOUND],
         ],
         'GetInvoice' => [
-            ['/^invoice id not found$/', 'invoice_not_found', self::NOT_FOUND],
-            ['/^invoice not found$/', 'invoice_not_found', self::NOT_FOUND],
+            ['/^invoice id not found\z/', 'invoice_not_found', self::NOT_FOUND],
+            ['/^invoice not found\z/', 'invoice_not_found', self::NOT_FOUND],
         ],
         'UpdateInvoice' => [
-            ['/^invoice id not found$/', 'invoice_not_found', self::NOT_FOUND],
-            ['/^invalid payment method$/', 'invoice_paymentmethod_invalid', self::VALIDATION],
-            ['/^invalid date format$/', 'invoice_date_invalid', self::VALIDATION],
+            ['/^invoice id not found\z/', 'invoice_not_found', self::NOT_FOUND],
+            ['/^invalid payment method\z/', 'invoice_paymentmethod_invalid', self::VALIDATION],
+            ['/^invalid date format\z/', 'invoice_date_invalid', self::VALIDATION],
         ],
         'GetQuotes' => [
-            ['/^quote id not found$/', 'quote_not_found', self::NOT_FOUND],
+            ['/^quote id not found\z/', 'quote_not_found', self::NOT_FOUND],
         ],
         'UpdateQuote' => [
-            ['/^quote id not found$/', 'quote_not_found', self::NOT_FOUND],
+            ['/^quote id not found\z/', 'quote_not_found', self::NOT_FOUND],
         ],
         'AcceptQuote' => [
-            ['/^quote id not found$/', 'quote_not_found', self::NOT_FOUND],
-            ['/^quote already accepted$/', 'quote_already_accepted', self::CONFLICT],
+            ['/^quote id not found\z/', 'quote_not_found', self::NOT_FOUND],
+            ['/^quote already accepted\z/', 'quote_already_accepted', self::CONFLICT],
         ],
         'DeleteQuote' => [
-            ['/^quote id not found$/', 'quote_not_found', self::NOT_FOUND],
+            ['/^quote id not found\z/', 'quote_not_found', self::NOT_FOUND],
         ],
         'GetTicket' => [
-            ['/^ticket id not found$/', 'ticket_not_found', self::NOT_FOUND],
-            ['/^ticket not found$/', 'ticket_not_found', self::NOT_FOUND],
+            ['/^ticket id not found\z/', 'ticket_not_found', self::NOT_FOUND],
+            ['/^ticket not found\z/', 'ticket_not_found', self::NOT_FOUND],
         ],
         'UpdateTicket' => [
-            ['/^ticket id not found$/', 'ticket_not_found', self::NOT_FOUND],
+            ['/^ticket id not found\z/', 'ticket_not_found', self::NOT_FOUND],
         ],
         'AddTicketReply' => [
-            ['/^ticket id not found$/', 'ticket_not_found', self::NOT_FOUND],
+            ['/^ticket id not found\z/', 'ticket_not_found', self::NOT_FOUND],
         ],
         'OpenTicket' => [
-            ['/^department id not found$/', 'department_not_found', self::NOT_FOUND],
-            ['/^invalid department id$/', 'department_not_found', self::NOT_FOUND],
+            ['/^department id not found\z/', 'department_not_found', self::NOT_FOUND],
+            ['/^invalid department id\z/', 'department_not_found', self::NOT_FOUND],
         ],
         'GetOrders' => [
-            ['/^order id not found$/', 'order_not_found', self::NOT_FOUND],
+            ['/^order id not found\z/', 'order_not_found', self::NOT_FOUND],
         ],
         'CancelOrder' => [
-            ['/^order id not found$/', 'order_not_found', self::NOT_FOUND],
+            ['/^order id not found\z/', 'order_not_found', self::NOT_FOUND],
         ],
         'PendingOrder' => [
-            ['/^order id not found$/', 'order_not_found', self::NOT_FOUND],
+            ['/^order id not found\z/', 'order_not_found', self::NOT_FOUND],
         ],
         'GetProject' => [
-            ['/^project not found$/', 'project_not_found', self::NOT_FOUND],
+            ['/^project not found\z/', 'project_not_found', self::NOT_FOUND],
         ],
         'UpdateProject' => [
-            ['/^project not found$/', 'project_not_found', self::NOT_FOUND],
+            ['/^project not found\z/', 'project_not_found', self::NOT_FOUND],
         ],
         'UpdateToDoItem' => [
-            ['/^todo item not found$/', 'todo_not_found', self::NOT_FOUND],
+            ['/^todo item not found\z/', 'todo_not_found', self::NOT_FOUND],
         ],
         '*' => [
-            ['/^access denied$/', 'access_denied', self::DENIED],
-            ['/^authentication failed$/', 'access_denied', self::DENIED],
-            ['/^invalid permissions$/', 'access_denied', self::DENIED],
-            ['/^you do not have permission to access this resource$/', 'access_denied', self::DENIED],
+            ['/^access denied\z/', 'access_denied', self::DENIED],
+            ['/^authentication failed\z/', 'access_denied', self::DENIED],
+            ['/^invalid permissions\z/', 'access_denied', self::DENIED],
+            ['/^you do not have permission to access this resource\z/', 'access_denied', self::DENIED],
         ],
     ];
 
     /**
      * Classifica sem devolver NADA derivado do texto.
      *
+     * `$params` são os parâmetros da própria chamada. Servem a uma única
+     * verificação, feita em memória: se a mensagem do WHMCS for IGUAL a uma
+     * string que o chamador enviou, ela não é diagnóstico — é eco do input, e
+     * classificá-la produziria um código falso. Um cliente que mandasse
+     * `firstname="Email Address Already Exists"` recebia `conflict` de um
+     * servidor que só devolveu de volta o que ele escreveu.
+     *
+     * Nada desses valores entra em retorno, log, contexto ou fingerprint.
+     *
+     * @param array<string, mixed> $params
      * @return array{code:string, category:string} sempre valores do enum
      */
-    public static function classify(string $command, ?string $message): array
+    public static function classify(string $command, ?string $message, array $params = []): array
     {
         $normalized = self::normalize($message);
 
-        if ($normalized !== '') {
-            foreach ([self::PATTERNS[$command] ?? [], self::PATTERNS['*']] as $group) {
-                foreach ($group as [$pattern, $code, $category]) {
-                    if (preg_match($pattern, $normalized) === 1) {
-                        return self::seal($code, $category);
-                    }
+        if ($normalized === '' || self::echoesCallerInput($normalized, $params)) {
+            return self::seal('downstream_error', self::DOWNSTREAM);
+        }
+
+        foreach ([self::PATTERNS[$command] ?? [], self::PATTERNS['*']] as $group) {
+            foreach ($group as [$pattern, $code, $category]) {
+                if (preg_match($pattern, $normalized) === 1) {
+                    return self::seal($code, $category);
                 }
             }
         }
 
         return self::seal('downstream_error', self::DOWNSTREAM);
+    }
+
+    /**
+     * true quando a mensagem normalizada coincide com algum valor não confiável
+     * enviado na chamada. Comparação só em memória; os valores morrem aqui.
+     *
+     * @param array<string, mixed> $params
+     */
+    private static function echoesCallerInput(string $normalized, array $params, int $depth = 0): bool
+    {
+        foreach ($params as $value) {
+            if (is_array($value)) {
+                if ($depth < 3 && self::echoesCallerInput($normalized, $value, $depth + 1)) {
+                    return true;
+                }
+                continue;
+            }
+
+            if (!is_string($value) || $value === '') {
+                continue;
+            }
+
+            if (self::normalize($value) === $normalized) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

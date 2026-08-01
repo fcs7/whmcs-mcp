@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace NtMcp\Security;
 
+use NtMcp\Whmcs\Diagnostics;
+
 use NtMcp\Http\IpResolver;
 
 /**
@@ -30,7 +32,7 @@ final class RateLimiter
         // SECURITY FIX (H-05): Use private data directory instead of world-writable /tmp
         $dataDir = dirname(__DIR__, 2) . '/data/rate';
         if (!is_dir($dataDir) && !@mkdir($dataDir, 0700, true)) {
-            error_log('NT MCP RateLimiter: failed to create rate limit directory ' . $dataDir);
+            Diagnostics::event(Diagnostics::CATEGORY_RUNTIME, 'rate_limit_dir_create_failed');
         }
 
         $clientIp = IpResolver::resolve();
@@ -83,7 +85,8 @@ final class RateLimiter
         $fp = @fopen($rateFile, 'c+');
         if ($fp === false) {
             // Cannot open file; fail open to avoid blocking legitimate requests
-            error_log('NT MCP RateLimiter: failed to open rate file ' . $rateFile);
+            // O path embute o IP sanitizado — registrá-lo reintroduz a PII.
+            Diagnostics::event(Diagnostics::CATEGORY_RUNTIME, 'rate_limit_file_open_failed');
             return;
         }
 

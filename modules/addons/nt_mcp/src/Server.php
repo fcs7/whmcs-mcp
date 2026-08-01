@@ -2,6 +2,8 @@
 // src/Server.php
 namespace NtMcp;
 
+use NtMcp\Whmcs\Diagnostics;
+
 use NtMcp\Mcp\PhpMcpV1Adapter;
 use NtMcp\Whmcs\LocalApiClient;
 use NtMcp\Whmcs\CapsuleClient;
@@ -32,7 +34,7 @@ class Server
                 // Setting not available — leave empty to deny below
             }
             if ($adminUser === '') {
-                error_log('NT MCP Server: no admin user resolved and none configured — denying request');
+                Diagnostics::event(Diagnostics::CATEGORY_AUTH, 'admin_user_unresolved');
                 http_response_code(401);
                 header('Content-Type: application/json');
                 echo json_encode(['error' => 'Unauthorized: no admin user configured']);
@@ -46,7 +48,7 @@ class Server
         $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
         $rawSessionId = $_SERVER['HTTP_MCP_SESSION_ID'] ?? '';
-        $clientId = preg_match('/^[a-zA-Z0-9._\-]{8,128}$/', $rawSessionId)
+        $clientId = preg_match('/^[a-zA-Z0-9._\-]{8,128}\z/', $rawSessionId)
             ? $rawSessionId
             : bin2hex(random_bytes(16));
 
@@ -105,7 +107,7 @@ class Server
         if ($lock === false) {
             // SECURITY FIX (F5 -- audit): Fail visibly if the lock file cannot
             // be opened, instead of proceeding without concurrency protection.
-            error_log('NT MCP Server: Cannot open lock file: ' . $lockFile);
+            Diagnostics::event(Diagnostics::CATEGORY_RUNTIME, 'lock_open_failed');
             http_response_code(500);
             header('Content-Type: application/json');
             echo json_encode(['error' => 'Internal server error: lock acquisition failed']);
@@ -119,12 +121,10 @@ class Server
         // still exclusive while held; under contention the client simply
         // retries (MCP clients honor 503/Retry-After).
         if (!self::acquireLockWithTimeout($lock, self::LOCK_TIMEOUT_SECONDS)) {
-            error_log(
-                'NT MCP Server: lock busy after '
-                . self::LOCK_TIMEOUT_SECONDS
-                . 's, returning 503: '
-                . $lockFile
-            );
+            // O path do lockfile não é registrado: vira contexto fechado.
+            Diagnostics::event(Diagnostics::CATEGORY_RUNTIME, 'lock_busy', [
+                'timeout_seconds' => self::LOCK_TIMEOUT_SECONDS,
+            ]);
             fclose($lock);
             http_response_code(503);
             header('Content-Type: application/json');

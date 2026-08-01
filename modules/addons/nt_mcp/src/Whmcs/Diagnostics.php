@@ -44,57 +44,117 @@ final class Diagnostics
     public const CATEGORY_ADMIN_UI = 'admin_ui_failure';
     public const CATEGORY_MIGRATION = 'migration_failure';
     public const CATEGORY_UNHANDLED = 'unhandled_exception';
+    public const CATEGORY_TLS = 'tls_policy';
+    public const CATEGORY_RUNTIME = 'runtime_failure';
 
-    /** Chave HMAC; injetável para teste. Null = ainda não resolvida. */
-    private static ?string $key = null;
+    /** Contextos operacionais sem exceção — todos literais do addon. */
+    private const EVENT_CONTEXTS = [
+        'admin_user_unresolved',
+        'admin_user_not_configured',
+        'lock_open_failed',
+        'lock_busy',
+        'allow_http_bypass',
+        'xff_without_trusted_proxies',
+        'rate_limit_dir_create_failed',
+        'rate_limit_file_open_failed',
+    ];
 
+    private const EVENT_CATEGORIES = [
+        self::CATEGORY_AUTH,
+        self::CATEGORY_NETWORK_CONTEXT,
+        self::CATEGORY_TLS,
+        self::CATEGORY_RUNTIME,
+    ];
+
+    /** Nome da chave HMAC persistida na ativação (D10). */
+    public const KEY_SETTING = 'nt_mcp_diagnostics_key';
+
+    /** Formato exigido: 64 hex = 32 bytes. */
+    private const KEY_PATTERN = '/^[0-9a-f]{64}\z/';
+
+    /** Rejeita material obviamente previsível/repetitivo persistido. */
+    private const KEY_MIN_UNIQUE_BYTES = 16;
+
+    /** Chave HMAC; injetável para teste. `false` = ainda não resolvida. */
+    private static string|false|null $key = false;
+
+    /** `null` desabilita o fingerprint; string define a chave. */
     public static function setFingerprintKey(?string $key): void
     {
-        self::$key = $key;
+        self::$key = self::isValidKey($key) ? $key : null;
+    }
+
+    /** Limpa o cache para forçar releitura (testes). */
+    public static function resetFingerprintKey(): void
+    {
+        self::$key = false;
+    }
+
+    /** Gera uma chave nova no formato canônico. @throws \Throwable se o RNG falhar */
+    public static function generateKey(): string
+    {
+        return bin2hex(random_bytes(32));
+    }
+
+    public static function isValidKey(mixed $key): bool
+    {
+        if (!is_string($key) || preg_match(self::KEY_PATTERN, $key) !== 1) {
+            return false;
+        }
+
+        $bytes = hex2bin($key);
+
+        // Não é possível medir entropia depois que a chave foi persistida, mas
+        // esta barreira rejeita material obviamente fraco (byte/pequeno padrão
+        // repetido). Uma chave de random_bytes(32) cruza este limiar com margem
+        // enorme; uma chave manual previsível falha fechado.
+        return $bytes !== false
+            && count(array_unique(str_split($bytes))) >= self::KEY_MIN_UNIQUE_BYTES;
     }
 
     /**
-     * Fingerprint HMAC de 128 bits, estável dentro do escopo da chave.
+     * Fingerprint HMAC de 128 bits, estável entre processos e instalações.
      *
-     * A chave sai de `nt_mcp_diagnostics_key`. Sem ela, geramos uma por
-     * processo: o fingerprint continua agrupando incidentes dentro da mesma
-     * execução e nunca vira oráculo — só perde estabilidade entre processos,
-     * o que é degradação aceitável e jamais quebra a request.
+     * D10: a chave é gerada e persistida na ativação. Se ela estiver ausente,
+     * inválida, ou se o RNG falhar, o fingerprint é OMITIDO — nunca derivado de
+     * path, PID, horário ou qualquer dado previsível. O fallback anterior
+     * (`hash(__FILE__ . getmypid())`) era reconstruível por quem conhecesse o
+     * ambiente, o que transforma o log em oráculo em vez de protegê-lo.
+     *
+     * @return string|null null quando não há chave utilizável
      */
-    public static function fingerprint(?string $text): string
+    public static function fingerprint(?string $text): ?string
     {
         if ($text === null || $text === '') {
-            return 'none';
+            return null;
         }
 
-        return substr(hash_hmac('sha256', $text, self::key()), 0, 32);
+        $key = self::key();
+        if ($key === null) {
+            return null;
+        }
+
+        return substr(hash_hmac('sha256', $text, $key), 0, 32);
     }
 
-    private static function key(): string
+    private static function key(): ?string
     {
-        if (self::$key !== null) {
+        if (self::$key !== false) {
             return self::$key;
         }
 
-        $configured = null;
-        if (class_exists('\WHMCS\Config\Setting')) {
-            try {
-                $value = \WHMCS\Config\Setting::getValue('nt_mcp_diagnostics_key');
-                if (is_string($value) && strlen(trim($value)) >= 16) {
-                    $configured = trim($value);
-                }
-            } catch (\Throwable) {
-                // Sem chave configurada — cai no fallback por processo. NÃO
-                // logamos nada aqui: seria recursão com o próprio sink.
-                $configured = null;
-            }
+        if (!class_exists('\WHMCS\Config\Setting')) {
+            return self::$key = null;
         }
 
         try {
-            return self::$key = $configured ?? bin2hex(random_bytes(32));
+            $value = \WHMCS\Config\Setting::getValue(self::KEY_SETTING);
         } catch (\Throwable) {
-            return self::$key = $configured ?? hash('sha256', __FILE__ . getmypid());
+            // Não logamos: seria recursão com o próprio sink.
+            return self::$key = null;
         }
+
+        return self::$key = self::isValidKey($value) ? $value : null;
     }
 
     /**
@@ -123,14 +183,107 @@ final class Diagnostics
 
         if ($e !== null) {
             $parts[] = 'exception=' . self::safeToken(get_class($e));
-            $parts[] = 'fingerprint=' . self::fingerprint($e->getMessage());
-        } elseif ($rawText !== null) {
-            $parts[] = 'fingerprint=' . self::fingerprint($rawText);
         }
 
-        error_log(implode(' ', $parts));
+        $fingerprint = $e !== null
+            ? self::fingerprint($e->getMessage())
+            : ($rawText !== null ? self::fingerprint($rawText) : null);
+
+        if ($fingerprint !== null) {
+            $parts[] = 'fingerprint=' . $fingerprint;
+        }
+
+        self::write($parts);
 
         return $correlationId;
+    }
+
+    /**
+     * Evento operacional SEM exceção — o substituto dos `error_log()` diretos.
+     *
+     * `$context` e `$detail` são shapes fechados. Nada de IP, header, path
+     * absoluto ou valor vindo da request consegue atravessar esta API.
+     *
+     * @param array{timeout_seconds?:int} $detail shape fechado
+     */
+    public static function event(string $category, string $context, array $detail = []): string
+    {
+        $correlationId = self::newCorrelationId();
+
+        $parts = [
+            '[NT-MCP]',
+            "[corr:{$correlationId}]",
+            'category=' . (in_array($category, self::EVENT_CATEGORIES, true) ? $category : self::CATEGORY_RUNTIME),
+            'context=' . (in_array($context, self::EVENT_CONTEXTS, true) ? $context : 'unknown_event'),
+        ];
+
+        foreach ($detail as $key => $value) {
+            if ($key === 'timeout_seconds' && is_int($value) && $value >= 0 && $value <= 3600) {
+                $parts[] = "timeout_seconds={$value}";
+            }
+        }
+
+        self::write($parts);
+
+        return $correlationId;
+    }
+
+    /**
+     * ÚNICO ponto do addon que escreve no `error_log`.
+     *
+     * Centralizado para que "a fronteira é única" seja verificável por
+     * varredura, e não uma afirmação. Os oito `error_log()` que existiam fora
+     * daqui incluíam dois com PII: o IP do cliente em `TlsEnforcer` e o path do
+     * arquivo de rate limit — que embute o IP — em `RateLimiter`.
+     *
+     * @param array<int, string> $parts
+     */
+    private static function write(array $parts): void
+    {
+        error_log(implode(' ', $parts));
+    }
+
+    /**
+     * Instala o handler de exceção não capturada.
+     *
+     * Precisa ser chamado logo após o autoload e ANTES do `init.php`: o
+     * bootstrap do WHMCS pode lançar (DB fora do ar, config corrompida) e, sem
+     * handler, a mensagem crua chega ao handler do PHP.
+     */
+    public static function installExceptionHandler(string $context): void
+    {
+        // Warnings/notices posteriores ao autoload também não voltam ao
+        // handler padrão do PHP. A mensagem serve apenas de entrada do HMAC;
+        // file/line são deliberadamente ignorados para não registrar paths.
+        set_error_handler(static function (int $severity, string $message) use ($context): bool {
+            if ((error_reporting() & $severity) === 0) {
+                return false; // mantém a semântica de @ sem produzir saída
+            }
+
+            self::log(null, self::CATEGORY_RUNTIME, $context, rawText: $message);
+
+            return true;
+        });
+
+        set_exception_handler(static function (\Throwable $e) use ($context): void {
+            $correlationId = self::report(self::CATEGORY_UNHANDLED, $context, $e);
+
+            if (!headers_sent()) {
+                http_response_code(500);
+                header('Content-Type: application/json');
+            }
+
+            // Só texto nosso e a correlação — nunca a mensagem da exceção.
+            echo json_encode([
+                'jsonrpc' => '2.0',
+                'error' => [
+                    'code' => -32603,
+                    'message' => 'Internal server error. Correlation id: ' . $correlationId,
+                ],
+                'id' => null,
+            ]);
+            exit;
+        });
     }
 
     /** Atalho para quem não tem correlação própria. */
@@ -150,7 +303,7 @@ final class Diagnostics
         ?string $correlationId,
         string $category,
         string $context,
-        string $causeFingerprint,
+        ?string $causeFingerprint,
         string $causeClass = '',
     ): string {
         $correlationId ??= self::newCorrelationId();
@@ -164,9 +317,11 @@ final class Diagnostics
         if ($causeClass !== '') {
             $parts[] = 'exception=' . self::safeToken($causeClass);
         }
-        $parts[] = 'fingerprint=' . self::safeToken($causeFingerprint);
+        if ($causeFingerprint !== null && $causeFingerprint !== '') {
+            $parts[] = 'fingerprint=' . self::safeToken($causeFingerprint);
+        }
 
-        error_log(implode(' ', $parts));
+        self::write($parts);
 
         return $correlationId;
     }

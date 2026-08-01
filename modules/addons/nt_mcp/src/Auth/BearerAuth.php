@@ -278,7 +278,7 @@ class BearerAuth
             Diagnostics::report(Diagnostics::CATEGORY_CONFIG_READ, 'nt_mcp_admin_user', $e);
         }
 
-        error_log('NT MCP BearerAuth: WARNING - No admin_user configured, denying (no fallback admin)');
+        Diagnostics::event(Diagnostics::CATEGORY_AUTH, 'admin_user_not_configured');
         return null;
     }
 

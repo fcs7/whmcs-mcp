@@ -7,12 +7,52 @@
  * Rate limiting, security headers, and audit logging applied at this layer.
  */
 
+// ---------------------------------------------------------------
+// 0. Silenciar a saída de erro ANTES de qualquer require.
+//
+// Isto precisa ser a primeira instrução do arquivo. Uma falha no próprio
+// autoload — ou no bootstrap do WHMCS — acontece antes de existir qualquer
+// classe do addon, portanto antes de existir handler estruturado. Com
+// `display_errors=1` herdado do ambiente, o PHP imprimiria mensagem e stack
+// trace completos na resposta HTTP, que foi exatamente o que a revisão
+// reproduziu.
+//
+// O log automático do PHP também fica desligado neste endpoint: em um fatal de
+// autoload/bootstrap ele gravaria mensagem, stack e paths crus antes que nossa
+// fronteira existisse. Eventos capturados continuam indo explicitamente pelo
+// `Diagnostics`, cujo `error_log()` independe desta diretiva.
+// ---------------------------------------------------------------
+@ini_set('display_errors', '0');
+@ini_set('display_startup_errors', '0');
+@ini_set('log_errors', '0');
+
+// Rede mínima para falha do PRÓPRIO autoload: não pode depender de nenhuma
+// classe do addon, porque elas ainda não existem.
+register_shutdown_function(static function (): void {
+    $fatal = error_get_last();
+    if ($fatal === null || !in_array($fatal['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
+        return;
+    }
+
+    if (!headers_sent()) {
+        http_response_code(500);
+        header('Content-Type: application/json');
+    }
+
+    // Texto fixo: nada de `$fatal['message']`, que carrega path e detalhe.
+    echo '{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal server error during bootstrap."},"id":null}';
+});
+
 // 1. Autoload do Composer PRIMEIRO — garante que psr/log v3 e demais
 //    PSR packages do addon sejam registrados antes do WHMCS carregar
 //    suas versões v1, evitando fatal "declaration compatibility" errors.
 require_once __DIR__ . '/vendor/autoload.php';
 
-// 2. Inicializar WHMCS (3 niveis: addons/nt_mcp -> modules -> whmcs root)
+// 2. Handler estruturado assim que as classes do addon existem — e ANTES do
+//    `init.php`, para cobrir também o bootstrap do WHMCS/DB.
+\NtMcp\Whmcs\Diagnostics::installExceptionHandler('mcp_endpoint');
+
+// 3. Inicializar WHMCS (3 niveis: addons/nt_mcp -> modules -> whmcs root)
 define('CLIENTAREA', true);
 require_once __DIR__ . '/../../../init.php';
 
@@ -24,36 +64,6 @@ use NtMcp\Http\IpAllowlist;
 use NtMcp\Security\RateLimiter;
 use NtMcp\Whmcs\Diagnostics;
 use NtMcp\Whmcs\SystemUrl;
-
-// ---------------------------------------------------------------
-// F2 — rede de segurança do endpoint.
-//
-// Tudo abaixo (TLS, CORS, allowlist, rate limit, auth, montagem do servidor)
-// roda ANTES do Processor do MCP, portanto fora do tratamento de erro do
-// adapter. Uma exceção aqui — falha de config, de DB, de bootstrap — chegaria
-// ao handler do PHP e, com `display_errors` ligado, imprimiria a mensagem crua
-// (DSN, credencial, path) direto na resposta HTTP.
-//
-// O catch devolve um erro estável e manda só classe + fingerprint ao log.
-// ---------------------------------------------------------------
-set_exception_handler(static function (\Throwable $e): void {
-    $correlationId = Diagnostics::report(Diagnostics::CATEGORY_UNHANDLED, 'mcp_endpoint', $e);
-
-    if (!headers_sent()) {
-        http_response_code(500);
-        header('Content-Type: application/json');
-    }
-
-    echo json_encode([
-        'jsonrpc' => '2.0',
-        'error' => [
-            'code' => -32603,
-            'message' => 'Internal server error. Correlation id: ' . $correlationId,
-        ],
-        'id' => null,
-    ]);
-    exit;
-});
 
 // SECURITY CONTROL (9.2 -- F13): TLS enforcement
 TlsEnforcer::enforce();

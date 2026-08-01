@@ -74,6 +74,8 @@ function nt_mcp_activate(): array
         \WHMCS\Config\Setting::setValue('nt_mcp_admin_user', 'admin');
     }
 
+    nt_mcp_provision_diagnostics_key();
+
     return [
         'status'      => 'success',
         'description' => 'NT MCP ativado. Bearer Token (copie agora, nao sera exibido novamente): ' . $token,
@@ -81,10 +83,61 @@ function nt_mcp_activate(): array
 }
 
 /**
+ * D10 — chave HMAC do fingerprint de diagnóstico, por instalação.
+ *
+ * Gera 32 bytes e persiste SOMENTE quando ausente. Qualquer valor existente,
+ * válido ou inválido, nunca é rotacionado em silêncio: uma chave inválida faz
+ * o runtime omitir fingerprint até reparo explícito.
+ *
+ * A chave não é devolvida nem exibida em lugar nenhum — diferente do bearer
+ * token, o operador não precisa dela; só o processo precisa. Dev e produção
+ * geram chaves distintas naturalmente, porque cada instalação ativa a sua.
+ *
+ * Se o RNG falhar, NÃO há fallback: o fingerprint simplesmente é omitido (ver
+ * `Diagnostics`). Derivar de path/PID/horário produziria um valor previsível,
+ * que é pior que não ter fingerprint nenhum.
+ */
+function nt_mcp_provision_diagnostics_key(?callable $generator = null): void
+{
+    try {
+        $existing = \WHMCS\Config\Setting::getValue(\NtMcp\Whmcs\Diagnostics::KEY_SETTING);
+    } catch (\Throwable) {
+        return; // sem config legível, não há o que provisionar
+    }
+
+    if ($existing !== null && $existing !== '') {
+        // Tanto a válida quanto a inválida são preservadas. A inválida faz o
+        // runtime omitir fingerprint; substituí-la silenciosamente seria uma
+        // rotação implícita, proibida por D10. Só ausência gera chave nova.
+        return;
+    }
+
+    try {
+        $key = $generator !== null
+            ? $generator()
+            : \NtMcp\Whmcs\Diagnostics::generateKey();
+
+        if (!\NtMcp\Whmcs\Diagnostics::isValidKey($key)) {
+            return;
+        }
+
+        \WHMCS\Config\Setting::setValue(
+            \NtMcp\Whmcs\Diagnostics::KEY_SETTING,
+            $key
+        );
+    } catch (\Throwable) {
+        // Falha de RNG ou de escrita não pode abortar a ativação. O efeito é
+        // apenas a omissão do fingerprint, que é o comportamento seguro.
+    }
+}
+
+/**
  * Executado na desativacao
  */
 function nt_mcp_deactivate(): array
 {
+    // A chave de diagnóstico NÃO é apagada aqui: desativar e reativar o addon
+    // não deve invalidar o agrupamento histórico de incidentes no log.
     \WHMCS\Config\Setting::setValue('nt_mcp_bearer_token', '');
     return ['status' => 'success', 'description' => 'NT MCP desativado.'];
 }
@@ -106,6 +159,10 @@ function nt_mcp_upgrade(array $vars): array
     if (is_file($registryCache)) {
         @unlink($registryCache);
     }
+
+    // D10: instalações que já existiam antes desta versão não têm a chave;
+    // provisiona no upgrade também. Chave válida existente é preservada.
+    nt_mcp_provision_diagnostics_key();
 
     if (!OAuthMigration::ensureTables()) {
         logActivity("NT MCP: FALHA na migracao de schema para versao {$version} — verifique o error log do PHP");

@@ -60,7 +60,8 @@ class QuoteTools
     }
 
     /**
-     * @param string $datecreated Filtro por data de criação. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY nao sao aceitos por serem ambiguos.
+     * @param string $datecreated  Filtro por data de criação. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY nao sao aceitos por serem ambiguos.
+     * @param string $lastmodified Filtro por data da última modificação. Mesmas formas aceitas de datecreated.
      */
     #[McpTool(name: 'whmcs_list_quotes', description: 'Lista orçamentos com filtros')]
     public function listQuotes(
@@ -79,7 +80,10 @@ class QuoteTools
         if ($subject !== '') $params['subject'] = $subject;
         if ($stage !== '') $params['stage'] = $stage;
         if ($datecreated !== '') $params['datecreated'] = DateNormalizer::toWhmcsDate($datecreated, 'datecreated');
-        if ($lastmodified !== '') $params['lastmodified'] = $lastmodified;
+        // `GetQuotes.lastmodified` também é documentado como `Y-m-d`. Passava
+        // cru, então uma forma localizada atravessava sem erro — D9 estava
+        // incompleta justamente no campo que ninguém olhou.
+        if ($lastmodified !== '') $params['lastmodified'] = DateNormalizer::toWhmcsDate($lastmodified, 'lastmodified');
         return json_encode($this->api->call('GetQuotes', $params), JSON_PRETTY_PRINT);
     }
 
@@ -117,6 +121,10 @@ class QuoteTools
         return json_encode($this->api->call('CreateQuote', $params), JSON_PRETTY_PRINT);
     }
 
+    /**
+     * @param string $validuntil  Validade do orçamento. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY nao sao aceitos por serem ambiguos.
+     * @param string $datecreated Data de criação. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY nao sao aceitos por serem ambiguos.
+     */
     #[McpTool(name: 'whmcs_update_quote', description: 'Atualiza campos de um orçamento existente; lineitems aceita description, quantity, unitprice, discount e taxable')]
     public function updateQuote(
         int $quoteid,
@@ -315,10 +323,19 @@ class QuoteTools
         }
 
         if (($convertResponse['result'] ?? '') === 'error') {
-            if (!isset($convertResponse['quoteid'])) {
-                $convertResponse['quoteid'] = $quoteid;
-            }
-            return json_encode($convertResponse, JSON_PRETTY_PRINT);
+            // M2: a chamada JÁ FOI FEITA. Um error-array não prova que nada
+            // aconteceu — só prova que o WHMCS respondeu com erro, e o efeito
+            // pode ter sido persistido antes da resposta. Devolver o erro puro
+            // dizia ao cliente "não houve efeito", que é a afirmação que não
+            // podemos fazer. Estado indeterminado, como no ramo de exceção.
+            return self::partialFailure(
+                $quoteid,
+                null,
+                'Quote conversion returned an error after the call was made. '
+                . 'The quote MAY have been accepted.',
+                causalCorrelationId: self::correlationFrom($convertResponse),
+                errorCode: is_string($convertResponse['error_code'] ?? null) ? $convertResponse['error_code'] : null,
+            );
         }
 
         $invoiceId = isset($convertResponse['invoiceid']) ? (int)$convertResponse['invoiceid'] : 0;
@@ -361,13 +378,16 @@ class QuoteTools
             }
 
             if (($invoiceResponse['result'] ?? '') === 'error') {
-                // Nada da resposta é ecoado. O `LocalApiClient` já substituiu o
-                // texto downstream por contrato estável e já registrou o
-                // fingerprint sob a própria correlação dele.
+                // Nada da resposta é ecoado, MAS a correlação causal é
+                // reaproveitada: gerar uma segunda desligava o payload do
+                // diagnóstico que a LocalAPI já havia emitido, e o operador
+                // ficava com dois identificadores sem ligação.
                 return self::partialFailure(
                     $quoteid,
                     $invoiceId,
-                    'Quote converted, but invoice update failed.'
+                    'Quote converted, but invoice update failed.',
+                    causalCorrelationId: self::correlationFrom($invoiceResponse),
+                    errorCode: is_string($invoiceResponse['error_code'] ?? null) ? $invoiceResponse['error_code'] : null,
                 );
             }
         }
@@ -394,11 +414,27 @@ class QuoteTools
      *
      * @param int|null $invoiceId null quando a fatura é desconhecida
      */
+    /**
+     * Extrai a correlação de uma resposta de erro da LocalAPI, se ela for
+     * sintaticamente válida. Só o formato canônico é aceito — nada vindo da
+     * resposta é usado sem validação.
+     */
+    private static function correlationFrom(mixed $response): ?string
+    {
+        $candidate = is_array($response) ? ($response['correlation_id'] ?? null) : null;
+
+        return is_string($candidate) && preg_match('/^[0-9a-f]{8}\z/', $candidate) === 1
+            ? $candidate
+            : null;
+    }
+
     private static function partialFailure(
         int $quoteid,
         ?int $invoiceId,
         string $message,
         ?\Throwable $detail = null,
+        ?string $causalCorrelationId = null,
+        ?string $errorCode = null,
     ): string {
         $payload = [
             'result' => 'error',
@@ -410,13 +446,20 @@ class QuoteTools
         }
         $payload['message'] = $message;
         $payload['warning'] = self::NO_RETRY_WARNING;
+        if ($errorCode !== null && preg_match('/^[a-z][a-z0-9_]{0,63}\z/', $errorCode) === 1) {
+            // Código do nosso enum (D6) — nunca texto do WHMCS.
+            $payload['error_code'] = $errorCode;
+        }
 
-        // A correlação da CAUSA é reaproveitada quando existe. Gerar uma nova
-        // desligava o payload do diagnóstico que a LocalAPI já havia emitido, e
-        // o operador ficava com dois identificadores sem ligação.
-        $causeCorrelation = $detail instanceof DownstreamFailureException && $detail->correlationId !== ''
-            ? $detail->correlationId
-            : null;
+        // A correlação da CAUSA é reaproveitada quando existe — tanto do ramo
+        // de exceção (wrapper) quanto do ramo de error-array (resposta da
+        // LocalAPI). Gerar uma nova desligava o payload do diagnóstico que a
+        // LocalAPI já havia emitido, e o operador ficava com dois
+        // identificadores sem ligação.
+        $causeCorrelation = $causalCorrelationId;
+        if ($causeCorrelation === null && $detail instanceof DownstreamFailureException && $detail->correlationId !== '') {
+            $causeCorrelation = $detail->correlationId;
+        }
 
         $correlationId = LocalApiClient::auditLog(
             "MCP PARTIAL convert_quote_to_invoice: {$message}",

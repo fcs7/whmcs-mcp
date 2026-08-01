@@ -38,11 +38,10 @@ namespace NtMcp\Whmcs;
  * sobreviva ao round-trip.
  *
  * A verificação é SEMPRE `toMySQLDate()` — o inverso documentado. Não existe
- * mais fallback heurístico. A tentativa anterior procurava ano, mês e dia como
- * inteiros em qualquer ordem no resultado, o que aceita `08/10/2026` como
- * conversão de `2026-08-10`: mesmos dígitos, data civil trocada (8 de outubro
- * em vez de 10 de agosto). Presença de dígitos não é validação. Sem o inverso
- * disponível, a operação falha.
+ * fallback heurístico: sem o inverso disponível, a operação FALHA, mesmo que a
+ * conversão esteja correta. (A tentativa descartada procurava ano, mês e dia
+ * como inteiros em qualquer ordem, o que aceitava `08/10/2026` como conversão
+ * de `2026-08-10` — mesmos dígitos, data civil trocada.)
  */
 class LocalizedDate
 {

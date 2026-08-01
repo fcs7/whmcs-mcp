@@ -97,6 +97,11 @@ if (!class_exists('\WHMCS\Config\Setting')) {
                 return static::$store[$key] ?? null;
             }
 
+            public static function setValue(string $key, mixed $value): void
+            {
+                static::$store[$key] = $value;
+            }
+
             public static function reset(): void
             {
                 static::$store = [];

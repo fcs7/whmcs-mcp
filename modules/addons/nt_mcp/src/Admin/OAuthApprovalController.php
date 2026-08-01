@@ -40,7 +40,7 @@ final class OAuthApprovalController
         }
 
         $requestId = $_GET['authorize'] ?? '';
-        if (!preg_match('/^[a-f0-9]{32}$/', $requestId)) {
+        if (!preg_match('/^[a-f0-9]{32}\z/', $requestId)) {
             echo '<div class="alert alert-danger">Request ID invalido.</div>';
             return;
         }

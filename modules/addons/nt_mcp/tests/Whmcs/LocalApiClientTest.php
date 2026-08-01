@@ -104,7 +104,18 @@ class LocalApiClientTest extends TestCase
             // dado estruturado.
             $this->assertNull($e->getPrevious());
             $this->assertSame(\RuntimeException::class, $e->causeClass);
-            $this->assertMatchesRegularExpression('/^[0-9a-f]{32}$/', $e->causeFingerprint);
+            // D10: sem chave provisionada o fingerprint é OMITIDO — nunca
+            // derivado de path/PID. Com chave, tem 128 bits.
+            $this->assertNull($e->causeFingerprint, 'sem chave, o fingerprint não pode existir');
+
+            \NtMcp\Whmcs\Diagnostics::setFingerprintKey(hash('sha256', 'nt-mcp local-api test diagnostics key'));
+            try {
+                $client->call('GetClients', []);
+            } catch (\NtMcp\Whmcs\DownstreamFailureException $keyed) {
+                $this->assertMatchesRegularExpression('/^[0-9a-f]{32}\z/', (string) $keyed->causeFingerprint);
+            } finally {
+                \NtMcp\Whmcs\Diagnostics::resetFingerprintKey();
+            }
             $this->assertMatchesRegularExpression('/^[0-9a-f]{8}$/', $e->correlationId);
             // E a estringificação completa também não carrega o texto.
             $this->assertStringNotContainsString('hunter', (string) $e);

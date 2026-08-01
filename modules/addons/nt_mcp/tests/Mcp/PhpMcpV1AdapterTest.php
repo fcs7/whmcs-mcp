@@ -398,10 +398,44 @@ class PhpMcpV1AdapterTest extends TestCase
         $this->assertSame('2026-08-10', $captured['UpdateProject']['duedate'], 'UpdateProject documenta Y-m-d');
     }
 
+    /** D9 completa: `lastmodified` atravessa a fronteira real do adapter. */
+    public function test_list_quotes_lastmodified_rejects_localized_and_normalizes_public_dates(): void
+    {
+        $captured = [];
+        $adapter = $this->makeCallableAdapter([], function (string $command, array $params) use (&$captured): array {
+            $captured[] = [$command, $params];
+
+            return ['result' => 'success', 'quotes' => ['quote' => []]];
+        });
+
+        $localized = $adapter->handle(
+            $this->toolsCallRequest(41, 'whmcs_list_quotes', ['lastmodified' => '10/08/2026']),
+            'client-lastmod-01',
+            'tools/call'
+        );
+        $this->assertTrue($this->callOutcome($localized, 41)['isError'] ?? false);
+        $this->assertSame([], $captured, 'data localizada não pode chegar ao GetQuotes');
+
+        $iso = $adapter->handle(
+            $this->toolsCallRequest(42, 'whmcs_list_quotes', ['lastmodified' => '2026-08-10T23:59:59-03:00']),
+            'client-lastmod-02',
+            'tools/call'
+        );
+        $this->assertFalse($this->callOutcome($iso, 42)['isError'] ?? true, $this->callText($iso, 42));
+        $this->assertSame('2026-08-10', $captured[0][1]['lastmodified'] ?? null);
+
+        $ymd = $adapter->handle(
+            $this->toolsCallRequest(43, 'whmcs_list_quotes', ['lastmodified' => '2026-08-11']),
+            'client-lastmod-03',
+            'tools/call'
+        );
+        $this->assertFalse($this->callOutcome($ymd, 43)['isError'] ?? true, $this->callText($ymd, 43));
+        $this->assertSame('2026-08-11', $captured[1][1]['lastmodified'] ?? null);
+    }
+
     /**
-     * `validuntil` aceita as três famílias pelo protocolo real. Seu schema é
-     * string livre (o nome não contém "date"), então a família localizada — a
-     * que a API oficial documenta — precisa continuar funcionando.
+     * `validuntil` aceita somente as duas famílias públicas não ambíguas pelo
+     * protocolo real. A forma localizada é recusada em teste separado.
      */
     #[\PHPUnit\Framework\Attributes\DataProvider('validUntilInputProvider')]
     public function test_validuntil_accepts_unambiguous_forms_on_create_and_update(string $input): void
@@ -759,6 +793,33 @@ class PhpMcpV1AdapterTest extends TestCase
         $this->assertTrue($payload['partial']);
         $this->assertStringContainsString('MAY have been accepted', $payload['message']);
         $this->assertStringContainsString('NÃO repetir', $payload['warning']);
+    }
+
+    /** M2: `result:error` de AcceptQuote continua indeterminado pós-efeito. */
+    public function test_accept_quote_error_array_returns_indeterminate_partial_via_adapter(): void
+    {
+        $adapter = $this->makeCallableAdapter(['financial' => true], static function (string $command): array {
+            if ($command === 'GetQuotes') {
+                return ['result' => 'success', 'quotes' => ['quote' => [['id' => 10, 'stage' => 'Delivered']]]];
+            }
+
+            return ['result' => 'error', 'message' => 'Quote Already Accepted'];
+        });
+
+        $messages = $adapter->handle(
+            $this->toolsCallRequest(51, 'whmcs_convert_quote_to_invoice', ['quoteid' => 10]),
+            'client-m2-error01',
+            'tools/call'
+        );
+
+        $payload = json_decode($this->callText($messages, 51), true);
+        $this->assertSame('error', $payload['result'] ?? null);
+        $this->assertTrue($payload['partial'] ?? false);
+        $this->assertSame(10, $payload['quoteid'] ?? null);
+        $this->assertArrayNotHasKey('invoiceid', $payload);
+        $this->assertStringContainsString('MAY have been accepted', $payload['message'] ?? '');
+        $this->assertStringContainsString('NÃO repetir', $payload['warning'] ?? '');
+        $this->assertMatchesRegularExpression('/^[0-9a-f]{8}\z/', $payload['correlation_id'] ?? '');
     }
 
     // ---------------------------------------------------------------

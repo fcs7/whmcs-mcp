@@ -48,10 +48,14 @@ class SinkLeakTest extends TestCase
         @mkdir($this->cacheDir, 0700, true);
         ActivityLogSpy::start();
         ErrorLogSpy::start();
+        // D10: sem chave provisionada o fingerprint é OMITIDO. Os testes que
+        // afirmam sobre fingerprint precisam de uma chave válida.
+        \NtMcp\Whmcs\Diagnostics::setFingerprintKey(hash('sha256', 'nt-mcp test diagnostics key A'));
     }
 
     protected function tearDown(): void
     {
+        \NtMcp\Whmcs\Diagnostics::resetFingerprintKey();
         ErrorLogSpy::stop();
         ActivityLogSpy::stop();
         foreach (glob($this->cacheDir . '/*') ?: [] as $f) {
@@ -125,6 +129,26 @@ class SinkLeakTest extends TestCase
         $this->assertNoSinkLeaked($payload);
         // O contrato estável sobrevive, com correlação.
         $this->assertStringContainsString('correlation_id', $payload);
+    }
+
+    /** D6 pelo adapter real: eco exato nunca ganha código semântico falso. */
+    public function test_exact_caller_input_echo_is_downstream_and_leaks_nowhere_via_adapter(): void
+    {
+        $echo = 'Email Address Already Exists';
+        $adapter = $this->adapter(static fn(): array => ['result' => 'error', 'message' => $echo]);
+
+        $payload = $this->callTool($adapter, 'whmcs_create_client', [
+            'firstname' => $echo,
+            'lastname' => 'Tester',
+            'email' => 'echo@example.test',
+            'password2' => 'safe-enough-value',
+        ], 'sink-echo-adapter');
+
+        $this->assertStringContainsString('downstream_error', $payload);
+        $this->assertStringContainsString('downstream', $payload);
+        $this->assertStringNotContainsString($echo, $payload);
+        $this->assertStringNotContainsString($echo, implode("\n", ActivityLogSpy::entries()));
+        $this->assertStringNotContainsString($echo, ErrorLogSpy::contents());
     }
 
     public function test_thrown_exception_with_secrets_leaks_nowhere(): void
@@ -413,6 +437,107 @@ class SinkLeakTest extends TestCase
         $this->assertNotSame($correlations[0], $correlations[1], 'correlações são por execução');
     }
 
+    /** Error-array de UpdateInvoice usa UMA correlação nos três sinks. */
+    public function test_update_invoice_error_array_reuses_one_causal_correlation_everywhere(): void
+    {
+        $adapter = $this->adapter(static function (string $command): array {
+            if ($command === 'GetQuotes') {
+                return ['result' => 'success', 'quotes' => ['quote' => [['id' => 10, 'stage' => 'Delivered']]]];
+            }
+            if ($command === 'AcceptQuote') {
+                return ['result' => 'success', 'invoiceid' => 99];
+            }
+
+            return ['result' => 'error', 'message' => 'Invalid Date Format'];
+        });
+
+        $payload = $this->callTool($adapter, 'whmcs_convert_quote_to_invoice', [
+            'quoteid' => 10,
+            'duedate' => '2026-08-10T00:00:00Z',
+        ], 'sink-one-correlation');
+
+        $this->assertSame(1, preg_match('/correlation_id\D{0,8}([0-9a-f]{8})/', $payload, $match));
+        $correlation = $match[1];
+
+        $updateError = ActivityLogSpy::matching('MCP API ERROR UpdateInvoice');
+        $partial = ActivityLogSpy::matching('MCP PARTIAL convert_quote_to_invoice');
+        $this->assertCount(1, $updateError);
+        $this->assertCount(1, $partial);
+        $this->assertStringContainsString("[corr:{$correlation}]", $updateError[0]);
+        $this->assertStringContainsString("[corr:{$correlation}]", $partial[0]);
+        $this->assertStringContainsString("[corr:{$correlation}]", ErrorLogSpy::contents());
+
+        preg_match_all('/\[corr:([0-9a-f]{8})\]/', implode("\n", [$updateError[0], $partial[0], ErrorLogSpy::contents()]), $all);
+        $this->assertSame([$correlation], array_values(array_unique($all[1])));
+    }
+
+    /** AcceptQuote error-array também liga causa e contrato parcial pelo mesmo ID. */
+    public function test_accept_quote_error_array_reuses_one_causal_correlation(): void
+    {
+        $adapter = $this->adapter(static function (string $command): array {
+            if ($command === 'GetQuotes') {
+                return ['result' => 'success', 'quotes' => ['quote' => [['id' => 10, 'stage' => 'Delivered']]]];
+            }
+
+            return ['result' => 'error', 'message' => 'Quote Already Accepted'];
+        });
+
+        $payload = $this->callTool(
+            $adapter,
+            'whmcs_convert_quote_to_invoice',
+            ['quoteid' => 10],
+            'sink-accept-correlation'
+        );
+        $this->assertSame(1, preg_match('/correlation_id\D{0,8}([0-9a-f]{8})/', $payload, $match));
+        $correlation = $match[1];
+
+        $acceptError = ActivityLogSpy::matching('MCP API ERROR AcceptQuote');
+        $partial = ActivityLogSpy::matching('MCP PARTIAL convert_quote_to_invoice');
+        $this->assertCount(1, $acceptError);
+        $this->assertCount(1, $partial);
+        $this->assertStringContainsString("[corr:{$correlation}]", $acceptError[0]);
+        $this->assertStringContainsString("[corr:{$correlation}]", $partial[0]);
+        $this->assertStringContainsString("[corr:{$correlation}]", ErrorLogSpy::contents());
+        $this->assertStringNotContainsString('invoiceid', $payload);
+    }
+
+    /** IP externo não aparece nem no Activity Log nem no diagnóstico. */
+    public function test_external_ip_is_absent_from_both_operational_sinks(): void
+    {
+        $previous = $_SERVER['REMOTE_ADDR'] ?? null;
+        $_SERVER['REMOTE_ADDR'] = '203.0.113.77';
+
+        try {
+            LocalApiClient::auditLog('MCP TEST', \NtMcp\Whmcs\AuditMetadata::none());
+            \NtMcp\Whmcs\Diagnostics::event(\NtMcp\Whmcs\Diagnostics::CATEGORY_TLS, 'allow_http_bypass');
+        } finally {
+            if ($previous === null) {
+                unset($_SERVER['REMOTE_ADDR']);
+            } else {
+                $_SERVER['REMOTE_ADDR'] = $previous;
+            }
+        }
+
+        $this->assertStringNotContainsString('203.0.113.77', implode("\n", ActivityLogSpy::entries()));
+        $this->assertStringNotContainsString('203.0.113.77', ErrorLogSpy::contents());
+    }
+
+    public function test_operational_event_rejects_arbitrary_category_context_and_detail(): void
+    {
+        \NtMcp\Whmcs\Diagnostics::event(
+            'tok_abcdef0123456789',
+            'hunter2SuperSecret',
+            ['sk_live_51H8yQ2eZvKYlo2C' => '4111111111111111']
+        );
+
+        $log = ErrorLogSpy::contents();
+        $this->assertStringContainsString('category=runtime_failure', $log);
+        $this->assertStringContainsString('context=unknown_event', $log);
+        foreach (['tok_abcdef0123456789', 'hunter2SuperSecret', 'sk_live_51H8yQ2eZvKYlo2C', '4111111111111111'] as $secret) {
+            $this->assertStringNotContainsString($secret, $log);
+        }
+    }
+
     /** Causas diferentes ⇒ fingerprints diferentes. */
     public function test_different_causes_yield_different_fingerprints(): void
     {
@@ -445,10 +570,10 @@ class SinkLeakTest extends TestCase
     /** HMAC de 128 bits — hash nu era oráculo de dicionário. */
     public function test_fingerprint_is_keyed_and_128_bits(): void
     {
-        \NtMcp\Whmcs\Diagnostics::setFingerprintKey('key-one');
+        \NtMcp\Whmcs\Diagnostics::setFingerprintKey(hash('sha256', 'nt-mcp test diagnostics key one'));
         $withKeyOne = \NtMcp\Whmcs\Diagnostics::fingerprint('Client Not Found');
 
-        \NtMcp\Whmcs\Diagnostics::setFingerprintKey('key-two');
+        \NtMcp\Whmcs\Diagnostics::setFingerprintKey(hash('sha256', 'nt-mcp test diagnostics key two'));
         $withKeyTwo = \NtMcp\Whmcs\Diagnostics::fingerprint('Client Not Found');
 
         $this->assertMatchesRegularExpression('/^[0-9a-f]{32}$/', $withKeyOne, '128 bits');
@@ -476,10 +601,13 @@ class SinkLeakTest extends TestCase
         ActivityLogSpy::failWith(new \RuntimeException(self::poisonedText()));
 
         try {
-            LocalApiClient::auditLog('MCP API call: AddClient', [
-                'password2' => self::SECRETS['senha'],
-                'tax_id' => self::SECRETS['cpf'],
-            ]);
+            LocalApiClient::auditLog(
+                'MCP API call: AddClient',
+                \NtMcp\Whmcs\AuditMetadata::forParams([
+                    'password2' => self::SECRETS['senha'],
+                    'tax_id' => self::SECRETS['cpf'],
+                ])
+            );
         } finally {
             ActivityLogSpy::failWith(null);
         }

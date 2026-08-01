@@ -56,6 +56,54 @@ class ErrorClassifierTest extends TestCase
         ];
     }
 
+    /** Cada padrão fechado continua classificável quando não é eco de input. */
+    #[DataProvider('allClassifierPatternsProvider')]
+    public function test_every_closed_pattern_classifies_without_echo(
+        string $command,
+        string $message,
+        string $expectedCode,
+        string $expectedCategory,
+    ): void {
+        $this->assertSame(
+            ['code' => $expectedCode, 'category' => $expectedCategory],
+            ErrorClassifier::classify($command, $message, ['unrelated' => 'safe'])
+        );
+    }
+
+    /** O mesmo texto, se veio do chamador, sempre cai em downstream. */
+    #[DataProvider('allClassifierPatternsProvider')]
+    public function test_exact_input_echo_for_every_closed_pattern_is_downstream(
+        string $command,
+        string $message,
+        string $_expectedCode,
+        string $_expectedCategory,
+    ): void {
+        $this->assertSame(
+            ['code' => 'downstream_error', 'category' => ErrorClassifier::DOWNSTREAM],
+            ErrorClassifier::classify($command, $message, ['nested' => ['caller_value' => $message]])
+        );
+    }
+
+    public static function allClassifierPatternsProvider(): array
+    {
+        $constant = (new \ReflectionClass(ErrorClassifier::class))->getReflectionConstant('PATTERNS');
+        $patterns = $constant?->getValue() ?? [];
+        $cases = [];
+
+        foreach ($patterns as $command => $entries) {
+            foreach ($entries as $index => [$pattern, $code, $category]) {
+                // A tabela aceita somente frases literais entre /^ e \z/.
+                if (preg_match('/^\/\^(.*)\\\\z\/$/', $pattern, $match) !== 1) {
+                    throw new \LogicException("Classifier pattern is not a closed literal: {$pattern}");
+                }
+                $message = $match[1];
+                $cases["{$command}-{$index}-{$code}"] = [$command === '*' ? 'GetStats' : $command, $message, $code, $category];
+            }
+        }
+
+        return $cases;
+    }
+
     /** Comandos distintos produzem códigos distintos para o mesmo cenário. */
     public function test_distinct_commands_produce_distinct_codes(): void
     {

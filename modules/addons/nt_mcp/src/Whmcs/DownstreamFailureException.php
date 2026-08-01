@@ -12,9 +12,8 @@ namespace NtMcp\Whmcs;
  * CPF/CNPJ, PAN, caminho interno ou fragmento de SQL.
  *
  * A mensagem desta exceção é escrita por nós e carrega apenas o comando e a
- * correlação; a original fica acessível como `getPrevious()` para código
- * interno, mas nunca é serializada para fora nem para o log — de onde só sai
- * classe e fingerprint (ver `Diagnostics`).
+ * correlação. A causa NÃO é encadeada em `getPrevious()` — ver a nota do
+ * construtor. Do incidente só saem correlação, classe e fingerprint.
  */
 class DownstreamFailureException extends \RuntimeException
 {
@@ -36,7 +35,7 @@ class DownstreamFailureException extends \RuntimeException
     public function __construct(
         string $message,
         public readonly string $correlationId = '',
-        public readonly string $causeFingerprint = 'none',
+        public readonly ?string $causeFingerprint = null,
         public readonly string $causeClass = '',
     ) {
         parent::__construct($message);

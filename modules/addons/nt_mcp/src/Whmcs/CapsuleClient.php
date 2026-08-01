@@ -170,7 +170,7 @@ class CapsuleClient
     private static function auditConfig(string $message, ?\Throwable $e = null): void
     {
         $correlationId = Diagnostics::report(Diagnostics::CATEGORY_CONFIG_READ, 'nt_mcp_config', $e);
-        LocalApiClient::auditLog($message, [], $correlationId);
+        LocalApiClient::auditLog($message, null, $correlationId);
     }
 
     /**
@@ -227,7 +227,7 @@ class CapsuleClient
         // SECURITY FIX (F8): Audit log for DB reads
         LocalApiClient::auditLog(
             "MCP DB SELECT: {$table}",
-            AuditMetadata::forTable($where) + ['limit' => $limit, 'offset' => $offset]
+            AuditMetadata::forTable($where, [], ['limit' => $limit, 'offset' => $offset])
         );
 
         $query = Capsule::table($table)->select($columns);
@@ -330,7 +330,7 @@ class CapsuleClient
         try {
             $affected = $operation();
         } catch (\Throwable $e) {
-            LocalApiClient::auditLog("MCP DB {$verb} EXCEPTION: {$table}", [], $correlationId);
+            LocalApiClient::auditLog("MCP DB {$verb} EXCEPTION: {$table}", null, $correlationId);
             // F2: a mensagem do driver pode carregar credencial de conexão,
             // fragmento de SQL e valores da linha. Só classe e fingerprint saem.
             Diagnostics::log($correlationId, Diagnostics::CATEGORY_DB_EXCEPTION, "{$verb}_{$table}", $e);
@@ -344,7 +344,7 @@ class CapsuleClient
             );
         }
 
-        LocalApiClient::auditLog("MCP DB {$verb} OK: {$table} (rows: {$affected})", [], $correlationId);
+        LocalApiClient::auditLog("MCP DB {$verb} OK: {$table} (rows: {$affected})", null, $correlationId);
 
         return $affected;
     }

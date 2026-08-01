@@ -29,6 +29,37 @@ namespace NtMcp\Whmcs;
 final class AuditMetadata
 {
     /**
+     * VALUE OBJECT — a barreira do D7 é o TIPO, não uma validação.
+     *
+     * A revisão provou que a barreira anterior não era fail-closed:
+     * `auditLog('...', ['raw' => 'tok_abcdef0123456789'])` gravava o token,
+     * porque `sanitizeMetadata()` preservava qualquer string que casasse
+     * `[A-Za-z0-9_]{1,64}` — que é exatamente a sintaxe de um token. E o
+     * segredo podia vir também como NOME de chave.
+     *
+     * Agora `auditLog()` só aceita instâncias desta classe, e só existe um
+     * caminho para criá-las: os construtores estáticos abaixo, que derivam
+     * tudo de allowlist. Passar um array arbitrário deixou de ser possível
+     * por construção.
+     *
+     * @param array<string, mixed> $shape já validado pelos construtores
+     */
+    private function __construct(private readonly array $shape)
+    {
+    }
+
+    /** @return array<string, mixed> */
+    public function toArray(): array
+    {
+        return $this->shape;
+    }
+
+    public static function none(): self
+    {
+        return new self([]);
+    }
+
+    /**
      * Campos cujo NOME pode ser registrado. Curada a partir dos parâmetros que
      * as 64 tools realmente enviam. Um campo novo aparece como
      * `unknown_fields` até ser adicionado aqui conscientemente.
@@ -69,11 +100,33 @@ final class AuditMetadata
     /** Campos de coleção: registra-se o tamanho, nunca o conteúdo. */
     private const COUNT_FIELDS = ['lineitems', 'customfields', 'ticketids'];
 
+    // Consultas de allowlist usadas pelo render final do Activity Log.
+    public static function isKnownField(string $name): bool
+    {
+        return in_array($name, self::KNOWN_FIELDS, true);
+    }
+
+    public static function isIdField(string $name): bool
+    {
+        return in_array($name, self::ID_FIELDS, true);
+    }
+
+    public static function isFlagField(string $name): bool
+    {
+        return in_array($name, self::FLAG_FIELDS, true);
+    }
+
+    /** @param array<string, mixed> $params */
+    public static function forParams(array $params): self
+    {
+        return new self(self::shapeFromParams($params));
+    }
+
     /**
      * @param array<string, mixed> $params
      * @return array<string, mixed> metadados seguros
      */
-    public static function forParams(array $params): array
+    private static function shapeFromParams(array $params): array
     {
         $ids = [];
         $flags = [];
@@ -138,25 +191,32 @@ final class AuditMetadata
      * @param array<string, mixed> $where
      * @param array<string, mixed> $data
      */
-    public static function forTable(array $where = [], array $data = []): array
+    public static function forTable(array $where = [], array $data = [], array $extra = []): self
     {
         $metadata = [];
 
-        $whereMeta = self::forParams($where);
+        $whereMeta = self::shapeFromParams($where);
         if ($whereMeta !== []) {
             $metadata['where'] = $whereMeta;
         }
 
-        $dataMeta = self::forParams($data);
+        $dataMeta = self::shapeFromParams($data);
         if ($dataMeta !== []) {
             $metadata['data'] = $dataMeta;
         }
 
-        return $metadata;
+        // `limit`/`offset` são os únicos escalares de topo, e só como inteiro.
+        foreach (['limit', 'offset'] as $key) {
+            if (isset($extra[$key]) && is_int($extra[$key])) {
+                $metadata[$key] = $extra[$key];
+            }
+        }
+
+        return new self($metadata);
     }
 
     /** Apenas identificadores conhecidos, para logs curtos. */
-    public static function ids(array $ids): array
+    public static function ids(array $ids): self
     {
         $safe = [];
         foreach ($ids as $name => $value) {
@@ -166,12 +226,17 @@ final class AuditMetadata
         }
         ksort($safe);
 
-        return $safe === [] ? [] : ['ids' => $safe];
+        return new self($safe === [] ? [] : ['ids' => $safe]);
     }
 
+    /**
+     * `\z` e não `$`: em PCRE `$` casa antes de um `\n` final, então `"42\n"`
+     * virava o inteiro 42 — o sufixo não vazava, mas desmentia a afirmação de
+     * que todos os padrões usam fim absoluto.
+     */
     private static function isIntish(mixed $value): bool
     {
-        return is_int($value) || (is_string($value) && preg_match('/^-?\d{1,18}$/', $value) === 1);
+        return is_int($value) || (is_string($value) && preg_match('/^-?\d{1,18}\z/', $value) === 1);
     }
 
     private static function isBoolish(mixed $value): bool
