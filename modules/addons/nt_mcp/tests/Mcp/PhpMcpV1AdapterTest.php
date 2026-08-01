@@ -22,6 +22,7 @@ class PhpMcpV1AdapterTest extends TestCase
 
     protected function setUp(): void
     {
+        \NtMcp\Tests\Support\WhmcsDateFormat::reset();
         $this->baseDir = dirname(__DIR__, 2) . '/src'; // .../nt_mcp/src (tem Tools/)
         $this->cacheDir = sys_get_temp_dir() . '/nt_mcp_adapter_test_' . bin2hex(random_bytes(6));
         @mkdir($this->cacheDir, 0700, true);
@@ -29,6 +30,7 @@ class PhpMcpV1AdapterTest extends TestCase
 
     protected function tearDown(): void
     {
+        \NtMcp\Tests\Support\WhmcsDateFormat::reset();
         foreach (glob($this->cacheDir . '/*') ?: [] as $f) {
             @unlink($f);
         }
@@ -48,6 +50,10 @@ class PhpMcpV1AdapterTest extends TestCase
         $api = new LocalApiClient('testadmin');
         $api->setGates($gates);
         $api->setCallable($cb);
+        // Comandos de Project Manager / To-Do passam pelo clamp de impersonação,
+        // que resolve o admin id no banco; sem WHMCS, o resolver injetado evita
+        // que a rota morra antes de exercitar o que o teste quer provar.
+        $api->setAdminIdResolver(static fn(string $username): int => 7);
 
         return new PhpMcpV1Adapter($api, new CapsuleClient(), $this->baseDir, $this->cacheDir);
     }
@@ -319,6 +325,7 @@ class PhpMcpV1AdapterTest extends TestCase
                 'stage' => 'Draft',
                 'proposal' => 'P',
                 'datecreated' => '2026-08-10T00:00:00Z',
+                'validuntil' => '2026-08-20',
             ]),
             'client-m1-date001',
             'tools/call'
@@ -327,10 +334,12 @@ class PhpMcpV1AdapterTest extends TestCase
         $outcome = $this->callOutcome($messages, 1);
         $this->assertArrayNotHasKey('jsonrpc_error', $outcome, 'o schema publicado deve aceitar date-time');
         $this->assertFalse($outcome['isError'] ?? true, $this->callText($messages, 1));
-        $this->assertSame('2026-08-10', $captured['CreateQuote']['datecreated'], 'WHMCS exige Y-m-d');
+        // CreateQuote documenta "localised format (eg DD/MM/YYYY)", NÃO Y-m-d.
+        $this->assertSame('10/08/2026', $captured['CreateQuote']['datecreated']);
+        $this->assertSame('20/08/2026', $captured['CreateQuote']['validuntil']);
     }
 
-    /** Mesmo contrato numa tool READ, sem depender de gate de escrita. */
+    /** GetActivityLog também documenta formato localizado. */
     public function test_date_time_value_is_accepted_end_to_end_on_a_read_tool(): void
     {
         $captured = [];
@@ -346,7 +355,120 @@ class PhpMcpV1AdapterTest extends TestCase
         );
 
         $this->assertFalse($this->callOutcome($messages, 1)['isError'] ?? true, $this->callText($messages, 1));
-        $this->assertSame('2026-08-10', $captured['GetActivityLog']['date']);
+        $this->assertSame('10/08/2026', $captured['GetActivityLog']['date']);
+    }
+
+    /**
+     * As seis rotas que a API documenta como `Y-m-d` NÃO podem ser localizadas.
+     * `UpdateInvoice.duedate` é a que carrega efeito financeiro.
+     */
+    public function test_ymd_routes_keep_ymd_downstream(): void
+    {
+        $captured = [];
+        $adapter = $this->makeCallableAdapter(['financial' => true, 'write' => true], function (string $cmd, array $params) use (&$captured) {
+            $captured[$cmd] = $params;
+            if ($cmd === 'GetQuotes') {
+                return ['result' => 'success', 'quotes' => ['quote' => [['id' => 10, 'stage' => 'Delivered']]]];
+            }
+            return ['result' => 'success', 'invoiceid' => 99];
+        });
+
+        $adapter->handle(
+            $this->toolsCallRequest(1, 'whmcs_convert_quote_to_invoice', [
+                'quoteid' => 10,
+                'duedate' => '2026-08-10T00:00:00Z',
+            ]),
+            'client-m1-ymd0001',
+            'tools/call'
+        );
+        $this->assertSame('2026-08-10', $captured['UpdateInvoice']['duedate'], 'UpdateInvoice documenta YYYY-mm-dd');
+
+        $adapter->handle(
+            $this->toolsCallRequest(2, 'whmcs_list_quotes', ['datecreated' => '2026-08-10T00:00:00Z']),
+            'client-m1-ymd0002',
+            'tools/call'
+        );
+        $this->assertSame('2026-08-10', $captured['GetQuotes']['datecreated'], 'GetQuotes documenta Y-m-d');
+
+        $adapter->handle(
+            $this->toolsCallRequest(3, 'whmcs_update_project', ['projectid' => 1, 'duedate' => '2026-08-10T00:00:00Z']),
+            'client-m1-ymd0003',
+            'tools/call'
+        );
+        $this->assertSame('2026-08-10', $captured['UpdateProject']['duedate'], 'UpdateProject documenta Y-m-d');
+    }
+
+    /** A configuração de data da instalação é respeitada, sem hardcode. */
+    public function test_localised_route_follows_the_installation_date_format(): void
+    {
+        \NtMcp\Tests\Support\WhmcsDateFormat::$phpFormat = 'm/d/Y'; // MM/DD/YYYY
+
+        $captured = [];
+        $adapter = $this->makeCallableAdapter([], function (string $cmd, array $params) use (&$captured) {
+            $captured[$cmd] = $params;
+            return ['result' => 'success'];
+        });
+
+        $adapter->handle(
+            $this->toolsCallRequest(1, 'whmcs_get_activity_log', ['date' => '2026-08-10T00:00:00Z']),
+            'client-m1-fmt00001',
+            'tools/call'
+        );
+
+        $this->assertSame('08/10/2026', $captured['GetActivityLog']['date']);
+    }
+
+    /** Localização quebrada falha FECHADO — nada chega à LocalAPI. */
+    public function test_broken_localisation_fails_closed_before_localapi(): void
+    {
+        foreach ([
+            \NtMcp\Tests\Support\WhmcsDateFormat::MODE_THROW,
+            \NtMcp\Tests\Support\WhmcsDateFormat::MODE_EMPTY,
+            \NtMcp\Tests\Support\WhmcsDateFormat::MODE_WRONG_DATE,
+            \NtMcp\Tests\Support\WhmcsDateFormat::MODE_TWO_DIGIT_YEAR,
+        ] as $i => $mode) {
+            \NtMcp\Tests\Support\WhmcsDateFormat::reset();
+            \NtMcp\Tests\Support\WhmcsDateFormat::$mode = $mode;
+
+            $called = false;
+            $adapter = $this->makeCallableAdapter([], function () use (&$called) {
+                $called = true;
+                return ['result' => 'success'];
+            });
+
+            $messages = $adapter->handle(
+                $this->toolsCallRequest(1, 'whmcs_get_activity_log', ['date' => '2026-08-10T00:00:00Z']),
+                'client-m1-fail' . str_pad((string) $i, 4, '0'),
+                'tools/call'
+            );
+
+            $this->assertTrue($this->callOutcome($messages, 1)['isError'] ?? false, "modo {$mode} deveria falhar");
+            $this->assertFalse($called, "modo {$mode} não pode alcançar a LocalAPI");
+        }
+    }
+
+    /**
+     * Timezone: preservamos a DATA CIVIL escrita, sem deslocar o dia por offset.
+     * Os dois casos abaixo mudariam de dia se convertêssemos para UTC.
+     */
+    public function test_offsets_near_midnight_preserve_the_written_civil_date(): void
+    {
+        $captured = [];
+        $adapter = $this->makeCallableAdapter([], function (string $cmd, array $params) use (&$captured) {
+            $captured[] = $params['datecreated'] ?? null;
+            return ['result' => 'success'];
+        });
+
+        // 23:30-03:00 seria 2026-08-11 em UTC; 00:30+05:00 seria 2026-08-09.
+        foreach (['2026-08-10T23:30:00-03:00', '2026-08-10T00:30:00+05:00'] as $i => $iso) {
+            $adapter->handle(
+                $this->toolsCallRequest(1, 'whmcs_list_quotes', ['datecreated' => $iso]),
+                'client-m1-tz' . str_pad((string) $i, 6, '0'),
+                'tools/call'
+            );
+        }
+
+        $this->assertSame(['2026-08-10', '2026-08-10'], $captured);
     }
 
     /** Toda tool que publica format=date-time aceita o valor date-time. */
@@ -494,8 +616,52 @@ class PhpMcpV1AdapterTest extends TestCase
 
         $this->assertTrue($this->callOutcome($messages, 1)['isError'] ?? false);
         // Sem WHMCS bootstrapado a introspecção é indisponível ⇒ fail-closed.
-        $this->assertStringContainsString('payment gateway', $this->callText($messages, 1));
+        $this->assertStringContainsString('gateway', $this->callText($messages, 1));
         $this->assertSame([], $calls, 'nenhum efeito pode ocorrer sem validar o gateway');
+    }
+
+    /**
+     * `duedate` saiu de `whmcs_update_todo_item`: o formato aceito pela API não
+     * pôde ser provado (doc diz `int`, a coluna é `date`, o parser é ionCube).
+     * A tool continua existindo e funcional para os demais campos.
+     */
+    public function test_update_todo_item_no_longer_publishes_duedate(): void
+    {
+        $adapter = $this->makeAdapter();
+        $messages = $adapter->handle($this->toolsListRequest(1), 'client-todo-00001', 'tools/list');
+
+        $tool = null;
+        foreach ($this->toolsFrom($messages, 1) ?? [] as $t) {
+            if (($t['name'] ?? '') === 'whmcs_update_todo_item') {
+                $tool = $t;
+            }
+        }
+
+        $this->assertNotNull($tool, 'a tool deve continuar registrada');
+        $properties = $tool['inputSchema']['properties'] ?? [];
+        $this->assertArrayNotHasKey('duedate', $properties);
+        foreach (['itemid', 'status', 'title', 'description'] as $kept) {
+            $this->assertArrayHasKey($kept, $properties, "{$kept} deveria continuar exposto");
+        }
+    }
+
+    public function test_update_todo_item_still_works_for_the_remaining_fields(): void
+    {
+        $captured = [];
+        $adapter = $this->makeCallableAdapter(['write' => true], function (string $cmd, array $params) use (&$captured) {
+            $captured[$cmd] = $params;
+            return ['result' => 'success'];
+        });
+
+        $messages = $adapter->handle(
+            $this->toolsCallRequest(1, 'whmcs_update_todo_item', ['itemid' => 5, 'status' => 'Completed']),
+            'client-todo-00002',
+            'tools/call'
+        );
+
+        $this->assertFalse($this->callOutcome($messages, 1)['isError'] ?? true, $this->callText($messages, 1));
+        $this->assertSame('Completed', $captured['UpdateToDoItem']['status']);
+        $this->assertArrayNotHasKey('duedate', $captured['UpdateToDoItem']);
     }
 
     // --- GC de clientes ociosos (raiz do storm queueMessageForAll) ---

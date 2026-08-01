@@ -106,6 +106,17 @@ class CrmTools
     public function addFollowup(int $contactId, string $note, string $duedate): string
     {
         $this->ensureCrmAvailable();
+        // DÍVIDA CONHECIDA (T1 segue ABERTO por causa disto): a introspecção do
+        // WHMCS de desenvolvimento provou que o addon CRM instalado é o mgCRM2 e
+        // que seu schema real é `crm_resources`/`crm_followups`/`crm_notes` — as
+        // tabelas `mod_mgcrm_*` usadas aqui NÃO existem, e `crm_followups` não
+        // tem coluna `duedate` (tem `resource_id`, `type_id`, `status_id`,
+        // `admin_id`, `description`, `date`). Este INSERT, portanto, não é
+        // funcional contra a instalação real.
+        //
+        // O comportamento é preservado EXATAMENTE como estava, por decisão de
+        // escopo: o realinhamento das 8 tools de CRM para o schema `crm_*` tem
+        // ticket próprio. Não trate esta linha como corrigida.
         $id = $this->capsule->insert(self::TABLE_FOLLOWUPS, [
             'contact_id' => $contactId,
             'note'       => $note,

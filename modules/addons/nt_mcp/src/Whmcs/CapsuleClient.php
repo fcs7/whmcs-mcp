@@ -4,6 +4,7 @@ namespace NtMcp\Whmcs;
 
 use WHMCS\Database\Capsule;
 
+
 class CapsuleClient
 {
     // ---------------------------------------------------------------
@@ -217,9 +218,14 @@ class CapsuleClient
         $this->assertColumnsAllowed($table, $data, self::ALLOWED_COLUMNS[$table]);
 
         // SECURITY FIX (F8): Audit log for DB writes
-        LocalApiClient::auditLog("MCP DB INSERT: {$table}", $data);
+        $correlationId = LocalApiClient::auditLog("MCP DB INSERT: {$table}", $data);
 
-        return Capsule::table($table)->insertGetId($data);
+        return $this->runWithOutcome(
+            'INSERT',
+            $table,
+            $correlationId,
+            static fn(): int => Capsule::table($table)->insertGetId($data)
+        );
     }
 
     public function update(string $table, array $where, array $data): int
@@ -230,16 +236,18 @@ class CapsuleClient
         $this->assertColumnsAllowed($table, $data, self::ALLOWED_COLUMNS[$table]);
 
         // SECURITY FIX (F8): Audit log for DB mutations
-        LocalApiClient::auditLog("MCP DB UPDATE: {$table}", [
+        $correlationId = LocalApiClient::auditLog("MCP DB UPDATE: {$table}", [
             'where' => $where,
             'data' => $data,
         ]);
 
-        $query = Capsule::table($table);
-        foreach ($where as $column => $value) {
-            $query->where($column, $value);
-        }
-        return $query->update($data);
+        return $this->runWithOutcome('UPDATE', $table, $correlationId, static function () use ($table, $where, $data): int {
+            $query = Capsule::table($table);
+            foreach ($where as $column => $value) {
+                $query->where($column, $value);
+            }
+            return $query->update($data);
+        });
     }
 
     public function delete(string $table, array $where): int
@@ -255,12 +263,47 @@ class CapsuleClient
         }
 
         // SECURITY FIX (F8): Audit log for DB deletions
-        LocalApiClient::auditLog("MCP DB DELETE: {$table}", ['where' => $where]);
+        $correlationId = LocalApiClient::auditLog("MCP DB DELETE: {$table}", ['where' => $where]);
 
-        $query = Capsule::table($table);
-        foreach ($where as $column => $value) {
-            $query->where($column, $value);
+        return $this->runWithOutcome('DELETE', $table, $correlationId, static function () use ($table, $where): int {
+            $query = Capsule::table($table);
+            foreach ($where as $column => $value) {
+                $query->where($column, $value);
+            }
+            return $query->delete();
+        });
+    }
+
+    /**
+     * m1.1: as três mutações registravam apenas o início. Agora toda mutação
+     * emite desfecho — OK com a contagem de linhas afetadas, ou EXCEPTION — sem
+     * repetir os dados (já gravados, redigidos, na linha de início) e sem levar
+     * a mensagem do driver ao Activity Log (F2: pode carregar credencial de
+     * conexão). O detalhe redigido vai só para o error_log.
+     *
+     * `protected` (e não `private`) apenas para permitir exercitar sucesso e
+     * exceção sem um WHMCS bootstrapado; o comportamento é idêntico.
+     *
+     * @param callable():int $operation
+     */
+    protected function runWithOutcome(string $verb, string $table, string $correlationId, callable $operation): int
+    {
+        try {
+            $affected = $operation();
+        } catch (\Throwable $e) {
+            LocalApiClient::auditLog("MCP DB {$verb} EXCEPTION: {$table}", [], $correlationId);
+            error_log(sprintf(
+                '[NT-MCP] [corr:%s] DB %s %s: %s',
+                $correlationId,
+                $verb,
+                $table,
+                TextRedactor::scrub($e->getMessage())
+            ));
+            throw $e;
         }
-        return $query->delete();
+
+        LocalApiClient::auditLog("MCP DB {$verb} OK: {$table} (rows: {$affected})", [], $correlationId);
+
+        return $affected;
     }
 }

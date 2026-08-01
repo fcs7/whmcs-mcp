@@ -5,22 +5,48 @@ namespace NtMcp\Tools;
 use NtMcp\Whmcs\AuthorizationException;
 use NtMcp\Whmcs\DateNormalizer;
 use NtMcp\Whmcs\LocalApiClient;
+use NtMcp\Whmcs\LocalizedDate;
 use NtMcp\Whmcs\PaymentGatewayDirectory;
+use NtMcp\Whmcs\TextRedactor;
 use PhpMcp\Server\Attributes\McpTool;
 
 class QuoteTools
 {
     private ?PaymentGatewayDirectory $gateways;
+    private ?LocalizedDate $localizedDate;
 
-    public function __construct(private readonly LocalApiClient $api, ?PaymentGatewayDirectory $gateways = null)
-    {
+    public function __construct(
+        private readonly LocalApiClient $api,
+        ?PaymentGatewayDirectory $gateways = null,
+        ?LocalizedDate $localizedDate = null,
+    ) {
         $this->gateways = $gateways;
+        $this->localizedDate = $localizedDate;
     }
 
     /** Introspecção read-only de gateways; instanciada sob demanda. */
     private function gateways(): PaymentGatewayDirectory
     {
         return $this->gateways ??= new PaymentGatewayDirectory();
+    }
+
+    private function localizedDate(): LocalizedDate
+    {
+        return $this->localizedDate ??= new LocalizedDate();
+    }
+
+    /**
+     * `CreateQuote`/`UpdateQuote` documentam `datecreated` e `validuntil` como
+     * "localised format (eg DD/MM/YYYY)" — ao contrário de `GetQuotes`, que
+     * documenta `Y-m-d`. Aceitamos ISO/`Y-m-d` do chamador, normalizamos e só
+     * então convertemos para o formato localizado efetivo da instalação.
+     */
+    private function toLocalized(string $value, string $field): string
+    {
+        return $this->localizedDate()->fromWhmcsDate(
+            DateNormalizer::toWhmcsDate($value, $field),
+            $field
+        );
     }
 
     #[McpTool(name: 'whmcs_list_quotes', description: 'Lista orçamentos com filtros')]
@@ -65,9 +91,9 @@ class QuoteTools
     ): string {
         $params = ['subject' => $subject, 'stage' => $stage, 'proposal' => $proposal];
         if ($userid > 0) $params['userid'] = $userid;
-        if ($validuntil !== '') $params['validuntil'] = $validuntil;
+        if ($validuntil !== '') $params['validuntil'] = $this->toLocalized($validuntil, 'validuntil');
         if ($currencyid > 0) $params['currency'] = $currencyid;
-        if ($datecreated !== '') $params['datecreated'] = DateNormalizer::toWhmcsDate($datecreated, 'datecreated');
+        if ($datecreated !== '') $params['datecreated'] = $this->toLocalized($datecreated, 'datecreated');
         if ($customernotes !== '') $params['customernotes'] = $customernotes;
         if ($adminnotes !== '') $params['adminnotes'] = $adminnotes;
         $this->addSerializedLineItems($params, $lineitems);
@@ -90,8 +116,8 @@ class QuoteTools
         if ($subject !== '') $params['subject'] = $subject;
         if ($stage !== '') $params['stage'] = $stage;
         if ($proposal !== '') $params['proposal'] = $proposal;
-        if ($validuntil !== '') $params['validuntil'] = $validuntil;
-        if ($datecreated !== '') $params['datecreated'] = DateNormalizer::toWhmcsDate($datecreated, 'datecreated');
+        if ($validuntil !== '') $params['validuntil'] = $this->toLocalized($validuntil, 'validuntil');
+        if ($datecreated !== '') $params['datecreated'] = $this->toLocalized($datecreated, 'datecreated');
         if ($customernotes !== '') $params['customernotes'] = $customernotes;
         if ($adminnotes !== '') $params['adminnotes'] = $adminnotes;
         $this->addSerializedLineItems($params, $lineitems);
@@ -147,16 +173,18 @@ class QuoteTools
             $newQuote['currency'] = $currency;
         }
 
+        // O destino é CreateQuote, que exige data LOCALIZADA — tanto no override
+        // explícito quanto no valor HERDADO de GetQuotes (que responde em Y-m-d).
+        // Ambos passam pela mesma ponte, senão a duplicação reintroduz o formato
+        // errado justamente pelo caminho que ninguém digita.
         $validUntilValue = $validuntil !== '' ? $validuntil : (string)($source['validuntil'] ?? '');
         if ($validUntilValue !== '') {
-            $newQuote['validuntil'] = $validUntilValue;
+            $newQuote['validuntil'] = $this->toLocalized($validUntilValue, 'validuntil');
         }
 
-        $dateCreatedValue = $datecreated !== ''
-            ? DateNormalizer::toWhmcsDate($datecreated, 'datecreated')
-            : (string)($source['datecreated'] ?? '');
+        $dateCreatedValue = $datecreated !== '' ? $datecreated : (string)($source['datecreated'] ?? '');
         if ($dateCreatedValue !== '') {
-            $newQuote['datecreated'] = $dateCreatedValue;
+            $newQuote['datecreated'] = $this->toLocalized($dateCreatedValue, 'datecreated');
         }
 
         $customerNotesValue = $customernotes !== '' ? $customernotes : (string)($source['customernotes'] ?? '');
@@ -208,10 +236,11 @@ class QuoteTools
             throw new \InvalidArgumentException('taxrate must be between 0 and 100');
         }
         if ($paymentmethod !== '') {
-            // Read-only e fail-closed: se a introspecção não estiver disponível,
-            // a RuntimeException sobe e NADA é convertido. `paymentmethod` é
-            // opcional, então recusar aqui nunca impede a conversão simples.
-            $this->gateways()->assertConfigured($paymentmethod, 'paymentmethod');
+            // Read-only e fail-closed: se a introspecção não estiver disponível
+            // ou for inválida, a exceção sobe e NADA é convertido. O retorno é o
+            // system name EXATO do banco — só ele segue para o UpdateInvoice, e
+            // nunca a capitalização que o chamador digitou.
+            $paymentmethod = $this->gateways()->resolve($paymentmethod, 'paymentmethod');
         }
 
         // --- Guarda de repetição: leitura do estado atual (READ) antes de mutar. ---
@@ -253,11 +282,15 @@ class QuoteTools
         } catch (AuthorizationException $e) {
             throw $e; // negado antes de qualquer efeito: não é parcial
         } catch (\Throwable $e) {
+            // F2: a mensagem da exceção NÃO entra no payload MCP nem no Activity
+            // Log — ela é texto arbitrário e pode carregar o input ecoado. O
+            // contrato parcial preserva flag, IDs e aviso; o detalhe redigido
+            // fica no error_log, correlacionado.
             return self::partialFailure(
                 $quoteid,
                 null,
-                'Quote conversion failed in an indeterminate state: ' . $e->getMessage()
-                . '. The quote MAY have been accepted.'
+                'Quote conversion failed in an indeterminate state. The quote MAY have been accepted.',
+                detail: $e->getMessage()
             );
         }
 
@@ -302,16 +335,19 @@ class QuoteTools
                 return self::partialFailure(
                     $quoteid,
                     $invoiceId,
-                    'Quote converted, but invoice update failed: ' . $e->getMessage()
+                    'Quote converted, but invoice update failed.',
+                    detail: $e->getMessage()
                 );
             }
 
             if (($invoiceResponse['result'] ?? '') === 'error') {
+                // O array de resposta do WHMCS NÃO é ecoado: `invoice_update`
+                // levava a mensagem downstream crua para dentro do payload MCP.
                 return self::partialFailure(
                     $quoteid,
                     $invoiceId,
-                    'Quote converted, but invoice update failed: ' . ($invoiceResponse['message'] ?? 'Unknown error'),
-                    ['invoice_update' => $invoiceResponse]
+                    'Quote converted, but invoice update failed.',
+                    detail: (string) ($invoiceResponse['message'] ?? 'Unknown error')
                 );
             }
         }
@@ -332,11 +368,18 @@ class QuoteTools
      * Toda rota pós-efeito passa por aqui para que nenhuma delas perca
      * `partial`, os IDs conhecidos ou o aviso de não-retry.
      *
-     * @param int|null            $invoiceId null quando a fatura é desconhecida
-     * @param array<string,mixed> $extra
+     * `$message` é SEMPRE texto estável escrito aqui. `$detail` é o texto
+     * downstream (WHMCS, hook, exceção) e nunca entra no payload MCP nem no
+     * Activity Log — vai redigido para o error_log, ligado pela correlação.
+     *
+     * @param int|null $invoiceId null quando a fatura é desconhecida
      */
-    private static function partialFailure(int $quoteid, ?int $invoiceId, string $message, array $extra = []): string
-    {
+    private static function partialFailure(
+        int $quoteid,
+        ?int $invoiceId,
+        string $message,
+        string $detail = '',
+    ): string {
         $payload = [
             'result' => 'error',
             'partial' => true,
@@ -348,12 +391,21 @@ class QuoteTools
         $payload['message'] = $message;
         $payload['warning'] = self::NO_RETRY_WARNING;
 
-        LocalApiClient::auditLog(
+        $correlationId = LocalApiClient::auditLog(
             "MCP PARTIAL convert_quote_to_invoice: {$message}",
             ['quoteid' => $quoteid, 'invoiceid' => $invoiceId]
         );
+        $payload['correlation_id'] = $correlationId;
 
-        return json_encode($payload + $extra, JSON_PRETTY_PRINT);
+        if ($detail !== '') {
+            error_log(sprintf(
+                '[NT-MCP] [corr:%s] convert_quote_to_invoice partial detail: %s',
+                $correlationId,
+                TextRedactor::scrub($detail)
+            ));
+        }
+
+        return json_encode($payload, JSON_PRETTY_PRINT);
     }
 
     /**

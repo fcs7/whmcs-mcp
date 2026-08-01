@@ -24,10 +24,26 @@ namespace NtMcp\Whmcs;
  *
  * A SDK v1 não permite schema customizado em `#[McpTool]`, e reescrever o
  * registry é escopo do T2. A correção mínima e segura vive aqui: ACEITAR ambas
- * as formas e NORMALIZAR para o `Y-m-d` que o WHMCS espera. Assim o valor
- * date-time (o único que o schema publicado admite) funciona ponta a ponta, e o
- * `Y-m-d` continua válido para chamadas diretas e para o dia em que o schema for
- * corrigido no T2.
+ * as formas e NORMALIZAR para `Y-m-d`. Assim o valor date-time (o único que o
+ * schema publicado admite) funciona ponta a ponta, e o `Y-m-d` continua válido
+ * para chamadas diretas e para o dia em que o schema for corrigido no T2.
+ *
+ * `Y-m-d` NÃO é o formato de todas as rotas
+ * -----------------------------------------
+ * Esta classe produz a forma CANÔNICA intermediária. Só as rotas cuja API
+ * documenta "Format: Y-m-d" recebem esta saída diretamente — `GetQuotes`,
+ * `UpdateInvoice` e as quatro de Project Manager. As rotas documentadas como
+ * "localised format" (`CreateQuote`/`UpdateQuote` e `GetActivityLog`) passam
+ * ainda por `LocalizedDate`, que aplica a configuração da instalação.
+ *
+ * Timezone: preservamos a DATA CIVIL escrita pelo chamador
+ * -------------------------------------------------------
+ * De `2026-08-10T23:30:00-03:00` extraímos `2026-08-10` — a data como escrita,
+ * sem converter para UTC nem para o fuso do servidor. Todos os campos aqui são
+ * datas simples (sem hora) tanto na API quanto na coluna do banco; deslocar o
+ * dia por causa de um offset produziria uma data que o usuário não pediu, e o
+ * resultado dependeria do fuso do processo. A regra é determinística e
+ * independente de ambiente.
  */
 final class DateNormalizer
 {

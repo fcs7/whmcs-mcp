@@ -11,6 +11,16 @@ use PHPUnit\Framework\TestCase;
 
 class QuoteToolsTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        \NtMcp\Tests\Support\WhmcsDateFormat::reset();
+    }
+
+    protected function tearDown(): void
+    {
+        \NtMcp\Tests\Support\WhmcsDateFormat::reset();
+    }
+
     /**
      * Os gates nascem DESLIGADOS. Cada teste declara a classe de efeito que
      * exercita: WRITE para criar/atualizar/duplicar, FINANCIAL para a conversão
@@ -198,8 +208,10 @@ class QuoteToolsTest extends TestCase
         $this->assertSame('Original proposal', $createParams['proposal']);
         $this->assertSame('Customer note', $createParams['customernotes']);
         $this->assertSame('New admin note', $createParams['adminnotes']);
-        $this->assertSame('2026-08-01', $createParams['validuntil']);
-        $this->assertSame('2026-07-01', $createParams['datecreated']);
+        // CreateQuote exige data LOCALIZADA — inclusive nos valores HERDADOS de
+        // GetQuotes, que responde em Y-m-d. O stub usa DD/MM/YYYY.
+        $this->assertSame('01/08/2026', $createParams['validuntil']);
+        $this->assertSame('01/07/2026', $createParams['datecreated']);
         $this->assertSame(1, $createParams['currency']);
 
         $lineitems = unserialize(base64_decode($createParams['lineitems']));
@@ -337,7 +349,10 @@ class QuoteToolsTest extends TestCase
         $this->assertSame(99, $result['invoiceid']);
         $this->assertStringContainsString('Quote converted, but invoice update failed', $result['message']);
         $this->assertStringContainsString('NÃO repetir', $result['warning']);
-        $this->assertSame('Invalid payment method', $result['invoice_update']['message']);
+        // F2: a mensagem downstream do WHMCS não é mais ecoada no payload MCP.
+        $this->assertArrayNotHasKey('invoice_update', $result);
+        $this->assertStringNotContainsString('Invalid payment method', json_encode($result));
+        $this->assertNotEmpty($result['correlation_id']);
     }
 
     // ---------------------------------------------------------------
@@ -364,7 +379,9 @@ class QuoteToolsTest extends TestCase
         $this->assertTrue($result['partial']);
         $this->assertSame(10, $result['quoteid']);
         $this->assertSame(99, $result['invoiceid']);
-        $this->assertStringContainsString('transport exploded', $result['message']);
+        // F2: texto de exceção downstream não vai para o payload MCP.
+        $this->assertStringNotContainsString('transport exploded', json_encode($result));
+        $this->assertStringContainsString('Quote converted, but invoice update failed', $result['message']);
         $this->assertStringContainsString('NÃO repetir', $result['warning']);
     }
 
@@ -453,20 +470,62 @@ class QuoteToolsTest extends TestCase
         $this->assertSame([], $calls, 'nenhum efeito — nem o preflight GetQuotes — pode ter ocorrido');
     }
 
-    public function test_convert_accepts_configured_gateway_case_insensitively(): void
+    /**
+     * F3: casar case-insensitive é permitido, mas o que segue para o
+     * `UpdateInvoice` tem de ser o system name EXATO do banco — nunca a
+     * capitalização digitada pelo chamador.
+     */
+    public function test_convert_forwards_the_canonical_gateway_not_the_typed_one(): void
     {
         $calls = [];
-        $tools = $this->makeConverter(function (string $cmd) use (&$calls) {
-            $calls[] = $cmd;
+        $tools = $this->makeConverter(function (string $cmd, array $params) use (&$calls) {
+            $calls[] = ['cmd' => $cmd, 'params' => $params];
             if ($cmd === 'GetQuotes') {
                 return self::quoteResponse();
             }
             return ['result' => 'success', 'invoiceid' => 99];
+        }, self::gatewayDirectory(['bankTransfer']));
+
+        $tools->convertQuoteToInvoice(quoteid: 10, paymentmethod: 'BANKTRANSFER');
+
+        $this->assertSame(['GetQuotes', 'AcceptQuote', 'UpdateInvoice'], array_column($calls, 'cmd'));
+        $this->assertSame('bankTransfer', $calls[2]['params']['paymentmethod']);
+    }
+
+    /** Gateway em branco é rejeitado antes de qualquer efeito. */
+    public function test_convert_rejects_blank_gateway_before_any_effect(): void
+    {
+        $calls = [];
+        $tools = $this->makeConverter(function (string $cmd) use (&$calls) {
+            $calls[] = $cmd;
+            return ['result' => 'success', 'invoiceid' => 99];
         });
 
-        $tools->convertQuoteToInvoice(quoteid: 10, paymentmethod: 'BankTransfer');
+        $this->expectException(\InvalidArgumentException::class);
 
-        $this->assertSame(['GetQuotes', 'AcceptQuote', 'UpdateInvoice'], $calls);
+        try {
+            $tools->convertQuoteToInvoice(quoteid: 10, paymentmethod: ' ');
+        } finally {
+            $this->assertSame([], $calls, 'nem o preflight pode rodar');
+        }
+    }
+
+    /** Diretório com linha inválida invalida tudo — fail-closed antes do efeito. */
+    public function test_convert_fails_closed_when_directory_has_an_invalid_row(): void
+    {
+        $calls = [];
+        $tools = $this->makeConverter(function (string $cmd) use (&$calls) {
+            $calls[] = $cmd;
+            return ['result' => 'success', 'invoiceid' => 99];
+        }, self::gatewayDirectory(['banktransfer', ' ']));
+
+        $this->expectException(\RuntimeException::class);
+
+        try {
+            $tools->convertQuoteToInvoice(quoteid: 10, paymentmethod: 'banktransfer');
+        } finally {
+            $this->assertSame([], $calls);
+        }
     }
 
     /** Introspecção indisponível é conservadora: recusa antes de converter. */

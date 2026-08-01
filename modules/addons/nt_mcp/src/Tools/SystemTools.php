@@ -4,11 +4,22 @@ namespace NtMcp\Tools;
 
 use NtMcp\Whmcs\DateNormalizer;
 use NtMcp\Whmcs\LocalApiClient;
+use NtMcp\Whmcs\LocalizedDate;
 use PhpMcp\Server\Attributes\McpTool;
 
 class SystemTools
 {
-    public function __construct(private readonly LocalApiClient $api) {}
+    private ?LocalizedDate $localizedDate;
+
+    public function __construct(private readonly LocalApiClient $api, ?LocalizedDate $localizedDate = null)
+    {
+        $this->localizedDate = $localizedDate;
+    }
+
+    private function localizedDate(): LocalizedDate
+    {
+        return $this->localizedDate ??= new LocalizedDate();
+    }
 
     #[McpTool(name: 'whmcs_get_stats', description: 'Retorna estatísticas gerais do WHMCS (receita, clientes, tickets)')]
     public function getStats(): string
@@ -16,13 +27,23 @@ class SystemTools
         return json_encode($this->api->call('GetStats', []), JSON_PRETTY_PRINT);
     }
 
+    /**
+     * `GetActivityLog` documenta `date` como "in localised format (eg
+     * 01/01/2016)" — não `Y-m-d`. Aceitamos ISO/`Y-m-d` do chamador e
+     * convertemos para o formato efetivo da instalação.
+     */
     #[McpTool(name: 'whmcs_get_activity_log', description: 'Obtém log de atividades do sistema')]
     public function getActivityLog(int $limitnum = 25, int $limitstart = 0, string $user = '', string $description = '', string $date = ''): string
     {
         $params = compact('limitnum', 'limitstart');
         if ($user !== '') $params['user'] = $user;
         if ($description !== '') $params['description'] = $description;
-        if ($date !== '') $params['date'] = DateNormalizer::toWhmcsDate($date, 'date');
+        if ($date !== '') {
+            $params['date'] = $this->localizedDate()->fromWhmcsDate(
+                DateNormalizer::toWhmcsDate($date, 'date'),
+                'date'
+            );
+        }
         return json_encode($this->api->call('GetActivityLog', $params), JSON_PRETTY_PRINT);
     }
 
@@ -40,14 +61,31 @@ class SystemTools
         return json_encode($this->api->call('GetToDoItems', $params), JSON_PRETTY_PRINT);
     }
 
-    #[McpTool(name: 'whmcs_update_todo_item', description: 'Atualiza um item To-Do existente')]
-    public function updateToDoItem(int $itemid, string $status = '', string $title = '', string $description = '', string $duedate = '', int $adminid = 0): string
+    /**
+     * `duedate` foi REMOVIDO temporariamente desta assinatura.
+     *
+     * Motivo: o contrato de entrada não pôde ser provado. A documentação oficial
+     * tipa `UpdateToDoItem.duedate` como `int` sem formato; a introspecção do
+     * WHMCS 8.11.2 de desenvolvimento mostrou que `tbltodolist.duedate` é uma
+     * coluna `date NOT NULL` — logo o `int` da doc está errado —, mas o parser
+     * que decide o formato ACEITO está em `includes/api/updatetodoitem.php`,
+     * ionCube-encoded. E o tipo da coluna não desambigua: nesta mesma instalação
+     * `tblquotes.validuntil` também é `date` e a API pede formato LOCALIZADO,
+     * enquanto o `duedate` de projeto/tarefa também é `date` e a API pede
+     * `Y-m-d`. Sem prova, enviar qualquer um dos dois é chute com efeito de
+     * escrita.
+     *
+     * A tool e o comando `UpdateToDoItem` continuam disponíveis para
+     * `status`/`title`/`description`. Reintroduzir `duedate` depende de provar o
+     * formato aceito (chamada real controlada em dev ou confirmação da WHMCS).
+     */
+    #[McpTool(name: 'whmcs_update_todo_item', description: 'Atualiza um item To-Do existente (status, título e descrição). O campo duedate está temporariamente indisponível: o formato aceito pela API do WHMCS não pôde ser comprovado.')]
+    public function updateToDoItem(int $itemid, string $status = '', string $title = '', string $description = '', int $adminid = 0): string
     {
         $params = ['itemid' => $itemid];
         if ($status !== '') $params['status'] = $status;
         if ($title !== '') $params['title'] = $title;
         if ($description !== '') $params['description'] = $description;
-        if ($duedate !== '') $params['duedate'] = DateNormalizer::toWhmcsDate($duedate, 'duedate');
         if ($adminid > 0) $params['adminid'] = $adminid;
         return json_encode($this->api->call('UpdateToDoItem', $params), JSON_PRETTY_PRINT);
     }

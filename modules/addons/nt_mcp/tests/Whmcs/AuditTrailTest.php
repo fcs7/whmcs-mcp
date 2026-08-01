@@ -62,6 +62,120 @@ class AuditTrailTest extends TestCase
         $this->assertFalse(ActivityLogSpy::hasEntryContaining('MCP API OK AddClient'));
     }
 
+    // ---------------------------------------------------------------
+    // F2 — texto downstream nunca chega cru ao Activity Log
+    // ---------------------------------------------------------------
+
+    /**
+     * Cenário exato reproduzido pela revisão: o WHMCS (ou um hook, ou um módulo
+     * de terceiro) devolve o input sensível ECOADO dentro de `message`. A
+     * redação de parâmetros não alcança uma string já interpolada.
+     */
+    public function test_secret_echoed_in_error_message_never_reaches_activity_log(): void
+    {
+        $secrets = [
+            'password2' => 'hunter2SuperSecret',
+            'cardnum' => '4111111111111111',
+            'tax_id' => '123.456.789-00',
+        ];
+
+        $this->client(['write' => true], fn() => [
+            'result' => 'error',
+            'message' => 'Rejected password hunter2SuperSecret card 4111111111111111 tax 123.456.789-00',
+        ])->call('AddClient', $secrets + ['firstname' => 'a', 'noemail' => true]);
+
+        $log = implode("\n", ActivityLogSpy::entries());
+
+        $this->assertNotSame('', $log, 'deve haver auditoria');
+        foreach ($secrets as $field => $secret) {
+            $this->assertStringNotContainsString($secret, $log, "vazou {$field} no Activity Log");
+        }
+        // O desfecho estável continua registrado.
+        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP API ERROR AddClient'));
+        // E o texto downstream inteiro não é interpolado.
+        $this->assertStringNotContainsString('Rejected password', $log);
+    }
+
+    public function test_exception_message_never_reaches_activity_log(): void
+    {
+        $client = $this->client(['write' => true], function () {
+            throw new \RuntimeException('boom token=abcdef0123456789 password2=hunter2SuperSecret');
+        });
+
+        try {
+            $client->call('AddClient', ['password2' => 'hunter2SuperSecret', 'firstname' => 'a', 'noemail' => true]);
+            $this->fail('deveria propagar');
+        } catch (\RuntimeException) {
+            // esperado
+        }
+
+        $log = implode("\n", ActivityLogSpy::entries());
+
+        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP API EXCEPTION AddClient'));
+        $this->assertStringNotContainsString('hunter2SuperSecret', $log);
+        $this->assertStringNotContainsString('abcdef0123456789', $log);
+        $this->assertStringNotContainsString('boom', $log);
+    }
+
+    // ---------------------------------------------------------------
+    // m1.1 — desfecho para TODA rota, sem repetir params
+    // ---------------------------------------------------------------
+
+    public function test_throwable_from_localapi_emits_outcome(): void
+    {
+        $client = $this->client(['write' => true], function () {
+            throw new \RuntimeException('kaboom');
+        });
+
+        try {
+            $client->call('AddClient', ['firstname' => 'Zoe', 'noemail' => true]);
+        } catch (\RuntimeException) {
+            // esperado
+        }
+
+        $outcome = ActivityLogSpy::matching('MCP API EXCEPTION AddClient');
+        $this->assertCount(1, $outcome);
+        $this->assertStringNotContainsString('Zoe', $outcome[0], 'outcome não repete params');
+    }
+
+    public function test_non_array_return_emits_outcome_without_params(): void
+    {
+        $client = $this->client(['write' => true], fn() => 'not an array');
+
+        try {
+            $client->call('AddClient', ['firstname' => 'Zoe', 'noemail' => true]);
+        } catch (\RuntimeException) {
+            // esperado
+        }
+
+        $outcome = ActivityLogSpy::matching('MCP API ERROR AddClient');
+        $this->assertCount(1, $outcome);
+        $this->assertStringContainsString('non-array', $outcome[0]);
+        $this->assertStringNotContainsString('Zoe', $outcome[0]);
+    }
+
+    /** m1.1: o outcome de ERRO também não pode repetir o dump de params. */
+    public function test_error_outcome_does_not_repeat_params(): void
+    {
+        $this->client(['write' => true], fn() => ['result' => 'error', 'message' => 'nope'])
+            ->call('AddClient', ['firstname' => 'Zoe', 'noemail' => true]);
+
+        $outcome = ActivityLogSpy::matching('MCP API ERROR AddClient');
+        $this->assertCount(1, $outcome);
+        $this->assertStringNotContainsString('Zoe', $outcome[0]);
+    }
+
+    public function test_start_and_outcome_share_a_correlation_id(): void
+    {
+        $this->client(['write' => true])->call('AddClient', ['firstname' => 'a', 'noemail' => true]);
+
+        $start = ActivityLogSpy::matching('MCP API call: AddClient')[0] ?? '';
+        $ok = ActivityLogSpy::matching('MCP API OK AddClient')[0] ?? '';
+
+        $this->assertSame(1, preg_match('/\[corr:([0-9a-f]{8})\]/', $start, $m), 'início sem correlação');
+        $this->assertStringContainsString("[corr:{$m[1]}]", $ok, 'desfecho deve reusar a correlação do início');
+    }
+
     public function test_outcome_line_does_not_duplicate_the_parameter_dump(): void
     {
         $this->client(['write' => true])->call('AddClient', ['firstname' => 'Zoe', 'noemail' => true]);
@@ -142,6 +256,100 @@ class AuditTrailTest extends TestCase
             'UPDATE' => ['UPDATE', fn(CapsuleClient $c) => $c->update('mod_mgcrm_contacts', ['id' => 1], ['name' => 'x'])],
             'DELETE' => ['DELETE', fn(CapsuleClient $c) => $c->delete('mod_mgcrm_contacts', ['id' => 1])],
         ];
+    }
+
+    // ---------------------------------------------------------------
+    // m1.1 — desfecho das três mutações Capsule
+    // ---------------------------------------------------------------
+
+    /**
+     * Sem WHMCS bootstrapado, `Capsule::table()` não existe: a mutação lança e
+     * precisa deixar desfecho — antes ficava só o log de início.
+     */
+    #[DataProvider('capsuleWriteProvider')]
+    public function test_capsule_mutation_exception_emits_outcome(string $operation, callable $invoke): void
+    {
+        $capsule = new CapsuleClient();
+        $capsule->setWritableForTests(true);
+
+        try {
+            $invoke($capsule);
+            $this->fail("{$operation} deveria lançar sem o Capsule do WHMCS");
+        } catch (\Throwable) {
+            // esperado
+        }
+
+        $outcome = ActivityLogSpy::matching("MCP DB {$operation} EXCEPTION");
+        $this->assertCount(1, $outcome, "faltou desfecho de exceção em {$operation}");
+        $this->assertStringNotContainsString('Ana', $outcome[0], 'desfecho não repete dados');
+    }
+
+    /** Desfecho de sucesso, com a contagem de linhas e sem repetir dados. */
+    public function test_capsule_mutation_success_emits_outcome_without_repeating_data(): void
+    {
+        $capsule = $this->capsuleWithFakeExecutor(static fn(): int => 3);
+
+        $rows = $capsule->insert('mod_mgcrm_contacts', ['name' => 'Ana', 'email' => 'ana@example.com']);
+
+        $this->assertSame(3, $rows);
+        $outcome = ActivityLogSpy::matching('MCP DB INSERT OK');
+        $this->assertCount(1, $outcome);
+        $this->assertStringContainsString('rows: 3', $outcome[0]);
+        $this->assertStringNotContainsString('Ana', $outcome[0]);
+        $this->assertStringNotContainsString('ana@example.com', $outcome[0]);
+    }
+
+    public function test_capsule_start_and_outcome_share_a_correlation_id(): void
+    {
+        $capsule = $this->capsuleWithFakeExecutor(static fn(): int => 1);
+        $capsule->insert('mod_mgcrm_contacts', ['name' => 'Ana']);
+
+        $start = ActivityLogSpy::matching('MCP DB INSERT: mod_mgcrm_contacts')[0] ?? '';
+        $ok = ActivityLogSpy::matching('MCP DB INSERT OK')[0] ?? '';
+
+        $this->assertSame(1, preg_match('/\[corr:([0-9a-f]{8})\]/', $start, $m));
+        $this->assertStringContainsString("[corr:{$m[1]}]", $ok);
+    }
+
+    /** Erro do driver não leva a mensagem crua ao Activity Log. */
+    public function test_capsule_driver_message_never_reaches_activity_log(): void
+    {
+        $capsule = $this->capsuleWithFakeExecutor(static function (): int {
+            throw new \RuntimeException('SQLSTATE[28000] user=root password=hunter2SuperSecret');
+        });
+
+        try {
+            $capsule->insert('mod_mgcrm_contacts', ['name' => 'Ana']);
+        } catch (\RuntimeException) {
+            // esperado
+        }
+
+        $log = implode("\n", ActivityLogSpy::entries());
+        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP DB INSERT EXCEPTION'));
+        $this->assertStringNotContainsString('hunter2SuperSecret', $log);
+        $this->assertStringNotContainsString('SQLSTATE', $log);
+    }
+
+    /** CapsuleClient com o executor de banco substituído. */
+    private function capsuleWithFakeExecutor(callable $executor): CapsuleClient
+    {
+        $capsule = new class($executor) extends CapsuleClient {
+            /** @var callable */
+            private $executor;
+
+            public function __construct(callable $executor)
+            {
+                $this->executor = $executor;
+            }
+
+            protected function runWithOutcome(string $verb, string $table, string $correlationId, callable $operation): int
+            {
+                return parent::runWithOutcome($verb, $table, $correlationId, $this->executor);
+            }
+        };
+        $capsule->setWritableForTests(true);
+
+        return $capsule;
     }
 
     public function test_blocked_capsule_write_redacts_sensitive_columns(): void

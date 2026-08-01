@@ -17,6 +17,28 @@ if (!function_exists('logActivity')) {
 require_once __DIR__ . '/../vendor/autoload.php';
 
 // ---------------------------------------------------------------
+// Helpers globais de data do WHMCS, usados por NtMcp\Whmcs\LocalizedDate.
+// Stubs controláveis por NtMcp\Tests\Support\WhmcsDateFormat, para que os
+// testes atravessem o caminho real (função global) e possam exercitar
+// formatos de localização distintos e os modos de falha fail-closed.
+// ---------------------------------------------------------------
+if (!function_exists('fromMySQLDate')) {
+    function fromMySQLDate($date, $includeTime = false, $applyClientDateFormat = false) {
+        return \NtMcp\Tests\Support\WhmcsDateFormat::format((string) $date);
+    }
+}
+
+if (!function_exists('toMySQLDate')) {
+    function toMySQLDate($date) {
+        if (!\NtMcp\Tests\Support\WhmcsDateFormat::$parserAvailable) {
+            throw new \RuntimeException('toMySQLDate unavailable in this simulation');
+        }
+
+        return \NtMcp\Tests\Support\WhmcsDateFormat::toMySQL((string) $date);
+    }
+}
+
+// ---------------------------------------------------------------
 // Stub REAL de \WHMCS\Config\Setting.
 //
 // O código de produção decide por class_exists('\WHMCS\Config\Setting'):

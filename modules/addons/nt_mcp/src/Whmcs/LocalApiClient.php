@@ -395,46 +395,84 @@ class LocalApiClient
         // IP, command name, and a redacted parameter summary so that
         // administrators have a forensic trail of all MCP operations.
         // ---------------------------------------------------------------
-        self::auditLog("MCP API call: {$command}", $params);
+        // Identificador de correlação: liga a linha de início, a de desfecho e o
+        // diagnóstico detalhado do error_log sem repetir dado nenhum entre eles.
+        $correlationId = self::auditLog("MCP API call: {$command}", $params);
 
-        if ($this->callable !== null) {
-            $result = ($this->callable)($command, $params);
-        } else {
-            $result = localAPI($command, $params, $this->adminUser);
+        // ---------------------------------------------------------------
+        // m1.1: TODO desfecho é registrado — sucesso, erro em array, retorno
+        // não-array e exceção. Antes, uma exceção do callable/localAPI deixava
+        // apenas a linha de início, indistinguível de "morreu no meio".
+        // Nenhuma dessas linhas repete os parâmetros: eles já foram gravados
+        // (redigidos) no início, e repetir só infla o Activity Log.
+        // ---------------------------------------------------------------
+        try {
+            if ($this->callable !== null) {
+                $result = ($this->callable)($command, $params);
+            } else {
+                $result = localAPI($command, $params, $this->adminUser);
+            }
+        } catch (\Throwable $e) {
+            self::auditLog("MCP API EXCEPTION {$command}", [], $correlationId);
+            self::logDetail($correlationId, $command, $e->getMessage(), $params);
+            throw $e;
         }
 
         if (!is_array($result)) {
             $type = gettype($result);
-            self::auditLog("MCP API call '{$command}' returned non-array ({$type})", $params);
+            self::auditLog("MCP API ERROR {$command} (non-array {$type})", [], $correlationId);
             throw new \RuntimeException(
                 "LocalApiClient: WHMCS API command '{$command}' returned unexpected type ({$type}). WHMCS may not be fully initialized."
             );
         }
 
         // ---------------------------------------------------------------
-        // SECURITY FIX (F15 -- revised): Audit-log API errors but return
-        // the WHMCS response as-is.  The original F15 threw a generic
-        // RuntimeException that hid useful diagnostics ("Email already
-        // exists", "Client Not Found") from the MCP caller, making
-        // create/update tools unusable.  WHMCS API error messages are
-        // user-facing by design and do not leak internal paths or SQL.
+        // SECURITY FIX (F15 -- revised): a resposta do WHMCS é devolvida como
+        // veio, para o chamador MCP não perder diagnósticos úteis ("Email
+        // already exists", "Client Not Found").
+        //
+        // F2: o TEXTO dessa mensagem, porém, NÃO vai para o Activity Log. Ele é
+        // arbitrário — WHMCS, hook ou módulo de terceiro podem ecoar de volta o
+        // input recebido, e a redação de parâmetros não alcança uma string que
+        // já veio com o segredo interpolado. O Activity Log guarda só o desfecho
+        // estável + correlação; o texto vai redigido para o error_log.
         // ---------------------------------------------------------------
-        // OUTCOME EXPLÍCITO (m1): o log de início sozinho não distingue
-        // "começou e concluiu" de "começou e morreu no meio". A linha de
-        // desfecho não repete os params — eles já foram registrados (redigidos)
-        // na linha de início, e repeti-los só inflaria o Activity Log.
         if (($result['result'] ?? '') === 'error') {
-            self::auditLog(
-                "MCP API ERROR {$command}: " . ($result['message'] ?? 'Unknown error'),
-                $params
-            );
+            self::auditLog("MCP API ERROR {$command}", [], $correlationId);
+            self::logDetail($correlationId, $command, (string) ($result['message'] ?? 'Unknown error'), $params);
         } else {
-            self::auditLog("MCP API OK {$command}", []);
+            self::auditLog("MCP API OK {$command}", [], $correlationId);
         }
 
         ResponseRedactor::scrubSensitive($result);  // D defense-in-depth
 
         return $result;
+    }
+
+    /** Correlação curta e sem valor semântico — não deriva de dado da chamada. */
+    private static function newCorrelationId(): string
+    {
+        try {
+            return bin2hex(random_bytes(4));
+        } catch (\Throwable) {
+            return str_pad(dechex(mt_rand(0, 0xFFFFFFFF)), 8, '0', STR_PAD_LEFT);
+        }
+    }
+
+    /**
+     * Diagnóstico detalhado — SOMENTE no error_log (canal protegido), e ainda
+     * assim redigido: o texto downstream pode conter o input sensível ecoado.
+     *
+     * @param array<string, mixed> $params
+     */
+    private static function logDetail(string $correlationId, string $command, string $message, array $params): void
+    {
+        error_log(sprintf(
+            '[NT-MCP] [corr:%s] %s: %s',
+            $correlationId,
+            $command,
+            TextRedactor::scrub($message, $params)
+        ));
     }
 
     // ---------------------------------------------------------------
@@ -444,11 +482,18 @@ class LocalApiClient
     /**
      * Write an entry to the WHMCS Activity Log (tblactivitylog).
      *
-     * @param string $message  Human-readable description
-     * @param array  $params   Tool parameters (sensitive values redacted)
+     * Toda entrada carrega um identificador de correlação, para que a linha de
+     * início, a de desfecho e o diagnóstico detalhado do error_log possam ser
+     * ligadas sem repetir dado nenhum entre elas.
+     *
+     * @param string      $message       Human-readable description (estável, sem texto downstream)
+     * @param array       $params        Tool parameters (sensitive values redacted)
+     * @param string|null $correlationId Reusa uma correlação existente; gera uma nova se null
+     * @return string                    a correlação usada
      */
-    public static function auditLog(string $message, array $params = []): void
+    public static function auditLog(string $message, array $params = [], ?string $correlationId = null): string
     {
+        $correlationId ??= self::newCorrelationId();
         // SECURITY FIX (F3 -- audit, revised H1): Use IpResolver directly.
         // Behind Plesk reverse proxy, REMOTE_ADDR is 127.0.0.1 — useless for
         // forensics. IpResolver respects nt_mcp_trusted_proxies and walks XFF.
@@ -461,7 +506,7 @@ class LocalApiClient
             $summary = substr($summary, 0, 1021) . '...';
         }
 
-        $entry = "[NT-MCP] [{$ip}] {$message} | params: {$summary}";
+        $entry = "[NT-MCP] [{$ip}] [corr:{$correlationId}] {$message} | params: {$summary}";
 
         try {
             if (function_exists('logActivity')) {
@@ -472,6 +517,8 @@ class LocalApiClient
             // never lose forensic visibility silently either.
             error_log("[NT-MCP] auditLog FAILED: {$e->getMessage()} | entry: {$entry}");
         }
+
+        return $correlationId;
     }
 
     /**

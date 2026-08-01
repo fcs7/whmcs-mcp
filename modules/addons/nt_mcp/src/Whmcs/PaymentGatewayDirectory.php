@@ -35,6 +35,13 @@ namespace NtMcp\Whmcs;
  */
 class PaymentGatewayDirectory
 {
+    /**
+     * Sintaxe de system name de módulo de gateway. O valor é o nome do arquivo
+     * em `modules/gateways/<name>.php`, portanto alfanumérico com underscore.
+     * Qualquer coisa fora disso na coluna indica linha corrompida.
+     */
+    private const SYSTEM_NAME_PATTERN = '/^[A-Za-z0-9_]+$/';
+
     /** @var callable|null Injeção para testes: fn(): array<string> */
     private $resolver = null;
 
@@ -49,10 +56,17 @@ class PaymentGatewayDirectory
     }
 
     /**
-     * System names dos gateways configurados.
+     * System names configurados, já limpos e validados.
+     *
+     * A introspecção é ATÔMICA: se QUALQUER linha for inválida (vazia, só
+     * espaço, sintaxe fora do padrão) ou se houver ambiguidade de capitalização
+     * (`PayPal` e `paypal` ao mesmo tempo), a lista inteira é considerada não
+     * confiável e a validação falha fechada. Descartar só a linha ruim deixaria
+     * um diretório parcial passar por completo — e a decisão do plano é não
+     * converter cotação com gateway que não foi provado.
      *
      * @return array<string>
-     * @throws \RuntimeException se a introspecção não estiver disponível
+     * @throws \RuntimeException se a introspecção não estiver disponível ou for inválida
      */
     public function configuredGateways(): array
     {
@@ -60,8 +74,24 @@ class PaymentGatewayDirectory
             return $this->cache;
         }
 
+        return $this->cache = $this->validateRows($this->readRows());
+    }
+
+    /** @return array<mixed> valores crus da coluna `gateway` */
+    private function readRows(): array
+    {
         if ($this->resolver !== null) {
-            return $this->cache = array_values(array_unique(($this->resolver)()));
+            try {
+                $rows = ($this->resolver)();
+            } catch (\Throwable $e) {
+                throw new \RuntimeException(
+                    'PaymentGatewayDirectory: failed to read configured payment gateways.',
+                    0,
+                    $e
+                );
+            }
+
+            return is_array($rows) ? $rows : [];
         }
 
         if (!class_exists('\WHMCS\Database\Capsule')) {
@@ -71,42 +101,92 @@ class PaymentGatewayDirectory
         }
 
         try {
-            $rows = \WHMCS\Database\Capsule::table('tblpaymentgateways')
+            $result = \WHMCS\Database\Capsule::table('tblpaymentgateways')
                 ->select('gateway')      // NUNCA projeta setting/value (credenciais)
                 ->distinct()
                 ->get();
         } catch (\Throwable $e) {
+            // Mensagem downstream NÃO é propagada (F2): erros de driver podem
+            // carregar credenciais de conexão.
             throw new \RuntimeException(
-                'PaymentGatewayDirectory: failed to read configured payment gateways: ' . $e->getMessage(),
+                'PaymentGatewayDirectory: failed to read configured payment gateways.',
                 0,
                 $e
             );
         }
 
-        $gateways = [];
-        foreach ($rows as $row) {
-            $name = is_array($row) ? ($row['gateway'] ?? null) : ($row->gateway ?? null);
-            if (is_string($name) && $name !== '') {
-                $gateways[] = $name;
-            }
+        $rows = [];
+        foreach ($result as $row) {
+            $rows[] = is_array($row) ? ($row['gateway'] ?? null) : ($row->gateway ?? null);
         }
 
-        return $this->cache = array_values(array_unique($gateways));
+        return $rows;
     }
 
     /**
-     * Valida o system name ANTES de qualquer efeito.
-     *
-     * Conservador por desenho: se a introspecção falhar, a validação NÃO é
-     * ignorada — a exceção sobe e o chamador recusa a operação. `paymentmethod`
-     * é opcional, então falhar fechado aqui nunca impede a conversão em si;
-     * apenas impede converter com um gateway que não pôde ser verificado.
-     *
-     * @throws \InvalidArgumentException gateway inexistente
-     * @throws \RuntimeException         introspecção indisponível
+     * @param array<mixed> $rows
+     * @return array<string>
      */
-    public function assertConfigured(string $systemName, string $field = 'paymentmethod'): void
+    private function validateRows(array $rows): array
     {
+        $canonical = [];
+        $byLower = [];
+
+        foreach ($rows as $raw) {
+            if (!is_string($raw)) {
+                throw new \RuntimeException(
+                    'PaymentGatewayDirectory: payment gateway list contains a non-string entry; '
+                    . 'refusing to validate against an unreliable directory.'
+                );
+            }
+
+            $name = trim($raw);
+            if ($name === '' || preg_match(self::SYSTEM_NAME_PATTERN, $name) !== 1) {
+                throw new \RuntimeException(
+                    'PaymentGatewayDirectory: payment gateway list contains an invalid entry; '
+                    . 'refusing to validate against an unreliable directory.'
+                );
+            }
+
+            $lower = strtolower($name);
+            if (isset($byLower[$lower])) {
+                if ($byLower[$lower] !== $name) {
+                    throw new \RuntimeException(
+                        'PaymentGatewayDirectory: payment gateway list is ambiguous (entries differing '
+                        . 'only by capitalisation); refusing to guess the canonical system name.'
+                    );
+                }
+                continue; // duplicata EXATA: dedup silencioso
+            }
+
+            $byLower[$lower] = $name;
+            $canonical[] = $name;
+        }
+
+        return $canonical;
+    }
+
+    /**
+     * Resolve o input para o system name EXATO armazenado no banco.
+     *
+     * Aceitar `BankTransfer` quando o banco guarda `banktransfer` é conveniente,
+     * mas encaminhar `BankTransfer` ao `UpdateInvoice` dependeria de coerção não
+     * documentada do WHMCS. Por isso o casamento é case-insensitive e o RETORNO
+     * é sempre o valor canônico — e só esse valor pode seguir adiante.
+     *
+     * @return string system name canônico
+     * @throws \InvalidArgumentException gateway inexistente ou input inválido
+     * @throws \RuntimeException         introspecção indisponível/não confiável
+     */
+    public function resolve(string $systemName, string $field = 'paymentmethod'): string
+    {
+        $input = trim($systemName);
+        if ($input === '' || preg_match(self::SYSTEM_NAME_PATTERN, $input) !== 1) {
+            throw new \InvalidArgumentException(
+                "{$field} must be a WHMCS gateway system name (letters, digits and underscore)."
+            );
+        }
+
         $gateways = $this->configuredGateways();
 
         if ($gateways === []) {
@@ -117,17 +197,18 @@ class PaymentGatewayDirectory
         }
 
         foreach ($gateways as $gateway) {
-            if (strcasecmp($gateway, $systemName) === 0) {
-                return;
+            if (strcasecmp($gateway, $input) === 0) {
+                return $gateway; // valor EXATO do banco
             }
         }
 
-        sort($gateways);
+        $known = $gateways;
+        sort($known);
         throw new \InvalidArgumentException(sprintf(
             '%s "%s" is not a configured WHMCS payment gateway. Configured: %s',
             $field,
-            $systemName,
-            implode(', ', $gateways)
+            $input,
+            implode(', ', $known)
         ));
     }
 }
