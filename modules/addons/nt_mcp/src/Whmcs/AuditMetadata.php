@@ -65,41 +65,29 @@ final class AuditMetadata
      * `unknown_fields` até ser adicionado aqui conscientemente.
      */
     private const KNOWN_FIELDS = [
-        'addonid', 'address1', 'address2', 'admin_id', 'adminid', 'adminnotes',
-        'adminusername', 'catid', 'cc', 'city', 'clientid', 'companyname',
-        'company', 'completed', 'confirm', 'contact_id', 'contactid', 'country',
-        'created', 'currency', 'currencyid', 'customernotes', 'customfields',
-        'date', 'datecreated', 'deptid', 'description', 'domainid', 'duedate',
-        'email', 'field_id', 'firstname', 'flag', 'followup_id', 'generalemails',
-        'groupid', 'id', 'ignore_dept_assignments', 'includeCountsByStatus',
-        'index', 'invoiceemails', 'invoiceid', 'itemid', 'language',
-        'lastmodified', 'lastname', 'limitnum', 'limitstart', 'lineitems',
-        'markdown', 'message', 'name', 'noemail', 'note', 'note_id', 'notes',
+        'addonid', 'address1', 'address2', 'adminid', 'adminnotes', 'adminusername',
+        'catid', 'cc', 'city', 'clientid', 'companyname', 'company', 'completed',
+        'confirm', 'contact_id', 'contactid', 'country', 'created', 'currency',
+        'currencyid', 'customernotes', 'customfields', 'date', 'datecreated',
+        'deptid', 'description', 'domainid', 'duedate', 'email', 'firstname',
+        'flag', 'generalemails', 'groupid', 'id', 'ignore_dept_assignments',
+        'includeCountsByStatus', 'index', 'invoiceemails', 'invoiceid', 'itemid',
+        'language', 'lastmodified', 'lastname', 'limitnum', 'limitstart',
+        'lineitems', 'markdown', 'message', 'name', 'noemail', 'note', 'notes',
         'orderby', 'orderid', 'password2', 'paymentmethod', 'phone', 'phonenumber',
         'pid', 'postcode', 'priority', 'productemails', 'projectid', 'proposal',
-        'quoteid', 'relatedid', 'resource_id', 'search', 'serviceid', 'sorting',
-        'stage', 'state', 'status', 'status_id', 'subject', 'supportemails',
-        'task', 'taskid', 'tax_id', 'taxrate', 'ticketid', 'ticketids', 'title',
-        'transid', 'type', 'type_id', 'user', 'userid', 'validuntil', 'where',
-        'data',
+        'quoteid', 'relatedid', 'search', 'serviceid', 'sorting', 'stage', 'state',
+        'status', 'subject', 'supportemails', 'task', 'taskid', 'tax_id', 'taxrate',
+        'ticketid', 'ticketids', 'title', 'transid', 'type', 'user', 'userid',
+        'validuntil', 'where', 'data',
     ];
 
-    /**
-     * Campos cujo VALOR pode ser registrado — e só como inteiro.
-     *
-     * Os `*_id` do CRM entram aqui porque o domínio mgCRM2 é todo baseado em
-     * identificadores explícitos (D11): sem eles, uma entrada de Activity Log
-     * do CRM não diria SOBRE O QUE foi a operação. Continuam sendo apenas
-     * inteiros — `admin_id` é o id interno do admin já resolvido pelo OAuth,
-     * nunca o username.
-     */
+    /** Campos cujo VALOR pode ser registrado — e só como inteiro. */
     private const ID_FIELDS = [
-        'addonid', 'admin_id', 'adminid', 'catid', 'clientid', 'contact_id',
-        'contactid', 'currency', 'currencyid', 'deptid', 'domainid', 'field_id',
-        'followup_id', 'groupid', 'id', 'invoiceid', 'itemid', 'limitnum',
-        'limitstart', 'note_id', 'orderid', 'pid', 'projectid', 'quoteid',
-        'relatedid', 'resource_id', 'serviceid', 'status_id', 'taskid',
-        'ticketid', 'type_id', 'userid',
+        'addonid', 'adminid', 'catid', 'clientid', 'contact_id', 'contactid',
+        'currency', 'currencyid', 'deptid', 'domainid', 'groupid', 'id', 'invoiceid',
+        'itemid', 'limitnum', 'limitstart', 'orderid', 'pid', 'projectid', 'quoteid',
+        'relatedid', 'serviceid', 'taskid', 'ticketid', 'userid',
     ];
 
     /** Campos cujo VALOR pode ser registrado — e só como booleano. */

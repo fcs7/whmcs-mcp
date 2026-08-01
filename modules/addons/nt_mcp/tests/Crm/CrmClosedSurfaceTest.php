@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace NtMcp\Tests\Crm;
 
-use NtMcp\Crm\CrmMutation;
+use NtMcp\Crm\CrmQueryPort;
 use NtMcp\Crm\CrmSchema;
 use NtMcp\Crm\CrmSelect;
 use NtMcp\Crm\MgCrmRepository;
@@ -14,11 +14,9 @@ use PHPUnit\Framework\TestCase;
 /**
  * Varredura MECÂNICA do código novo, mais as recusas estruturais.
  *
- * A afirmação "não existe API genérica de tabela/coluna e não existe
- * `SELECT *`" só vale se for verificável sem ler o diff — é o que este arquivo
- * faz. Um `select('*')` acrescentado por engano, um nome `mod_mgcrm_*`
- * ressuscitado ou um parâmetro `$table` num método público da fronteira
- * derrubam a suíte.
+ * A afirmação "não existe API genérica de tabela/coluna, não existe `SELECT *`
+ * e não existe caminho de escrita" só vale se for verificável sem ler o diff —
+ * é o que este arquivo faz.
  */
 class CrmClosedSurfaceTest extends TestCase
 {
@@ -82,6 +80,63 @@ class CrmClosedSurfaceTest extends TestCase
     }
 
     /**
+     * NENHUM caminho de escrita no domínio CRM. Este é o invariante estrutural
+     * que substituiu a promessa de disciplina futura: sem executor gravável,
+     * não existe `admin_id` forjável para contornar o resolver OAuth.
+     */
+    #[DataProvider('writeVerbProvider')]
+    public function test_no_write_path_exists_in_the_crm_domain(string $forbidden): void
+    {
+        foreach (self::crmSources() as $file) {
+            $this->assertStringNotContainsString(
+                $forbidden,
+                (string) file_get_contents($file),
+                basename($file) . ' não pode conter caminho de escrita'
+            );
+        }
+    }
+
+    /** @return array<string, array{0:string}> */
+    public static function writeVerbProvider(): array
+    {
+        return [
+            'insertGetId' => ['insertGetId'],
+            'insert(' => ['->insert('],
+            'update(' => ['->update('],
+            'delete(' => ['->delete('],
+            'truncate(' => ['->truncate('],
+            'statement(' => ['->statement('],
+        ];
+    }
+
+    /** O seam de execução não declara operação de mutação. */
+    public function test_the_query_port_declares_reads_only(): void
+    {
+        $methods = array_map(
+            static fn(\ReflectionMethod $m): string => $m->getName(),
+            (new \ReflectionClass(CrmQueryPort::class))->getMethods()
+        );
+
+        $this->assertSame(['selectRows'], $methods);
+    }
+
+    /** As classes de mutação prematuras não existem mais. */
+    #[DataProvider('removedClassProvider')]
+    public function test_premature_write_surface_is_gone(string $class): void
+    {
+        $this->assertFalse(class_exists($class), "{$class} não deveria existir em CRM-1");
+    }
+
+    /** @return array<string, array{0:string}> */
+    public static function removedClassProvider(): array
+    {
+        return [
+            'CrmMutation' => ['NtMcp\Crm\CrmMutation'],
+            'CrmWriteContext' => ['NtMcp\Crm\CrmWriteContext'],
+        ];
+    }
+
+    /**
      * D6: a mensagem do driver só pode ser lida onde vira fingerprint. Em
      * nenhum outro ponto do domínio.
      */
@@ -107,17 +162,18 @@ class CrmClosedSurfaceTest extends TestCase
 
     /**
      * A fronteira pública não pode ter um parâmetro que aceite estrutura de
-     * banco. Se um método novo introduzir `$table`, `$column` ou `$orderBy`,
-     * este teste falha antes da revisão.
+     * banco, nem `admin_id`. Se um método novo introduzir `$table`, `$column`
+     * ou `$adminId`, este teste falha antes da revisão.
      */
-    public function test_the_repository_never_accepts_database_structure(): void
+    public function test_the_repository_never_accepts_database_structure_or_admin_id(): void
     {
         // `field` fica de fora de propósito: `normalizeInstant($value, $field)`
         // usa o nome apenas como rótulo da mensagem de validação, e ele é
         // sempre um literal nosso. `fields` (plural) continua vedado — seria
         // uma lista de colunas.
         $forbidden = ['table', 'tables', 'column', 'columns', 'order', 'orderby',
-            'sort', 'operator', 'where', 'sql', 'query', 'fields'];
+            'sort', 'operator', 'where', 'sql', 'query', 'fields',
+            'adminid', 'admin_id', 'authorid', 'author_id'];
 
         $reflection = new \ReflectionClass(MgCrmRepository::class);
 
@@ -126,7 +182,7 @@ class CrmClosedSurfaceTest extends TestCase
                 $this->assertNotContains(
                     strtolower($parameter->getName()),
                     $forbidden,
-                    "{$method->getName()}() expõe estrutura de banco"
+                    "{$method->getName()}() expõe estrutura de banco ou autoria"
                 );
             }
         }
@@ -218,68 +274,5 @@ class CrmClosedSurfaceTest extends TestCase
             'notes' => [CrmSchema::noteOrder()],
             'catalogs' => [CrmSchema::catalogOrder()],
         ];
-    }
-
-    // ---------------------------------------------------------------
-    // Recusas estruturais de CrmMutation
-    // ---------------------------------------------------------------
-
-    #[DataProvider('rejectedMutationProvider')]
-    public function test_mutation_refuses_anything_outside_the_contract(callable $build): void
-    {
-        $this->expectException(\LogicException::class);
-        $build();
-    }
-
-    /** @return array<string, array{0:callable}> */
-    public static function rejectedMutationProvider(): array
-    {
-        return [
-            'tabela de catálogo' => [
-                static fn() => CrmMutation::insert(CrmSchema::TABLE_RESOURCE_TYPES, ['name' => 'x']),
-            ],
-            'tabela do WHMCS' => [
-                static fn() => CrmMutation::insert(CrmSchema::TABLE_ADMINS, ['username' => 'x']),
-            ],
-            'identidade gravável' => [
-                static fn() => CrmMutation::insert(CrmSchema::TABLE_RESOURCES, ['id' => 1, 'name' => 'x']),
-            ],
-            'soft-delete gravável' => [
-                static fn() => CrmMutation::insert(CrmSchema::TABLE_RESOURCES, ['deleted_at' => null]),
-            ],
-            'insert vazio' => [
-                static fn() => CrmMutation::insert(CrmSchema::TABLE_RESOURCES, []),
-            ],
-            'update sem where' => [
-                static fn() => CrmMutation::update(CrmSchema::TABLE_RESOURCES, ['name' => 'x'], []),
-            ],
-            'update sem valores' => [
-                static fn() => CrmMutation::update(CrmSchema::TABLE_RESOURCES, [], ['id' => 1]),
-            ],
-            'where fora do contrato' => [
-                static fn() => CrmMutation::update(CrmSchema::TABLE_RESOURCES, ['name' => 'x'], ['email' => 'a']),
-            ],
-            'valor não escalar' => [
-                static fn() => CrmMutation::insert(CrmSchema::TABLE_NOTES, ['content' => ['a']]),
-            ],
-        ];
-    }
-
-    public function test_mutation_accepts_the_declared_contract(): void
-    {
-        $insert = CrmMutation::insert(CrmSchema::TABLE_NOTES, [
-            'resource_id' => 7,
-            'admin_id' => 3,
-            'content' => 'texto livre',
-            'created_at' => '2026-08-10 10:00:00',
-        ]);
-
-        $this->assertSame('INSERT', $insert->verb);
-        $this->assertSame(['resource_id' => 7, 'admin_id' => 3], $insert->auditIds());
-
-        $update = CrmMutation::update(CrmSchema::TABLE_RESOURCES, ['name' => 'Ana'], ['id' => 7]);
-
-        $this->assertSame('UPDATE', $update->verb);
-        $this->assertSame([CrmSchema::COLUMN_DELETED_AT], $update->nullConditions);
     }
 }

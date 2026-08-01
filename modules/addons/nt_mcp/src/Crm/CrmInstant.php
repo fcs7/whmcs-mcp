@@ -30,14 +30,39 @@ namespace NtMcp\Crm;
  *  - data inexistente (`2026-02-31`), que o PHP silenciosamente rolaria para março;
  *  - offset fora da política (`+15:00`, `+14:30`, `-99:99`).
  *
- * A fração de segundo é TRUNCADA, não arredondada: `DATETIME` do MySQL na
- * coluna alvo não tem precisão fracionária, e arredondar para cima criaria um
- * instante que o chamador não escreveu.
+ * A fração de segundo é TRUNCADA, não arredondada: a coluna alvo não tem
+ * precisão fracionária, e arredondar para cima criaria um instante que o
+ * chamador não escreveu.
+ *
+ * Intervalo representável
+ * -----------------------
+ * Validar a gramática não basta: `9999-12-31T23:59:59-14:00` é gramaticalmente
+ * perfeito e vira `10000-01-01 13:59:59` em UTC, que não cabe em coluna nenhuma
+ * do MySQL; `0001-01-01T00:00:00+14:00` cai abaixo do piso. Sem esta barreira,
+ * o valor passava como validado e só falhava (ou era coercido em silêncio,
+ * conforme o SQL mode) DENTRO do banco — virando `downstream` depois do efeito,
+ * em vez de `validation` antes dele.
+ *
+ * O intervalo adotado é o do `TIMESTAMP` documentado pelo MySQL —
+ * `1970-01-01 00:00:01` a `2038-01-19 03:14:07` UTC — porque a evidência do DDL
+ * descreve `crm_followups.date` como timestamp e essa é a faixa CONSERVADORA:
+ * cabe também em `DATETIME`, então acerta nos dois cenários. T6 confirma o tipo
+ * físico; se for `DATETIME`, a faixa pode ser ampliada com nova aprovação.
+ *
+ * A checagem é feita sobre o INSTANTE, não sobre a data civil: um valor com
+ * offset pode estar dentro da faixa na parede do chamador e fora dela em UTC —
+ * é exatamente esse cruzamento de borda que os testes cobrem.
  */
 final class CrmInstant
 {
     /** Formato aceito pela coluna `date` do mgCRM2. */
     public const MYSQL_FORMAT = 'Y-m-d H:i:s';
+
+    /** `1970-01-01 00:00:01` UTC — piso do `TIMESTAMP` do MySQL. */
+    public const MIN_EPOCH = 1;
+
+    /** `2038-01-19 03:14:07` UTC — teto do `TIMESTAMP` do MySQL. */
+    public const MAX_EPOCH = 2147483647;
 
     private const GRAMMAR = '/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})\z/';
 
@@ -47,9 +72,9 @@ final class CrmInstant
      */
     public static function toUtcMySql(string $value, string $field): string
     {
-        $normalized = self::tryToUtcMySql($value);
+        $instant = self::parse($value);
 
-        if ($normalized === null) {
+        if ($instant === null) {
             // A mensagem não traz exemplo de data: um literal como
             // `2026-08-10T14:30:00Z` colidiria com o valor recusado e faria
             // parecer que o input voltou no erro.
@@ -59,11 +84,33 @@ final class CrmInstant
             );
         }
 
-        return $normalized;
+        if (!self::withinStorableRange($instant)) {
+            // Motivo diferente, mensagem diferente: o valor está bem formado,
+            // o que falta é caber na coluna. Confundir os dois faria o chamador
+            // reescrever uma data que já estava correta.
+            throw CrmException::validation(
+                $field,
+                'the instant is outside the range this CRM can store'
+            );
+        }
+
+        return $instant->format(self::MYSQL_FORMAT);
     }
 
     /** Como `toUtcMySql()`, mas devolve null em vez de lançar. */
     public static function tryToUtcMySql(string $value): ?string
+    {
+        $instant = self::parse($value);
+
+        if ($instant === null || !self::withinStorableRange($instant)) {
+            return null;
+        }
+
+        return $instant->format(self::MYSQL_FORMAT);
+    }
+
+    /** Gramática + política de offset; devolve o instante já em UTC. */
+    private static function parse(string $value): ?\DateTimeImmutable
     {
         if (preg_match(self::GRAMMAR, $value, $m) !== 1) {
             return null;
@@ -94,7 +141,19 @@ final class CrmInstant
             return null;
         }
 
-        return $parsed->setTimezone(new \DateTimeZone('UTC'))->format(self::MYSQL_FORMAT);
+        return $parsed->setTimezone(new \DateTimeZone('UTC'));
+    }
+
+    /**
+     * A faixa é conferida sobre o INSTANTE em UTC, não sobre a data civil: com
+     * offset, um valor pode estar dentro da faixa na parede do chamador e fora
+     * dela depois da conversão — e vice-versa.
+     */
+    private static function withinStorableRange(\DateTimeImmutable $utc): bool
+    {
+        $epoch = $utc->getTimestamp();
+
+        return $epoch >= self::MIN_EPOCH && $epoch <= self::MAX_EPOCH;
     }
 
     /**

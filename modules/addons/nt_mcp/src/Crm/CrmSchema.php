@@ -22,14 +22,15 @@ namespace NtMcp\Crm;
  * do contrato antigo não aparecem aqui e não existe fallback para elas — a
  * varredura mecânica da suíte prova que aqueles nomes sumiram do código novo.
  *
- * Colunas OPCIONAIS
- * -----------------
- * `active` nos quatro catálogos é o único caso: a evidência prova o
- * soft-delete (`deleted_at`) mas não prova o nome da coluna de atividade. O
- * guard detecta a coluna por metadata; quando ela existe, o filtro `active = 1`
- * é aplicado e é obrigatório. Quando não existe, "ativo" significa "não
- * soft-deleted". Em nenhuma das duas leituras uma linha inativa/apagada
- * atravessa — é por isso que a opcionalidade não é um relaxamento de gate.
+ * Atividade de catálogo é EXIGIDA, não inferida
+ * ---------------------------------------------
+ * A versão anterior tratava `active` como coluna opcional e, na ausência dela,
+ * equiparava "não soft-deleted" a "ativo". Isso é fail-open: o contrato exige
+ * tipo/status existente **e ativo**, e sem prova da semântica de atividade a
+ * segunda metade da exigência simplesmente desaparecia. Agora `active` é
+ * requisito mínimo de cada catálogo; instalação sem ela responde
+ * `crm_schema_mismatch` até o T6 provar qual é a regra física real. Nenhuma
+ * degradação silenciosa.
  */
 final class CrmSchema
 {
@@ -71,13 +72,16 @@ final class CrmSchema
     public const MAX_OFFSET = 100000;
 
     /**
-     * Conjunto MÍNIMO exigido por capacidade. O guard prova tabela a tabela e
-     * coluna a coluna antes de qualquer consulta operacional.
+     * Conjunto MÍNIMO exigido por capacidade — e cada capacidade corresponde ao
+     * que UMA operação consulta, não ao que uma tabela oferece.
      *
      * @var array<string, array<string, array<int, string>>>
      */
     private const REQUIREMENTS = [
-        CrmCapability::Resources->value => [
+        CrmCapability::ResourceIdentity->value => [
+            self::TABLE_RESOURCES => ['id', 'deleted_at'],
+        ],
+        CrmCapability::ResourceCore->value => [
             self::TABLE_RESOURCES => [
                 'id', 'type_id', 'status_id', 'name', 'lastname', 'email', 'phone',
                 'country', 'short_description', 'description',
@@ -87,9 +91,11 @@ final class CrmSchema
         CrmCapability::ResourceAssignment->value => [
             self::TABLE_RESOURCES => ['id', 'admin_id'],
         ],
-        CrmCapability::ResourceCatalogs->value => [
-            self::TABLE_RESOURCE_TYPES => ['id', 'name', 'deleted_at'],
-            self::TABLE_RESOURCE_STATUSES => ['id', 'name', 'deleted_at'],
+        CrmCapability::ResourceTypes->value => [
+            self::TABLE_RESOURCE_TYPES => ['id', 'name', 'active', 'deleted_at'],
+        ],
+        CrmCapability::ResourceStatuses->value => [
+            self::TABLE_RESOURCE_STATUSES => ['id', 'name', 'active', 'deleted_at'],
         ],
         CrmCapability::Followups->value => [
             self::TABLE_FOLLOWUPS => [
@@ -97,9 +103,11 @@ final class CrmSchema
                 'description', 'date', 'created_at', 'updated_at', 'deleted_at',
             ],
         ],
-        CrmCapability::FollowupCatalogs->value => [
-            self::TABLE_FOLLOWUP_TYPES => ['id', 'name', 'deleted_at'],
-            self::TABLE_FOLLOWUP_STATUSES => ['id', 'name', 'deleted_at'],
+        CrmCapability::FollowupTypes->value => [
+            self::TABLE_FOLLOWUP_TYPES => ['id', 'name', 'active', 'deleted_at'],
+        ],
+        CrmCapability::FollowupStatuses->value => [
+            self::TABLE_FOLLOWUP_STATUSES => ['id', 'name', 'active', 'deleted_at'],
         ],
         CrmCapability::Notes->value => [
             self::TABLE_NOTES => [
@@ -117,26 +125,9 @@ final class CrmSchema
     ];
 
     /**
-     * Colunas cuja PRESENÇA é detectada, mas cuja ausência não invalida a
-     * capacidade. Ver a nota de topo: quando presente, `active` é filtrado.
-     *
-     * @var array<string, array<string, array<int, string>>>
-     */
-    private const OPTIONAL_COLUMNS = [
-        CrmCapability::ResourceCatalogs->value => [
-            self::TABLE_RESOURCE_TYPES => ['active'],
-            self::TABLE_RESOURCE_STATUSES => ['active'],
-        ],
-        CrmCapability::FollowupCatalogs->value => [
-            self::TABLE_FOLLOWUP_TYPES => ['active'],
-            self::TABLE_FOLLOWUP_STATUSES => ['active'],
-        ],
-    ];
-
-    /**
      * Colunas conhecidas por tabela — o universo que `CrmSelect` aceita.
-     * Derivado das duas tabelas acima para que não exista uma terceira lista a
-     * manter em sincronia.
+     * Derivado dos requisitos para que não exista uma segunda lista a manter em
+     * sincronia.
      *
      * @return array<int, string>
      */
@@ -146,13 +137,11 @@ final class CrmSchema
 
         if ($index === null) {
             $index = [];
-            foreach ([self::REQUIREMENTS, self::OPTIONAL_COLUMNS] as $source) {
-                foreach ($source as $tables) {
-                    foreach ($tables as $name => $columns) {
-                        $index[$name] = array_values(array_unique(
-                            array_merge($index[$name] ?? [], $columns)
-                        ));
-                    }
+            foreach (self::REQUIREMENTS as $tables) {
+                foreach ($tables as $name => $columns) {
+                    $index[$name] = array_values(array_unique(
+                        array_merge($index[$name] ?? [], $columns)
+                    ));
                 }
             }
         }
@@ -169,12 +158,6 @@ final class CrmSchema
     public static function requirementsFor(CrmCapability $capability): array
     {
         return self::REQUIREMENTS[$capability->value] ?? [];
-    }
-
-    /** @return array<string, array<int, string>> tabela => colunas opcionais */
-    public static function optionalColumnsFor(CrmCapability $capability): array
-    {
-        return self::OPTIONAL_COLUMNS[$capability->value] ?? [];
     }
 
     // ---------------------------------------------------------------
@@ -249,11 +232,13 @@ final class CrmSchema
 
     public static function clampLimit(int $limit, int $max = self::MAX_LIMIT): int
     {
+        $ceiling = min(max($max, 1), self::MAX_LIMIT);
+
         if ($limit < 1) {
-            return self::DEFAULT_LIMIT;
+            return min(self::DEFAULT_LIMIT, $ceiling);
         }
 
-        return min($limit, $max);
+        return min($limit, $ceiling);
     }
 
     public static function clampOffset(int $offset): int

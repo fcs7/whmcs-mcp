@@ -23,8 +23,13 @@ use NtMcp\Whmcs\LocalApiClient;
  *  - `nt_mcp_enable_write` tem default DESLIGADO;
  *  - valor presente porém não canônico (`'true'`, `'yes'`, `2`) bloqueia e audita.
  *
- * Um write negado deixa rastro no Activity Log — sem payload, só evento e
- * identificadores, como manda o D7.
+ * D12: a recusa é `denied`, não `validation`. O gate fechado não é erro de
+ * input do chamador — nenhuma correção de campo o abre — e não é transitório,
+ * então também não é `downstream`.
+ *
+ * Em CRM-1 este objeto é apenas uma DECISÃO: não existe executor gravável no
+ * addon para ele guardar. CRM-3 o consome dentro dos métodos de escrita do
+ * repositório, antes de resolver a autoria OAuth.
  */
 final class CrmWriteGate
 {
@@ -33,19 +38,17 @@ final class CrmWriteGate
     {
     }
 
-    /**
-     * @param array<string, int|string> $auditIds
-     * @throws CrmException
-     */
-    public function assertWritable(array $auditIds = []): void
+    /** @throws CrmException `denied` */
+    public function assertWritable(): void
     {
         if ($this->isWritable()) {
             return;
         }
 
-        LocalApiClient::auditLog(ActivityEvent::DB_BLOCKED, AuditMetadata::ids($auditIds));
+        $correlationId = Diagnostics::report(Diagnostics::CATEGORY_CONFIG_READ, 'crm_write_gate_closed');
+        LocalApiClient::auditLog(ActivityEvent::DB_BLOCKED, AuditMetadata::none(), $correlationId);
 
-        throw CrmException::validation('write_gate', 'CRM writes are disabled by the current gate configuration');
+        throw CrmException::denied($correlationId);
     }
 
     public function isWritable(): bool
@@ -56,8 +59,7 @@ final class CrmWriteGate
 
         if (!class_exists('\WHMCS\Config\Setting')) {
             // Fora de um WHMCS bootstrapado não há configuração a proteger; o
-            // seam de teste decide. Manter `false` aqui tornaria impossível
-            // exercitar o caminho liberado sem stub de configuração.
+            // seam de teste decide. Sem seam, fecha.
             return false;
         }
 

@@ -45,8 +45,11 @@ final class CrmSchemaFixture
     }
 
     /**
-     * Instalação sem a coluna de atividade nos catálogos — o cenário em que
-     * "ativo" significa apenas "não soft-deleted".
+     * Instalação sem a coluna de atividade nos catálogos.
+     *
+     * Este era o cenário fail-open: o desenho anterior aceitava a instalação e
+     * degradava "ativo" para "não soft-deleted". Agora ele existe para provar o
+     * contrário — atividade não comprovada é `crm_schema_mismatch`.
      *
      * @return array<string, array<int, string>>
      */

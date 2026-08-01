@@ -7,27 +7,29 @@ namespace NtMcp\Crm;
 /**
  * Barreira de schema, por capacidade, ANTES de qualquer consulta operacional.
  *
- * Três desfechos, e só três:
+ * Quatro desfechos, e só quatro:
  *
  *  - tabela mínima ausente            → `crm_unavailable`
  *  - tabela presente, coluna ausente  → `crm_schema_mismatch`
- *  - tudo presente                    → shape com as colunas opcionais provadas
+ *  - metadata indisponível (erro)     → `downstream`, com a correlação do probe
+ *  - tudo presente                    → passa
  *
  * A distinção entre os dois primeiros é o que o operador precisa: "o addon não
  * está instalado" e "o addon está instalado numa versão que não corresponde ao
- * contrato" pedem ações diferentes. O chamador MCP recebe o código; nenhum nome
- * de tabela ou coluna atravessa.
+ * contrato" pedem ações diferentes. O terceiro existe porque uma falha do
+ * driver não é nenhuma das duas — publicá-la como ausência levava caller e
+ * operador à correção errada.
  *
- * O resultado — inclusive a FALHA — é memorizado por instância. Um schema não
- * muda no meio de uma request, e repetir o probe a cada validação de catálogo
- * multiplicaria consultas de metadata sem alterar a resposta.
+ * Memorização por instância: só CONCLUSÕES entram no cache. Uma falha de
+ * metadata é reavaliada na próxima pergunta, para que uma indisponibilidade
+ * transitória não fique congelada pela request inteira.
  *
  * Não existe fallback: nenhuma tabela alternativa é tentada, em particular
  * nenhum nome do contrato fictício anterior.
  */
 final class CrmSchemaGuard
 {
-    /** @var array<string, CrmCapabilityShape|CrmException> */
+    /** @var array<string, true|CrmException> apenas decisões conclusivas */
     private array $decided = [];
 
     public function __construct(private readonly CrmSchemaProbe $probe)
@@ -35,15 +37,26 @@ final class CrmSchemaGuard
     }
 
     /** @throws CrmException */
-    public function assert(CrmCapability $capability): CrmCapabilityShape
+    public function assert(CrmCapability $capability): void
     {
-        $decision = $this->decided[$capability->value] ??= $this->decide($capability);
+        if (isset($this->decided[$capability->value])) {
+            $decision = $this->decided[$capability->value];
+            if ($decision instanceof CrmException) {
+                throw $decision;
+            }
+
+            return;
+        }
+
+        // Uma decisão de metadata indisponível NÃO é memorizada: `decide()`
+        // lança direto e nada é gravado.
+        $decision = $this->decide($capability);
+
+        $this->decided[$capability->value] = $decision;
 
         if ($decision instanceof CrmException) {
             throw $decision;
         }
-
-        return $decision;
     }
 
     /** Conveniência para quem precisa de várias capacidades de uma vez. */
@@ -54,18 +67,11 @@ final class CrmSchemaGuard
         }
     }
 
-    public function isAvailable(CrmCapability $capability): bool
-    {
-        try {
-            $this->assert($capability);
-
-            return true;
-        } catch (CrmException) {
-            return false;
-        }
-    }
-
-    private function decide(CrmCapability $capability): CrmCapabilityShape|CrmException
+    /**
+     * @return true|CrmException conclusão memorizável
+     * @throws CrmException `downstream` quando a metadata é indisponível
+     */
+    private function decide(CrmCapability $capability): true|CrmException
     {
         $requirements = CrmSchema::requirementsFor($capability);
 
@@ -75,26 +81,29 @@ final class CrmSchemaGuard
         }
 
         foreach ($requirements as $table => $columns) {
-            if (!$this->probe->hasTable($table)) {
+            $tableFact = $this->probe->hasTable($table);
+
+            if ($tableFact->isUnknown()) {
+                throw CrmException::downstream((string) $tableFact->correlationId);
+            }
+
+            if ($tableFact->isAbsent()) {
                 return CrmException::unavailable($capability);
             }
 
             foreach ($columns as $column) {
-                if (!$this->probe->hasColumn($table, $column)) {
+                $columnFact = $this->probe->hasColumn($table, $column);
+
+                if ($columnFact->isUnknown()) {
+                    throw CrmException::downstream((string) $columnFact->correlationId);
+                }
+
+                if ($columnFact->isAbsent()) {
                     return CrmException::schemaMismatch($capability);
                 }
             }
         }
 
-        $optional = [];
-        foreach (CrmSchema::optionalColumnsFor($capability) as $table => $columns) {
-            foreach ($columns as $column) {
-                if ($this->probe->hasColumn($table, $column)) {
-                    $optional[$table][] = $column;
-                }
-            }
-        }
-
-        return new CrmCapabilityShape($capability, $optional);
+        return true;
     }
 }

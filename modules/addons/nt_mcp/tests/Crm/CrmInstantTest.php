@@ -92,11 +92,76 @@ class CrmInstantTest extends TestCase
         ];
     }
 
+    // ---------------------------------------------------------------
+    // Intervalo representável — a borda que o banco imporia
+    // ---------------------------------------------------------------
+
+    /**
+     * Depois da conversão UTC, o instante precisa caber no tipo físico. Sem
+     * isto, valores gramaticalmente perfeitos passavam como validados e só
+     * falhavam (ou eram coercidos, conforme o SQL mode) dentro do banco.
+     */
+    #[DataProvider('outOfRangeProvider')]
+    public function test_instants_outside_the_storable_range_are_rejected(string $input): void
+    {
+        $this->assertNull(CrmInstant::tryToUtcMySql($input));
+
+        try {
+            CrmInstant::toUtcMySql($input, 'date');
+            $this->fail('esperava CrmException');
+        } catch (CrmException $e) {
+            $this->assertSame(CrmErrorCode::Validation, $e->errorCode);
+            $this->assertStringContainsString('outside the range', $e->getMessage());
+        }
+    }
+
+    /** @return array<string, array{0:string}> */
+    public static function outOfRangeProvider(): array
+    {
+        return [
+            // Reproduções literais do finding da revisão fria.
+            'ano dez mil por overflow de offset' => ['9999-12-31T23:59:59-14:00'],
+            'ano zero por offset positivo' => ['0001-01-01T00:00:00+14:00'],
+            'ano de quatro dígitos abaixo do piso' => ['0999-06-15T12:00:00Z'],
+            // Bordas exatas, um segundo fora.
+            'um segundo abaixo do piso' => ['1970-01-01T00:00:00Z'],
+            'um segundo acima do teto' => ['2038-01-19T03:14:08Z'],
+            // O offset é o que empurra para fora — a data civil está dentro.
+            'offset positivo cruza o piso' => ['1970-01-01T12:00:00+14:00'],
+            'offset negativo cruza o teto' => ['2038-01-18T23:14:08-04:00'],
+        ];
+    }
+
+    #[DataProvider('rangeEdgeProvider')]
+    public function test_instants_on_the_border_are_accepted(string $input, string $expected): void
+    {
+        $this->assertSame($expected, CrmInstant::toUtcMySql($input, 'date'));
+    }
+
+    /** @return array<string, array{0:string,1:string}> */
+    public static function rangeEdgeProvider(): array
+    {
+        return [
+            'piso exato' => ['1970-01-01T00:00:01Z', '1970-01-01 00:00:01'],
+            'teto exato' => ['2038-01-19T03:14:07Z', '2038-01-19 03:14:07'],
+            // O offset traz para DENTRO da faixa uma data civil que está fora.
+            'offset negativo cruza o piso para dentro' => [
+                '1969-12-31T20:00:01-05:00', '1970-01-01 01:00:01',
+            ],
+            'offset positivo cruza o teto para dentro' => [
+                '2038-01-19T13:14:07+10:00', '2038-01-19 03:14:07',
+            ],
+        ];
+    }
+
     /**
      * A gramática e a política de offset são as MESMAS do perfil público já
      * aprovado; só a saída difere (instante em UTC vs data civil). Este teste
      * existe para que uma mudança futura em um dos dois normalizadores não
      * abra silenciosamente uma divergência de política.
+     *
+     * O intervalo representável é a única divergência INTENCIONAL, coberta
+     * logo abaixo.
      */
     #[DataProvider('policyParityProvider')]
     public function test_offset_policy_matches_the_public_date_profile(string $input): void
@@ -130,6 +195,25 @@ class CrmInstantTest extends TestCase
         }
 
         return $cases;
+    }
+
+    /**
+     * A divergência é intencional e documentada: `DateNormalizer` extrai a data
+     * civil e não tem coluna alvo com faixa estreita; `CrmInstant` grava um
+     * timestamp e precisa caber nela.
+     */
+    public function test_range_is_the_only_intentional_divergence_from_the_public_profile(): void
+    {
+        $beyondTimestamp = '2039-01-01T00:00:00Z';
+
+        $this->assertNotNull(
+            DateNormalizer::tryNormalize($beyondTimestamp),
+            'o perfil público aceita a data civil'
+        );
+        $this->assertNull(
+            CrmInstant::tryToUtcMySql($beyondTimestamp),
+            'o instante do follow-up não cabe na coluna'
+        );
     }
 
     /** O instante não depende do fuso do processo. */

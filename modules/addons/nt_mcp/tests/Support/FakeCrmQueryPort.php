@@ -5,28 +5,26 @@ declare(strict_types=1);
 namespace NtMcp\Tests\Support;
 
 use NtMcp\Crm\CrmException;
-use NtMcp\Crm\CrmMutation;
 use NtMcp\Crm\CrmQueryPort;
 use NtMcp\Crm\CrmSelect;
 use NtMcp\Whmcs\Diagnostics;
 
 /**
- * Execução em memória do seam fechado.
+ * Execução em memória do seam fechado — somente leitura, como o port real.
  *
- * Guarda DUAS coisas que os testes deste ticket precisam provar:
+ * Guarda as consultas executadas, para que os testes possam confirmar que
+ * nenhuma acontece antes do schema guard, que toda leitura filtra o soft-delete
+ * e que o filtro de atividade do catálogo está na query e não em PHP.
  *
- *  - as consultas executadas, para confirmar que nenhuma acontece antes do
- *    schema guard e que toda leitura filtra o soft-delete;
- *  - a CONTAGEM DE EFEITOS, para confirmar que uma falha de schema, recurso,
- *    catálogo, data ou identidade administrativa deixa `mutations` em zero.
+ * A contagem de efeitos de escrita não vive mais aqui: o port não tem mais
+ * método de escrita. Quem prova "zero efeito" agora é `FakeCapsule::$mutations`,
+ * que observa o DRIVER — uma prova mais forte, porque cobre qualquer caminho,
+ * não só o que passa por este dublê.
  */
 final class FakeCrmQueryPort implements CrmQueryPort
 {
     /** @var array<int, CrmSelect> */
     public array $selects = [];
-
-    /** @var array<int, CrmMutation> */
-    public array $mutations = [];
 
     /** @var array<string, array<int, array<string, mixed>>> tabela => linhas */
     private array $rows = [];
@@ -84,20 +82,7 @@ final class FakeCrmQueryPort implements CrmQueryPort
         );
     }
 
-    public function insert(CrmMutation $mutation): int
-    {
-        $this->mutations[] = $mutation;
-
-        return 1;
-    }
-
-    public function update(CrmMutation $mutation): int
-    {
-        $this->mutations[] = $mutation;
-
-        return 1;
-    }
-
+    /** @return array<int, string> */
     public function selectedTables(): array
     {
         return array_map(static fn(CrmSelect $select): string => $select->table, $this->selects);

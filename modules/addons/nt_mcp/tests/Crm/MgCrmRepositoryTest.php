@@ -10,7 +10,6 @@ use NtMcp\Crm\CrmErrorCode;
 use NtMcp\Crm\CrmException;
 use NtMcp\Crm\CrmSchema;
 use NtMcp\Crm\CrmSchemaGuard;
-use NtMcp\Crm\CrmWriteGate;
 use NtMcp\Crm\MgCrmRepository;
 use NtMcp\Tests\Support\CrmSchemaFixture;
 use NtMcp\Tests\Support\FakeAdminIdentityResolver;
@@ -19,10 +18,7 @@ use NtMcp\Tests\Support\FakeCrmSchemaProbe;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
-/**
- * As barreiras da fronteira, uma a uma, e a contagem de efeitos: nenhuma falha
- * deste ticket pode produzir mutação.
- */
+/** As barreiras da fronteira, uma a uma. */
 class MgCrmRepositoryTest extends TestCase
 {
     private FakeCrmQueryPort $port;
@@ -35,13 +31,11 @@ class MgCrmRepositoryTest extends TestCase
     private function repository(
         ?FakeCrmSchemaProbe $probe = null,
         ?FakeAdminIdentityResolver $admins = null,
-        bool $writable = true,
     ): MgCrmRepository {
         return new MgCrmRepository(
             new CrmSchemaGuard($probe ?? FakeCrmSchemaProbe::healthy()),
             $this->port,
             $admins ?? FakeAdminIdentityResolver::resolvingTo(7),
-            new CrmWriteGate($writable),
         );
     }
 
@@ -50,6 +44,17 @@ class MgCrmRepositoryTest extends TestCase
         $this->port->seed(CrmSchema::TABLE_RESOURCES, [
             ['id' => $id, 'name' => 'Ana', 'email' => 'ana@example.test', 'deleted_at' => $deletedAt],
         ]);
+    }
+
+    // ---------------------------------------------------------------
+    // Capacidades
+    // ---------------------------------------------------------------
+
+    /** Um gate que aceita lista vazia não é um gate. */
+    public function test_asserting_no_capability_is_a_programming_error(): void
+    {
+        $this->expectException(\LogicException::class);
+        $this->repository()->assertCapabilities();
     }
 
     // ---------------------------------------------------------------
@@ -176,6 +181,21 @@ class MgCrmRepositoryTest extends TestCase
         );
     }
 
+    /** O filtro de atividade vive na QUERY, sempre. */
+    #[DataProvider('catalogProvider')]
+    public function test_activity_filter_is_always_in_the_query(CrmCatalog $catalog): void
+    {
+        $this->port->seed($catalog->table(), [
+            ['id' => 3, 'name' => 'Qualquer', 'active' => 1, 'deleted_at' => null],
+        ]);
+
+        $this->repository()->requireCatalogEntry($catalog, 3);
+
+        $select = $this->port->selects[0];
+        $this->assertSame(1, $select->conditions[CrmSchema::COLUMN_ACTIVE] ?? null);
+        $this->assertSame([CrmSchema::COLUMN_DELETED_AT], $select->nullColumns);
+    }
+
     /** @return array<string, array{0:CrmCatalog}> */
     public static function catalogProvider(): array
     {
@@ -207,28 +227,38 @@ class MgCrmRepositoryTest extends TestCase
         );
     }
 
-    /** Sem a coluna `active`, "ativo" é "não soft-deleted" — e o filtro some. */
-    public function test_without_active_column_only_soft_delete_filters(): void
+    /**
+     * Sem prova de atividade, o catálogo não é consultado: `crm_schema_mismatch`
+     * antes da query. Era aqui que a versão anterior degradava para soft-delete.
+     */
+    public function test_catalog_without_activity_column_never_reaches_the_query(): void
     {
         $probe = new FakeCrmSchemaProbe(CrmSchemaFixture::withoutCatalogActiveColumn());
         $this->port->seed(CrmCatalog::ResourceType->table(), [
             ['id' => 3, 'name' => 'Lead', 'deleted_at' => null],
         ]);
 
-        $this->assertSame(3, $this->repository($probe)->requireCatalogEntry(CrmCatalog::ResourceType, 3));
-        $this->assertArrayNotHasKey('active', $this->port->selects[0]->conditions);
+        $this->assertSame(
+            CrmErrorCode::SchemaMismatch,
+            $this->capture(
+                fn() => $this->repository($probe)->requireCatalogEntry(CrmCatalog::ResourceType, 3)
+            )->errorCode
+        );
+        $this->assertSame([], $this->port->selects);
     }
 
-    public function test_with_active_column_the_filter_is_applied_in_the_query(): void
+    /** Validar um tipo não pode exigir a tabela de status. */
+    public function test_missing_status_catalog_does_not_block_a_type(): void
     {
+        $probe = FakeCrmSchemaProbe::healthy()->dropTable(CrmSchema::TABLE_RESOURCE_STATUSES);
         $this->port->seed(CrmCatalog::ResourceType->table(), [
             ['id' => 3, 'name' => 'Lead', 'active' => 1, 'deleted_at' => null],
         ]);
 
-        $this->repository()->requireCatalogEntry(CrmCatalog::ResourceType, 3);
-
-        $this->assertSame(1, $this->port->selects[0]->conditions['active'] ?? null);
-        $this->assertSame([CrmSchema::COLUMN_DELETED_AT], $this->port->selects[0]->nullColumns);
+        $this->assertSame(
+            3,
+            $this->repository($probe)->requireCatalogEntry(CrmCatalog::ResourceType, 3)
+        );
     }
 
     public function test_catalog_schema_failure_prevents_the_query(): void
@@ -245,59 +275,29 @@ class MgCrmRepositoryTest extends TestCase
     }
 
     // ---------------------------------------------------------------
-    // Identidade administrativa e ZERO efeito
+    // Identidade administrativa
     // ---------------------------------------------------------------
 
-    public function test_prepare_write_resolves_the_oauth_admin(): void
+    public function test_author_admin_comes_from_the_injected_resolver(): void
     {
-        $context = $this->repository()->prepareWrite('operador', CrmCapability::Resources);
+        $admins = FakeAdminIdentityResolver::resolvingTo(7);
 
-        $this->assertSame(7, $context->adminId);
-        $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $context->timestamp);
-        $this->assertSame([], $this->port->mutations, 'preparar não é escrever');
+        $this->assertSame(7, $this->repository(admins: $admins)->resolveAuthorAdminId('operador'));
+        $this->assertSame(['operador'], $admins->calls);
     }
 
-    public function test_unresolved_admin_blocks_the_write_with_zero_effects(): void
+    /** D12: recusa determinística de identidade é `denied`. */
+    public function test_unresolved_admin_is_denied(): void
     {
         $repository = $this->repository(admins: FakeAdminIdentityResolver::failing());
 
         $this->assertSame(
-            CrmErrorCode::Downstream,
-            $this->capture(fn() => $repository->prepareWrite('fantasma', CrmCapability::Resources))->errorCode
+            CrmErrorCode::Denied,
+            $this->capture(fn() => $repository->resolveAuthorAdminId('fantasma'))->errorCode
         );
-        $this->assertSame([], $this->port->mutations);
     }
 
-    public function test_closed_schema_blocks_the_write_before_touching_identity(): void
-    {
-        $probe = FakeCrmSchemaProbe::healthy()->dropTable(CrmSchema::TABLE_RESOURCES);
-        $admins = FakeAdminIdentityResolver::resolvingTo(7);
-
-        $this->assertSame(
-            CrmErrorCode::Unavailable,
-            $this->capture(
-                fn() => $this->repository($probe, $admins)->prepareWrite('operador', CrmCapability::Resources)
-            )->errorCode
-        );
-        $this->assertSame([], $admins->calls, 'schema fechado nem chega a consultar admin');
-        $this->assertSame([], $this->port->mutations);
-    }
-
-    public function test_closed_write_gate_blocks_before_touching_identity(): void
-    {
-        $admins = FakeAdminIdentityResolver::resolvingTo(7);
-
-        $exception = $this->capture(
-            fn() => $this->repository(admins: $admins, writable: false)
-                ->prepareWrite('operador', CrmCapability::Resources)
-        );
-
-        $this->assertSame(CrmErrorCode::Validation, $exception->errorCode);
-        $this->assertSame([], $admins->calls);
-        $this->assertSame([], $this->port->mutations);
-    }
-
-    /** Falha do driver vira `downstream`, sem mensagem crua e sem efeito. */
+    /** Falha do driver vira `downstream`, sem mensagem crua. */
     public function test_driver_failure_becomes_downstream_without_leaking(): void
     {
         $this->seedResource(42);
@@ -308,7 +308,18 @@ class MgCrmRepositoryTest extends TestCase
         $this->assertSame(CrmErrorCode::Downstream, $exception->errorCode);
         $this->assertStringNotContainsString('hunter2SuperSecret', $exception->getMessage());
         $this->assertStringNotContainsString('SQLSTATE', $exception->getMessage());
-        $this->assertSame([], $this->port->mutations);
+    }
+
+    /** Metadata indisponível também é `downstream`, não `crm_unavailable`. */
+    public function test_metadata_failure_becomes_downstream(): void
+    {
+        $probe = FakeCrmSchemaProbe::healthy()->failWith('c0ffee01');
+
+        $exception = $this->capture(fn() => $this->repository($probe)->requireResource(42));
+
+        $this->assertSame(CrmErrorCode::Downstream, $exception->errorCode);
+        $this->assertSame('c0ffee01', $exception->correlationId);
+        $this->assertSame([], $this->port->selects);
     }
 
     // ---------------------------------------------------------------
@@ -327,6 +338,8 @@ class MgCrmRepositoryTest extends TestCase
             CrmSchema::MAX_LIMIT_PER_STATUS,
             $repository->clampLimit(500, CrmSchema::MAX_LIMIT_PER_STATUS)
         );
+        // Um `$max` inflado pelo chamador não pode furar o teto compartilhado.
+        $this->assertSame(CrmSchema::MAX_LIMIT, $repository->clampLimit(10_000, 10_000));
         $this->assertSame(0, $repository->clampOffset(-1));
         $this->assertSame(CrmSchema::MAX_OFFSET, $repository->clampOffset(PHP_INT_MAX));
     }

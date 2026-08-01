@@ -36,7 +36,9 @@ final class FakeAdminIdentityResolver implements AdminIdentityResolver
         $this->calls[] = $username;
 
         if ($this->adminId === null) {
-            throw CrmException::downstream(
+            // D12: recusa determinística de identidade é `denied`, não
+            // `downstream` — não é transitória e não se corrige com retry.
+            throw CrmException::denied(
                 Diagnostics::report(Diagnostics::CATEGORY_ADMIN_LOOKUP, 'crm_admin_identity_test')
             );
         }

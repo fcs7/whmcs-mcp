@@ -29,11 +29,18 @@ enum CrmCatalog: string
         };
     }
 
+    /**
+     * Cada catálogo é uma capacidade PRÓPRIA. Agrupá-los fazia a ausência de
+     * `crm_resources_statuses` recusar um tipo íntegro em
+     * `crm_resources_types`, que é outra tabela e outra query.
+     */
     public function capability(): CrmCapability
     {
         return match ($this) {
-            self::ResourceType, self::ResourceStatus => CrmCapability::ResourceCatalogs,
-            self::FollowupType, self::FollowupStatus => CrmCapability::FollowupCatalogs,
+            self::ResourceType => CrmCapability::ResourceTypes,
+            self::ResourceStatus => CrmCapability::ResourceStatuses,
+            self::FollowupType => CrmCapability::FollowupTypes,
+            self::FollowupStatus => CrmCapability::FollowupStatuses,
         };
     }
 

@@ -89,6 +89,25 @@ final class CrmException extends \RuntimeException
     }
 
     /**
+     * Recusa determinística (D12): gate WRITE fechado/inválido ou identidade
+     * OAuth que não resolve para exatamente um admin ativo.
+     *
+     * A mensagem é UMA SÓ para as duas famílias, de propósito: o chamador não
+     * pode inferir se foi a configuração do gate ou a identidade que negou —
+     * isso é informação de configuração interna. O operador distingue pelo
+     * contexto fechado do diagnóstico, ligado por esta correlação.
+     */
+    public static function denied(?string $correlationId = null): self
+    {
+        return new self(
+            'The CRM operation was denied by the server and will not succeed on retry. '
+            . 'The operator log holds the reason under the correlation id.',
+            CrmErrorCode::Denied,
+            $correlationId
+        );
+    }
+
+    /**
      * Falha inesperada após as validações. A mensagem carrega apenas a
      * correlação; classe e fingerprint da causa ficam em campos estruturados.
      */

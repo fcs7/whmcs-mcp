@@ -11,7 +11,7 @@ use NtMcp\Crm\CrmException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
-/** O contrato de falha: seis códigos, mensagens nossas, nada da causa. */
+/** O contrato de falha: sete códigos, mensagens nossas, nada da causa. */
 class CrmExceptionTest extends TestCase
 {
     /** Os valores públicos são os da decisão de requisitos, exatamente. */
@@ -24,6 +24,7 @@ class CrmExceptionTest extends TestCase
                 'crm_resource_not_found',
                 'crm_catalog_invalid',
                 'validation',
+                'denied',
                 'downstream',
             ],
             array_map(static fn(CrmErrorCode $c): string => $c->value, CrmErrorCode::cases())
@@ -34,7 +35,7 @@ class CrmExceptionTest extends TestCase
     {
         $this->assertSame(
             CrmErrorCode::Unavailable,
-            CrmException::unavailable(CrmCapability::Resources)->errorCode
+            CrmException::unavailable(CrmCapability::ResourceCore)->errorCode
         );
         $this->assertSame(
             CrmErrorCode::SchemaMismatch,
@@ -46,7 +47,28 @@ class CrmExceptionTest extends TestCase
             CrmException::catalogInvalid(CrmCatalog::FollowupStatus)->errorCode
         );
         $this->assertSame(CrmErrorCode::Validation, CrmException::validation('date', 'x')->errorCode);
+        $this->assertSame(CrmErrorCode::Denied, CrmException::denied()->errorCode);
         $this->assertSame(CrmErrorCode::Downstream, CrmException::downstream('deadbeef')->errorCode);
+    }
+
+    /**
+     * D12: `denied` é UMA mensagem para gate e identidade. O chamador não pode
+     * inferir qual condição interna negou, e o texto precisa dizer que retry
+     * não resolve — foi a confusão que motivou a decisão.
+     */
+    public function test_denied_does_not_reveal_which_condition_refused(): void
+    {
+        $fromGate = CrmException::denied('deadbeef');
+        $fromIdentity = CrmException::denied('c0ffee01');
+
+        $this->assertSame($fromGate->getMessage(), $fromIdentity->getMessage());
+
+        foreach (['gate', 'admin', 'username', 'readonly', 'disabled', 'tbladmins'] as $leak) {
+            $this->assertStringNotContainsString($leak, $fromGate->getMessage());
+        }
+
+        $this->assertStringContainsString('retry', $fromGate->getMessage());
+        $this->assertSame('deadbeef', $fromGate->toPublicArray()['correlation_id']);
     }
 
     /**
@@ -136,7 +158,7 @@ class CrmExceptionTest extends TestCase
     public function test_messages_never_expose_physical_schema_names(): void
     {
         $messages = [
-            CrmException::unavailable(CrmCapability::Resources)->getMessage(),
+            CrmException::unavailable(CrmCapability::ResourceCore)->getMessage(),
             CrmException::schemaMismatch(CrmCapability::CustomFields)->getMessage(),
             CrmException::resourceNotFound()->getMessage(),
             CrmException::catalogInvalid(CrmCatalog::ResourceType)->getMessage(),

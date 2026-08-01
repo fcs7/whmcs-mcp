@@ -8,15 +8,17 @@ use NtMcp\Crm\CrmCapability;
 use NtMcp\Crm\CrmErrorCode;
 use NtMcp\Crm\CrmException;
 use NtMcp\Crm\CrmSchema;
+use NtMcp\Crm\CrmSchemaFact;
 use NtMcp\Crm\CrmSchemaGuard;
+use NtMcp\Crm\CrmSchemaProbe;
 use NtMcp\Tests\Support\CrmSchemaFixture;
 use NtMcp\Tests\Support\FakeCrmSchemaProbe;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Todos os estados do schema guard, incluindo o que a revisão exige
- * explicitamente: TABELA PRESENTE COM COLUNA FALTANDO.
+ * Todos os estados do schema guard: presente, ausente, coluna faltando e
+ * metadata indisponível.
  */
 class CrmSchemaGuardTest extends TestCase
 {
@@ -59,11 +61,14 @@ class CrmSchemaGuardTest extends TestCase
     public static function missingTableProvider(): array
     {
         return [
-            'resources' => [CrmCapability::Resources, CrmSchema::TABLE_RESOURCES],
+            'resource identity' => [CrmCapability::ResourceIdentity, CrmSchema::TABLE_RESOURCES],
+            'resource core' => [CrmCapability::ResourceCore, CrmSchema::TABLE_RESOURCES],
             'followups' => [CrmCapability::Followups, CrmSchema::TABLE_FOLLOWUPS],
             'notes' => [CrmCapability::Notes, CrmSchema::TABLE_NOTES],
-            'resource catalogs' => [CrmCapability::ResourceCatalogs, CrmSchema::TABLE_RESOURCE_STATUSES],
-            'followup catalogs' => [CrmCapability::FollowupCatalogs, CrmSchema::TABLE_FOLLOWUP_TYPES],
+            'resource types' => [CrmCapability::ResourceTypes, CrmSchema::TABLE_RESOURCE_TYPES],
+            'resource statuses' => [CrmCapability::ResourceStatuses, CrmSchema::TABLE_RESOURCE_STATUSES],
+            'followup types' => [CrmCapability::FollowupTypes, CrmSchema::TABLE_FOLLOWUP_TYPES],
+            'followup statuses' => [CrmCapability::FollowupStatuses, CrmSchema::TABLE_FOLLOWUP_STATUSES],
             'custom fields' => [CrmCapability::CustomFields, CrmSchema::TABLE_FIELD_VALUES],
             'admin identity' => [CrmCapability::AdminIdentity, CrmSchema::TABLE_ADMINS],
         ];
@@ -87,11 +92,11 @@ class CrmSchemaGuardTest extends TestCase
     public static function missingColumnProvider(): array
     {
         return [
-            'resources sem soft-delete' => [
-                CrmCapability::Resources, CrmSchema::TABLE_RESOURCES, 'deleted_at',
+            'identidade sem soft-delete' => [
+                CrmCapability::ResourceIdentity, CrmSchema::TABLE_RESOURCES, 'deleted_at',
             ],
-            'resources sem short_description' => [
-                CrmCapability::Resources, CrmSchema::TABLE_RESOURCES, 'short_description',
+            'core sem short_description' => [
+                CrmCapability::ResourceCore, CrmSchema::TABLE_RESOURCES, 'short_description',
             ],
             'followups sem date' => [
                 CrmCapability::Followups, CrmSchema::TABLE_FOLLOWUPS, 'date',
@@ -103,7 +108,10 @@ class CrmSchemaGuardTest extends TestCase
                 CrmCapability::Notes, CrmSchema::TABLE_NOTES, 'content',
             ],
             'catálogo sem name' => [
-                CrmCapability::ResourceCatalogs, CrmSchema::TABLE_RESOURCE_TYPES, 'name',
+                CrmCapability::ResourceTypes, CrmSchema::TABLE_RESOURCE_TYPES, 'name',
+            ],
+            'catálogo sem active' => [
+                CrmCapability::ResourceTypes, CrmSchema::TABLE_RESOURCE_TYPES, 'active',
             ],
             'admins sem disabled' => [
                 CrmCapability::AdminIdentity, CrmSchema::TABLE_ADMINS, 'disabled',
@@ -112,17 +120,76 @@ class CrmSchemaGuardTest extends TestCase
     }
 
     /**
-     * O recorte por capacidade é o que impede uma incerteza local de derrubar a
-     * superfície inteira: sem `crm_resources.admin_id` as LEITURAS continuam
-     * disponíveis, só a atribuição falha.
+     * Atividade não comprovada é MISMATCH, nunca degradação para soft-delete.
+     * É o finding fail-open que a revisão fria reproduziu.
      */
+    #[DataProvider('catalogCapabilityProvider')]
+    public function test_catalog_without_activity_column_is_schema_mismatch(CrmCapability $capability): void
+    {
+        $probe = new FakeCrmSchemaProbe(CrmSchemaFixture::withoutCatalogActiveColumn());
+
+        $this->assertSame(
+            CrmErrorCode::SchemaMismatch,
+            $this->capture(fn() => $this->guard($probe)->assert($capability))->errorCode
+        );
+    }
+
+    /** @return array<string, array{0:CrmCapability}> */
+    public static function catalogCapabilityProvider(): array
+    {
+        return [
+            'resource types' => [CrmCapability::ResourceTypes],
+            'resource statuses' => [CrmCapability::ResourceStatuses],
+            'followup types' => [CrmCapability::FollowupTypes],
+            'followup statuses' => [CrmCapability::FollowupStatuses],
+        ];
+    }
+
+    /**
+     * O recorte mínimo é o que impede drift localizado de derrubar operação
+     * alheia: sem `short_description`, a identidade do recurso continua íntegra.
+     */
+    public function test_core_drift_does_not_break_resource_identity(): void
+    {
+        $guard = $this->guard(
+            FakeCrmSchemaProbe::healthy()->dropColumn(CrmSchema::TABLE_RESOURCES, 'short_description')
+        );
+
+        $guard->assert(CrmCapability::ResourceIdentity);
+
+        $this->assertSame(
+            CrmErrorCode::SchemaMismatch,
+            $this->capture(fn() => $guard->assert(CrmCapability::ResourceCore))->errorCode
+        );
+    }
+
+    /** Cada catálogo é independente dos outros três. */
+    public function test_one_missing_catalog_does_not_close_the_others(): void
+    {
+        $guard = $this->guard(
+            FakeCrmSchemaProbe::healthy()->dropTable(CrmSchema::TABLE_RESOURCE_STATUSES)
+        );
+
+        $guard->assert(CrmCapability::ResourceTypes);
+        $guard->assert(CrmCapability::FollowupTypes);
+        $guard->assert(CrmCapability::FollowupStatuses);
+
+        $this->assertSame(
+            CrmErrorCode::Unavailable,
+            $this->capture(fn() => $guard->assert(CrmCapability::ResourceStatuses))->errorCode
+        );
+    }
+
+    /** Sem `crm_resources.admin_id` as leituras continuam disponíveis. */
     public function test_missing_assignment_column_does_not_disable_reads(): void
     {
-        $probe = FakeCrmSchemaProbe::healthy()->dropColumn(CrmSchema::TABLE_RESOURCES, 'admin_id');
-        $guard = $this->guard($probe);
+        $guard = $this->guard(
+            FakeCrmSchemaProbe::healthy()->dropColumn(CrmSchema::TABLE_RESOURCES, 'admin_id')
+        );
 
-        $this->assertTrue($guard->isAvailable(CrmCapability::Resources));
-        $this->assertFalse($guard->isAvailable(CrmCapability::ResourceAssignment));
+        $guard->assert(CrmCapability::ResourceIdentity);
+        $guard->assert(CrmCapability::ResourceCore);
+
         $this->assertSame(
             CrmErrorCode::SchemaMismatch,
             $this->capture(fn() => $guard->assert(CrmCapability::ResourceAssignment))->errorCode
@@ -132,33 +199,91 @@ class CrmSchemaGuardTest extends TestCase
     /** Custom fields com nome de tabela não confirmado falha SOZINHA. */
     public function test_missing_custom_fields_tables_do_not_disable_the_rest(): void
     {
-        $probe = FakeCrmSchemaProbe::healthy()
-            ->dropTable(CrmSchema::TABLE_FIELDS)
-            ->dropTable(CrmSchema::TABLE_FIELD_VALUES);
-        $guard = $this->guard($probe);
+        $guard = $this->guard(
+            FakeCrmSchemaProbe::healthy()
+                ->dropTable(CrmSchema::TABLE_FIELDS)
+                ->dropTable(CrmSchema::TABLE_FIELD_VALUES)
+        );
 
-        $this->assertFalse($guard->isAvailable(CrmCapability::CustomFields));
+        $this->assertSame(
+            CrmErrorCode::Unavailable,
+            $this->capture(fn() => $guard->assert(CrmCapability::CustomFields))->errorCode
+        );
 
-        foreach ([CrmCapability::Resources, CrmCapability::Followups, CrmCapability::Notes] as $capability) {
-            $this->assertTrue($guard->isAvailable($capability), $capability->value);
+        foreach ([CrmCapability::ResourceIdentity, CrmCapability::Followups, CrmCapability::Notes] as $ok) {
+            $guard->assert($ok);
         }
     }
 
-    /** Coluna opcional presente é reportada; ausente não invalida a capacidade. */
-    public function test_optional_active_column_is_detected_when_present(): void
-    {
-        $shape = $this->guard(FakeCrmSchemaProbe::healthy())->assert(CrmCapability::ResourceCatalogs);
+    // ---------------------------------------------------------------
+    // Terceiro estado: metadata indisponível
+    // ---------------------------------------------------------------
 
-        $this->assertTrue($shape->hasOptionalColumn(CrmSchema::TABLE_RESOURCE_TYPES, 'active'));
+    /** Erro de metadata NÃO é ausência: é `downstream`, com correlação. */
+    public function test_metadata_error_is_downstream_not_absence(): void
+    {
+        $probe = FakeCrmSchemaProbe::healthy()->failWith('abcd1234');
+
+        $exception = $this->capture(fn() => $this->guard($probe)->assert(CrmCapability::ResourceIdentity));
+
+        $this->assertSame(CrmErrorCode::Downstream, $exception->errorCode);
+        $this->assertSame('abcd1234', $exception->correlationId);
+        $this->assertStringNotContainsString('not installed', $exception->getMessage());
     }
 
-    public function test_optional_active_column_absent_still_satisfies_the_capability(): void
+    /** Falha em `hasColumn` também é `downstream`, não mismatch. */
+    public function test_metadata_error_after_a_present_table_is_downstream(): void
     {
-        $probe = new FakeCrmSchemaProbe(CrmSchemaFixture::withoutCatalogActiveColumn());
+        // A tabela responde presente; só a pergunta de coluna falha.
+        $failing = new class implements CrmSchemaProbe {
+            public function hasTable(string $table): CrmSchemaFact
+            {
+                return CrmSchemaFact::present();
+            }
 
-        $shape = $this->guard($probe)->assert(CrmCapability::ResourceCatalogs);
+            public function hasColumn(string $table, string $column): CrmSchemaFact
+            {
+                return CrmSchemaFact::unknown('feed0001');
+            }
+        };
 
-        $this->assertFalse($shape->hasOptionalColumn(CrmSchema::TABLE_RESOURCE_TYPES, 'active'));
+        $exception = $this->capture(
+            fn() => (new CrmSchemaGuard($failing))->assert(CrmCapability::ResourceIdentity)
+        );
+
+        $this->assertSame(CrmErrorCode::Downstream, $exception->errorCode);
+        $this->assertSame('feed0001', $exception->correlationId);
+    }
+
+    /** Falha transitória não é memorizada: a próxima pergunta reprova o schema. */
+    public function test_metadata_error_is_not_memoised(): void
+    {
+        $probe = FakeCrmSchemaProbe::healthy()->failWith();
+        $guard = $this->guard($probe);
+
+        $this->capture(fn() => $guard->assert(CrmCapability::ResourceIdentity));
+        $callsAfterFailure = count($probe->calls);
+
+        $this->capture(fn() => $guard->assert(CrmCapability::ResourceIdentity));
+
+        $this->assertGreaterThan(
+            $callsAfterFailure,
+            count($probe->calls),
+            'erro de metadata precisa ser reavaliado, não congelado'
+        );
+    }
+
+    /** Já uma CONCLUSÃO é memorizada, inclusive a negativa. */
+    public function test_conclusive_decision_is_memoised_including_the_failure(): void
+    {
+        $probe = FakeCrmSchemaProbe::healthy()->dropTable(CrmSchema::TABLE_NOTES);
+        $guard = $this->guard($probe);
+
+        $this->capture(fn() => $guard->assert(CrmCapability::Notes));
+        $callsAfterFirst = count($probe->calls);
+        $this->capture(fn() => $guard->assert(CrmCapability::Notes));
+
+        $this->assertSame($callsAfterFirst, count($probe->calls));
     }
 
     /** Instalação vazia: nada disponível, e nunca uma exceção fora do enum. */
@@ -172,25 +297,12 @@ class CrmSchemaGuardTest extends TestCase
         }
     }
 
-    /** A decisão é memorizada: o probe não é reexecutado a cada validação. */
-    public function test_decision_is_memoised_including_the_failure(): void
-    {
-        $probe = FakeCrmSchemaProbe::healthy()->dropTable(CrmSchema::TABLE_NOTES);
-        $guard = $this->guard($probe);
-
-        $this->capture(fn() => $guard->assert(CrmCapability::Notes));
-        $callsAfterFirst = count($probe->calls);
-        $this->capture(fn() => $guard->assert(CrmCapability::Notes));
-
-        $this->assertSame($callsAfterFirst, count($probe->calls), 'a falha também precisa ser memorizada');
-    }
-
     /** Nenhuma mensagem carrega nome de tabela, coluna ou SQL. */
     public function test_messages_never_expose_physical_names(): void
     {
         $probe = FakeCrmSchemaProbe::healthy()->dropColumn(CrmSchema::TABLE_RESOURCES, 'email');
 
-        $message = $this->capture(fn() => $this->guard($probe)->assert(CrmCapability::Resources))->getMessage();
+        $message = $this->capture(fn() => $this->guard($probe)->assert(CrmCapability::ResourceCore))->getMessage();
 
         foreach (['crm_resources', 'email', 'SELECT', 'mod_mgcrm'] as $forbidden) {
             $this->assertStringNotContainsString($forbidden, $message);
@@ -203,7 +315,7 @@ class CrmSchemaGuardTest extends TestCase
         $probe = FakeCrmSchemaProbe::healthy()->dropTable(CrmSchema::TABLE_RESOURCES);
 
         $exception = $this->capture(fn() => $this->guard($probe)->assertAll(
-            CrmCapability::Resources,
+            CrmCapability::ResourceIdentity,
             CrmCapability::Notes,
         ));
 

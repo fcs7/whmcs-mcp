@@ -10,7 +10,6 @@ use NtMcp\Crm\CapsuleSchemaProbe;
 use NtMcp\Crm\CrmCapability;
 use NtMcp\Crm\CrmErrorCode;
 use NtMcp\Crm\CrmException;
-use NtMcp\Crm\CrmMutation;
 use NtMcp\Crm\CrmSchema;
 use NtMcp\Crm\CrmSchemaGuard;
 use NtMcp\Crm\CrmSelect;
@@ -23,7 +22,7 @@ use NtMcp\Tests\Support\FakeSchemaBuilder;
 use PHPUnit\Framework\TestCase;
 
 /**
- * As duas implementações que falam com o driver, exercitadas no caminho REAL.
+ * As implementações que falam com o driver, exercitadas no caminho REAL.
  *
  * Um dublê do repositório provaria só o dublê. Aqui a cadeia
  * `table()->select()->where()->whereNull()->orderBy()->skip()->take()->get()` é
@@ -52,20 +51,20 @@ class CapsuleCrmBoundaryTest extends TestCase
     }
 
     // ---------------------------------------------------------------
-    // Probe: metadata e só metadata
+    // Probe: metadata, e só metadata
     // ---------------------------------------------------------------
 
     public function test_probe_reads_metadata_and_never_touches_rows(): void
     {
         FakeSchemaBuilder::install(CrmSchemaFixture::completeInstallation());
 
-        (new CrmSchemaGuard(new CapsuleSchemaProbe()))->assert(CrmCapability::Resources);
+        (new CrmSchemaGuard(new CapsuleSchemaProbe()))->assert(CrmCapability::ResourceCore);
 
         $this->assertNotEmpty(FakeSchemaBuilder::$calls, 'o probe precisa consultar metadata');
         $this->assertSame([], FakeCapsule::$calls, 'nenhum acesso a linha durante o probe');
     }
 
-    public function test_probe_caches_each_question_once(): void
+    public function test_probe_caches_each_conclusive_question_once(): void
     {
         FakeSchemaBuilder::install(CrmSchemaFixture::completeInstallation());
         $probe = new CapsuleSchemaProbe();
@@ -81,17 +80,43 @@ class CapsuleCrmBoundaryTest extends TestCase
         );
     }
 
-    /** Driver fora do ar durante o probe: fail-closed, sem vazar a mensagem. */
-    public function test_probe_failure_fails_closed_without_leaking(): void
+    /**
+     * Driver de metadata fora do ar: o resultado é `downstream`, NÃO
+     * `crm_unavailable`. Indisponibilidade transitória não é addon ausente.
+     */
+    public function test_metadata_failure_is_downstream_and_leaks_nothing(): void
     {
         FakeSchemaBuilder::$failure = new \RuntimeException('SQLSTATE[28000] password=hunter2SuperSecret');
 
         $guard = new CrmSchemaGuard(new CapsuleSchemaProbe());
 
-        $this->assertFalse($guard->isAvailable(CrmCapability::Resources));
+        try {
+            $guard->assert(CrmCapability::ResourceIdentity);
+            $this->fail('esperava CrmException');
+        } catch (CrmException $e) {
+            $this->assertSame(CrmErrorCode::Downstream, $e->errorCode);
+            $this->assertStringNotContainsString('not installed', $e->getMessage());
+            $this->assertStringNotContainsString('hunter2SuperSecret', $e->getMessage());
+        }
+
         $this->assertStringNotContainsString('hunter2SuperSecret', ErrorLogSpy::contents());
         $this->assertStringNotContainsString('hunter2SuperSecret', implode("\n", ActivityLogSpy::entries()));
         $this->assertTrue(ErrorLogSpy::hasLineContaining('context=crm_schema_probe'));
+    }
+
+    /** O erro não entra no cache: o probe volta a perguntar. */
+    public function test_metadata_failure_is_not_cached_as_absence(): void
+    {
+        FakeSchemaBuilder::$failure = new \RuntimeException('driver down');
+        $probe = new CapsuleSchemaProbe();
+
+        $this->assertTrue($probe->hasTable(CrmSchema::TABLE_RESOURCES)->isUnknown());
+
+        // Driver volta: a resposta precisa mudar, não ficar congelada.
+        FakeSchemaBuilder::$failure = null;
+        FakeSchemaBuilder::install(CrmSchemaFixture::completeInstallation());
+
+        $this->assertTrue($probe->hasTable(CrmSchema::TABLE_RESOURCES)->isPresent());
     }
 
     // ---------------------------------------------------------------
@@ -175,21 +200,17 @@ class CapsuleCrmBoundaryTest extends TestCase
     }
 
     // ---------------------------------------------------------------
-    // Gate de escrita
+    // Gate de escrita — D12: recusa é `denied`
     // ---------------------------------------------------------------
 
-    /** Default DESLIGADO: sem opt-in explícito, nenhuma mutação acontece. */
-    public function test_write_gate_is_closed_by_default_and_leaves_no_effect(): void
+    public function test_write_gate_is_closed_by_default_and_denies(): void
     {
-        FakeCapsule::withRows(CrmSchema::TABLE_NOTES, []);
-
         try {
-            (new CapsuleQueryPort())->insert(
-                CrmMutation::insert(CrmSchema::TABLE_NOTES, ['resource_id' => 7, 'content' => 'x'])
-            );
+            (new CrmWriteGate())->assertWritable();
             $this->fail('esperava CrmException');
         } catch (CrmException $e) {
-            $this->assertSame(CrmErrorCode::Validation, $e->errorCode);
+            $this->assertSame(CrmErrorCode::Denied, $e->errorCode);
+            $this->assertNotNull($e->correlationId);
         }
 
         $this->assertSame([], FakeCapsule::$mutations, 'gate fechado não pode produzir efeito');
@@ -228,39 +249,16 @@ class CapsuleCrmBoundaryTest extends TestCase
         $this->assertTrue(ErrorLogSpy::hasLineContaining('category=config_read_failure'));
     }
 
-    public function test_opted_in_write_reaches_the_driver_once(): void
+    /** Com o opt-in explícito o gate abre — e continua sem executor gravável. */
+    public function test_opted_in_gate_opens_but_no_write_path_exists(): void
     {
         \WHMCS\Config\Setting::setValue('nt_mcp_enable_write', '1');
-        FakeCapsule::withRows(CrmSchema::TABLE_NOTES, []);
 
-        $id = (new CapsuleQueryPort())->insert(
-            CrmMutation::insert(CrmSchema::TABLE_NOTES, ['resource_id' => 7, 'content' => 'x'])
-        );
+        (new CrmWriteGate())->assertWritable();
 
-        $this->assertSame(1, $id);
-        $this->assertCount(1, FakeCapsule::$mutations);
-        $this->assertSame('INSERT', FakeCapsule::$mutations[0]['verb']);
-        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP DB INSERT'));
-        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP DB OK'));
-    }
-
-    /** D7: o Activity Log recebe identificadores, nunca o texto livre. */
-    public function test_activity_log_records_ids_not_free_text(): void
-    {
-        \WHMCS\Config\Setting::setValue('nt_mcp_enable_write', '1');
-        FakeCapsule::withRows(CrmSchema::TABLE_NOTES, []);
-
-        (new CapsuleQueryPort())->insert(CrmMutation::insert(CrmSchema::TABLE_NOTES, [
-            'resource_id' => 7,
-            'admin_id' => 3,
-            'content' => 'hunter2SuperSecret 123.456.789-00',
-        ]));
-
-        $entries = implode("\n", ActivityLogSpy::entries());
-
-        $this->assertStringContainsString('resource_id', $entries);
-        $this->assertStringNotContainsString('hunter2SuperSecret', $entries);
-        $this->assertStringNotContainsString('123.456.789-00', $entries);
+        $this->assertSame([], FakeCapsule::$mutations, 'CRM-1 não grava nem com o gate aberto');
+        $this->assertFalse(method_exists(CapsuleQueryPort::class, 'insert'));
+        $this->assertFalse(method_exists(CapsuleQueryPort::class, 'update'));
     }
 
     // ---------------------------------------------------------------
@@ -287,45 +285,84 @@ class CapsuleCrmBoundaryTest extends TestCase
         $this->assertSame(9, $this->resolver()->resolveActiveAdminId('operador'));
     }
 
-    public function test_disabled_admin_is_refused(): void
+    public function test_disabled_admin_is_denied(): void
     {
         FakeCapsule::withRows(CrmSchema::TABLE_ADMINS, [
             ['id' => 9, 'username' => 'operador', 'disabled' => 1],
         ]);
 
-        $this->assertSame(
-            CrmErrorCode::Downstream,
-            $this->captureAdmin('operador')->errorCode
-        );
+        $this->assertSame(CrmErrorCode::Denied, $this->captureAdmin('operador')->errorCode);
     }
 
-    public function test_unknown_admin_is_refused(): void
+    public function test_unknown_admin_is_denied(): void
     {
         FakeCapsule::withRows(CrmSchema::TABLE_ADMINS, []);
 
-        $this->assertSame(CrmErrorCode::Downstream, $this->captureAdmin('fantasma')->errorCode);
+        $this->assertSame(CrmErrorCode::Denied, $this->captureAdmin('fantasma')->errorCode);
     }
 
     /** Ambiguidade nunca escolhe o primeiro: recusa. */
-    public function test_ambiguous_admin_is_refused(): void
+    public function test_ambiguous_admin_is_denied(): void
     {
         FakeCapsule::withRows(CrmSchema::TABLE_ADMINS, [
             ['id' => 9, 'username' => 'operador', 'disabled' => 0],
             ['id' => 11, 'username' => 'operador', 'disabled' => 0],
         ]);
 
-        $this->assertSame(CrmErrorCode::Downstream, $this->captureAdmin('operador')->errorCode);
+        $this->assertSame(CrmErrorCode::Denied, $this->captureAdmin('operador')->errorCode);
     }
 
-    public function test_blank_username_is_refused_before_any_query(): void
+    public function test_blank_username_is_denied_before_any_query(): void
     {
         FakeCapsule::withRows(CrmSchema::TABLE_ADMINS, [
             ['id' => 9, 'username' => 'operador', 'disabled' => 0],
         ]);
         FakeCapsule::$calls = [];
 
-        $this->assertSame(CrmErrorCode::Downstream, $this->captureAdmin('   ')->errorCode);
+        $this->assertSame(CrmErrorCode::Denied, $this->captureAdmin('   ')->errorCode);
         $this->assertSame([], FakeCapsule::$calls, 'username vazio não chega ao banco');
+    }
+
+    /**
+     * REGRESSÃO do cache positivo: depois da revogação, a MESMA instância
+     * precisa recusar. Antes, ela devolvia o id memorizado sem consultar nada.
+     */
+    public function test_revoked_admin_is_denied_by_the_same_resolver_instance(): void
+    {
+        FakeCapsule::withRows(CrmSchema::TABLE_ADMINS, [
+            ['id' => 9, 'username' => 'operador', 'disabled' => 0],
+        ]);
+        $resolver = $this->resolver();
+
+        $this->assertSame(9, $resolver->resolveActiveAdminId('operador'));
+
+        FakeCapsule::withRows(CrmSchema::TABLE_ADMINS, [
+            ['id' => 9, 'username' => 'operador', 'disabled' => 1],
+        ]);
+        FakeCapsule::$calls = [];
+
+        try {
+            $resolver->resolveActiveAdminId('operador');
+            $this->fail('esperava CrmException após a revogação');
+        } catch (CrmException $e) {
+            $this->assertSame(CrmErrorCode::Denied, $e->errorCode);
+        }
+
+        $this->assertContains(
+            'table(tbladmins)',
+            FakeCapsule::$calls,
+            'a atividade precisa ser revalidada, não lida do cache'
+        );
+    }
+
+    /** Falha real do driver na consulta de admin continua `downstream`. */
+    public function test_driver_failure_during_admin_lookup_is_downstream(): void
+    {
+        FakeSchemaBuilder::install(CrmSchemaFixture::completeInstallation());
+        FakeCapsule::withRows(CrmSchema::TABLE_ADMINS, []);
+        FakeCapsule::$failure = new \RuntimeException('connection refused');
+
+        $this->assertSame(CrmErrorCode::Downstream, $this->captureAdmin('operador')->errorCode);
     }
 
     /** Nenhuma recusa devolve o superadmin, um id seed ou o admin global. */
@@ -337,7 +374,7 @@ class CapsuleCrmBoundaryTest extends TestCase
 
         $exception = $this->captureAdmin('operador');
 
-        $this->assertSame(CrmErrorCode::Downstream, $exception->errorCode);
+        $this->assertSame(CrmErrorCode::Denied, $exception->errorCode);
         $this->assertStringNotContainsString('admin', $exception->getMessage());
     }
 

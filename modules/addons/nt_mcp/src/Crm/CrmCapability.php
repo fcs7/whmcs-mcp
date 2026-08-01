@@ -7,37 +7,48 @@ namespace NtMcp\Crm;
 /**
  * Unidades que o schema guard valida INDEPENDENTEMENTE.
  *
- * O recorte não é cosmético. Um conjunto mínimo único para "o CRM" faria uma
- * incerteza local derrubar a superfície inteira: se `crm_resources.admin_id`
- * tiver outro nome na instalação real, as quatro leituras — que não precisam
- * dessa coluna — passariam a responder `crm_schema_mismatch` sem motivo.
+ * O recorte é MÍNIMO POR OPERAÇÃO, não por tabela. A versão anterior agrupava
+ * "recursos" e "catálogos de recurso" em duas capacidades grandes, e a revisão
+ * reproduziu o custo disso: com `crm_resources.short_description` ausente,
+ * `requireResource(42)` — que consulta apenas `id` e `deleted_at` — respondia
+ * `crm_schema_mismatch`; e com `crm_resources_statuses` ausente, um tipo
+ * íntegro era recusado. Drift localizado derrubava operação alheia.
  *
- * Por isso cada capacidade declara o MENOR conjunto de tabelas/colunas que a
- * operação correspondente realmente exige, e cada operação exige só as suas.
- * Falhar fechado continua sendo a regra; o que muda é o raio do fechamento.
+ * Agora cada método prova somente as tabelas/colunas que a sua própria query
+ * usa. Operações que realmente leem o conjunto (kanban, em CRM-2) compõem
+ * várias capacidades explicitamente.
  */
 enum CrmCapability: string
 {
-    /** Campos core de `crm_resources` — base das quatro leituras. */
-    case Resources = 'resources';
+    /** `crm_resources.id` + soft-delete — o mínimo para existir/validar um recurso. */
+    case ResourceIdentity = 'resource_identity';
+
+    /** Projeção core de `crm_resources` — só quem lê os campos precisa disto. */
+    case ResourceCore = 'resource_core';
 
     /**
      * Atribuição do recurso ao admin autor (`crm_resources.admin_id`).
      *
-     * Separada de `Resources` porque é a coluna de nome menos comprovado do
-     * contrato: o DDL empacotado prova `admin_id` em `crm_followups`, e a
-     * atribuição do recurso é inferência da decisão de produto. T6 confirma.
+     * Separada porque é a coluna de nome menos comprovado do contrato: o DDL
+     * empacotado prova `admin_id` em `crm_followups`, e a atribuição do recurso
+     * é inferência da decisão de produto. T6 confirma.
      */
     case ResourceAssignment = 'resource_assignment';
 
-    /** `crm_resources_types` + `crm_resources_statuses`. */
-    case ResourceCatalogs = 'resource_catalogs';
+    /** `crm_resources_types`. */
+    case ResourceTypes = 'resource_types';
+
+    /** `crm_resources_statuses`. */
+    case ResourceStatuses = 'resource_statuses';
 
     /** `crm_followups`. */
     case Followups = 'followups';
 
-    /** `crm_followup_types` + `crm_followup_statuses`. */
-    case FollowupCatalogs = 'followup_catalogs';
+    /** `crm_followup_types`. */
+    case FollowupTypes = 'followup_types';
+
+    /** `crm_followup_statuses`. */
+    case FollowupStatuses = 'followup_statuses';
 
     /** `crm_notes`. */
     case Notes = 'notes';
