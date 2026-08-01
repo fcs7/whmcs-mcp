@@ -254,6 +254,34 @@ class PhpMcpV1AdapterTest extends TestCase
         $this->assertSame($canonical, $discovered);
     }
 
+    public function test_canonical_tool_effect_matrix_remains_38_23_1_2(): void
+    {
+        $write = [
+            'whmcs_create_client', 'whmcs_update_client', 'whmcs_add_contact', 'whmcs_update_contact',
+            'whmcs_create_project', 'whmcs_update_project', 'whmcs_add_project_task',
+            'whmcs_update_project_task', 'whmcs_start_task_timer', 'whmcs_end_task_timer',
+            'whmcs_add_project_message', 'whmcs_crm_create_lead', 'whmcs_crm_update_contact',
+            'whmcs_crm_add_followup', 'whmcs_crm_add_note', 'whmcs_update_todo_item',
+            'whmcs_open_ticket', 'whmcs_reply_ticket', 'whmcs_update_ticket', 'whmcs_pending_order',
+            'whmcs_create_quote', 'whmcs_update_quote', 'whmcs_duplicate_quote',
+        ];
+        $financial = ['whmcs_convert_quote_to_invoice'];
+        $destructive = ['whmcs_cancel_order', 'whmcs_delete_quote'];
+        $read = array_values(array_diff(self::CANONICAL_TOOLS, $write, $financial, $destructive));
+
+        $this->assertCount(38, $read);
+        $this->assertCount(23, $write);
+        $this->assertCount(1, $financial);
+        $this->assertCount(2, $destructive);
+
+        $matrix = array_merge($read, $write, $financial, $destructive);
+        $this->assertCount(64, array_unique($matrix));
+        sort($matrix);
+        $canonical = self::CANONICAL_TOOLS;
+        sort($canonical);
+        $this->assertSame($canonical, $matrix);
+    }
+
     public function test_discovery_has_no_duplicate_tool_names(): void
     {
         $discovered = $this->discoveredToolNames();

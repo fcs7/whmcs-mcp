@@ -13,6 +13,10 @@ use NtMcp\Admin\AdminController;
 use NtMcp\Admin\OAuthApprovalController;
 use NtMcp\OAuth\OAuthMigration;
 use NtMcp\Security\CsrfProtection;
+use NtMcp\Whmcs\ActivityEvent;
+use NtMcp\Whmcs\ActivityLog;
+use NtMcp\Whmcs\Diagnostics;
+use NtMcp\Whmcs\DiagnosticsKeyStore;
 
 /**
  * Metadados e configuracoes do addon
@@ -97,38 +101,21 @@ function nt_mcp_activate(): array
  * `Diagnostics`). Derivar de path/PID/horário produziria um valor previsível,
  * que é pior que não ter fingerprint nenhum.
  */
-function nt_mcp_provision_diagnostics_key(?callable $generator = null): void
+function nt_mcp_provision_diagnostics_key(?callable $generator = null): ?string
 {
     try {
-        $existing = \WHMCS\Config\Setting::getValue(\NtMcp\Whmcs\Diagnostics::KEY_SETTING);
-    } catch (\Throwable) {
-        return; // sem config legível, não há o que provisionar
-    }
-
-    if ($existing !== null && $existing !== '') {
-        // Tanto a válida quanto a inválida são preservadas. A inválida faz o
-        // runtime omitir fingerprint; substituí-la silenciosamente seria uma
-        // rotação implícita, proibida por D10. Só ausência gera chave nova.
-        return;
-    }
-
-    try {
-        $key = $generator !== null
+        $candidate = $generator !== null
             ? $generator()
-            : \NtMcp\Whmcs\Diagnostics::generateKey();
-
-        if (!\NtMcp\Whmcs\Diagnostics::isValidKey($key)) {
-            return;
-        }
-
-        \WHMCS\Config\Setting::setValue(
-            \NtMcp\Whmcs\Diagnostics::KEY_SETTING,
-            $key
-        );
+            : Diagnostics::generateKey();
     } catch (\Throwable) {
-        // Falha de RNG ou de escrita não pode abortar a ativação. O efeito é
-        // apenas a omissão do fingerprint, que é o comportamento seguro.
+        Diagnostics::resetFingerprintKey();
+        return null;
     }
+
+    $winner = is_string($candidate) ? DiagnosticsKeyStore::claim($candidate) : null;
+    Diagnostics::setFingerprintKey($winner);
+
+    return $winner;
 }
 
 /**
@@ -165,10 +152,10 @@ function nt_mcp_upgrade(array $vars): array
     nt_mcp_provision_diagnostics_key();
 
     if (!OAuthMigration::ensureTables()) {
-        logActivity("NT MCP: FALHA na migracao de schema para versao {$version} — verifique o error log do PHP");
+        ActivityLog::record(ActivityEvent::ADDON_MIGRATION_FAILED);
         return ['status' => 'error', 'description' => 'NT MCP: falha na migracao de schema. Verifique o log de erros do PHP.'];
     }
-    logActivity("NT MCP: schema atualizado para versao {$version}");
+    ActivityLog::record(ActivityEvent::ADDON_MIGRATION_OK);
     return ['status' => 'success', 'description' => 'NT MCP schema atualizado.'];
 }
 

@@ -5,9 +5,10 @@ declare(strict_types=1);
 namespace NtMcp\OAuth\Handlers;
 
 use NtMcp\Whmcs\Diagnostics;
+use NtMcp\Whmcs\ActivityEvent;
+use NtMcp\Whmcs\ActivityLog;
 
 use Illuminate\Database\Capsule\Manager as Capsule;
-use NtMcp\Http\IpResolver;
 use NtMcp\OAuth\OAuthHelper;
 use NtMcp\Security\RateLimiter;
 
@@ -39,13 +40,13 @@ final class TokenHandler
 
         if ($grantType !== 'authorization_code') {
             OAuthHelper::error(400, 'unsupported_grant_type', 'Only authorization_code is supported');
-            try { logActivity("NT MCP: Token exchange FAILED from IP " . (IpResolver::resolve()) . ": unsupported grant_type"); } catch (\Throwable $e) {}
+            ActivityLog::record(ActivityEvent::OAUTH_TOKEN_DENIED);
             return;
         }
 
         if ($code === '' || $codeVerifier === '') {
             OAuthHelper::error(400, 'invalid_request', 'code and code_verifier are required');
-            try { logActivity("NT MCP: Token exchange FAILED from IP " . (IpResolver::resolve()) . ": missing code or code_verifier"); } catch (\Throwable $e) {}
+            ActivityLog::record(ActivityEvent::OAUTH_TOKEN_DENIED);
             return;
         }
 
@@ -58,7 +59,7 @@ final class TokenHandler
 
         if (!$codeRow) {
             OAuthHelper::error(400, 'invalid_grant', 'Invalid, expired, or already used authorization code');
-            try { logActivity("NT MCP: Token exchange FAILED from IP " . (IpResolver::resolve()) . ": invalid or expired authorization code"); } catch (\Throwable $e) {}
+            ActivityLog::record(ActivityEvent::OAUTH_TOKEN_DENIED);
             return;
         }
 
@@ -70,21 +71,21 @@ final class TokenHandler
 
         if ($affected === 0) {
             OAuthHelper::error(400, 'invalid_grant', 'Authorization code already consumed');
-            try { logActivity("NT MCP: Token exchange FAILED from IP " . (IpResolver::resolve()) . ": authorization code already consumed (race condition)"); } catch (\Throwable $e) {}
+            ActivityLog::record(ActivityEvent::OAUTH_TOKEN_DENIED);
             return;
         }
 
         // Validate client_id — RFC 6749 §4.1.3: required for public clients (no secret)
         if ($clientId === '' || $clientId !== $codeRow->client_id) {
             OAuthHelper::error(400, 'invalid_client', 'client_id is required and must match the authorization code');
-            try { logActivity("NT MCP: Token exchange FAILED from IP " . (IpResolver::resolve()) . ": client_id missing or mismatch"); } catch (\Throwable $e) {}
+            ActivityLog::record(ActivityEvent::OAUTH_TOKEN_DENIED);
             return;
         }
 
         // Validate redirect_uri — RFC 6749 §4.1.3: required when present in authorization request
         if ($redirectUri === '' || $redirectUri !== $codeRow->redirect_uri) {
             OAuthHelper::error(400, 'invalid_grant', 'redirect_uri is required and must match the authorization code');
-            try { logActivity("NT MCP: Token exchange FAILED from IP " . (IpResolver::resolve()) . ": redirect_uri missing or mismatch"); } catch (\Throwable $e) {}
+            ActivityLog::record(ActivityEvent::OAUTH_TOKEN_DENIED);
             return;
         }
 
@@ -92,7 +93,7 @@ final class TokenHandler
         $computedChallenge = rtrim(strtr(base64_encode(hash('sha256', $codeVerifier, true)), '+/', '-_'), '=');
         if (!hash_equals($codeRow->code_challenge, $computedChallenge)) {
             OAuthHelper::error(400, 'invalid_grant', 'PKCE code_verifier verification failed');
-            try { logActivity("NT MCP: Token exchange FAILED from IP " . (IpResolver::resolve()) . ": PKCE verification failed"); } catch (\Throwable $e) {}
+            ActivityLog::record(ActivityEvent::OAUTH_TOKEN_DENIED);
             return;
         }
 
@@ -127,7 +128,7 @@ final class TokenHandler
         }
 
         // SECURITY FIX (L-03 -- LOW): Audit logging for token issuance
-        try { logActivity("NT MCP: OAuth token issued for client '{$codeRow->client_id}' from IP " . (IpResolver::resolve())); } catch (\Throwable $e) {}
+        ActivityLog::record(ActivityEvent::OAUTH_TOKEN_ISSUED);
 
         // Cleanup expired tokens
         try {

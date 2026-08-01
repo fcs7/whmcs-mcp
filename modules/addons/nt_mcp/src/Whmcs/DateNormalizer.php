@@ -53,8 +53,11 @@ final class DateNormalizer
     /**
      * Normaliza um input de data para `Y-m-d`.
      *
-     * Aceita `YYYY-MM-DD` e RFC3339/ISO-8601 date-time (`2026-08-10T00:00:00Z`,
-     * com offset ou fração de segundo). Rejeita qualquer outra coisa, incluindo
+     * Aceita `YYYY-MM-DD` e o perfil público estrito
+     * `YYYY-MM-DDTHH:MM:SS[.fração](Z|±HH:MM)`. O separador é sempre `T`,
+     * segundos e zona são obrigatórios, e o perfil deste addon limita o
+     * offset civil a ±14:00 (com minuto zero no extremo).
+     * Rejeita qualquer outra coisa, incluindo
      * datas sintaticamente corretas mas inexistentes (`2026-02-31`).
      *
      * @param string $field nome do campo, usado na mensagem de erro
@@ -66,7 +69,8 @@ final class DateNormalizer
 
         if ($normalized === null) {
             throw new \InvalidArgumentException(sprintf(
-                '%s must be a real date as YYYY-MM-DD or an ISO-8601 date-time '
+                '%s must be a real date as YYYY-MM-DD or '
+                . 'YYYY-MM-DDTHH:MM:SS[.fraction](Z|±HH:MM) '
                 . '(e.g. "2026-08-10" or "2026-08-10T00:00:00Z"); got "%s"',
                 $field,
                 $value
@@ -91,29 +95,28 @@ final class DateNormalizer
             return $value;
         }
 
-        // 2) Date-time ISO-8601/RFC3339 — a forma que o schema publicado exige.
+        // 2) Perfil RFC 3339 estrito adotado pela superfície pública.
         //
         // O TIMESTAMP INTEIRO é validado, não só a parte civil. A regex sozinha
         // deixava passar `2026-08-10T99:99:99+99:99`, que atravessava o adapter
         // e virava uma data válida downstream — hora, minuto, segundo e offset
         // impossíveis simplesmente ignorados.
-        if (preg_match('/^(\d{4}-\d{2}-\d{2})[Tt ](\d{2}):(\d{2})(?::(\d{2})(\.\d+)?)?([Zz]|[+-]\d{2}:?\d{2})?\z/', $value, $m) !== 1) {
+        if (preg_match('/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})\z/', $value, $m) !== 1) {
             return null;
         }
 
         [$datePart, $hour, $minute] = [$m[1], (int) $m[2], (int) $m[3]];
-        $second = isset($m[4]) && $m[4] !== '' ? (int) $m[4] : 0;
+        $second = (int) $m[4];
 
         if ($hour > 23 || $minute > 59 || $second > 59) {
             return null;
         }
 
-        $offset = $m[6] ?? '';
-        if ($offset !== '' && strcasecmp($offset, 'Z') !== 0) {
+        $offset = $m[6];
+        if ($offset !== 'Z') {
             $offsetHour = (int) substr($offset, 1, 2);
-            $offsetMinute = (int) substr(str_replace(':', '', $offset), 3, 2);
-            // RFC 3339: offset entre -23:59 e +23:59.
-            if ($offsetHour > 23 || $offsetMinute > 59) {
+            $offsetMinute = (int) substr($offset, 4, 2);
+            if ($offsetHour > 14 || $offsetMinute > 59 || ($offsetHour === 14 && $offsetMinute !== 0)) {
                 return null;
             }
         }

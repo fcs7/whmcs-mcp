@@ -3,6 +3,7 @@
 namespace NtMcp\Tools;
 
 use NtMcp\Whmcs\AuditMetadata;
+use NtMcp\Whmcs\ActivityEvent;
 use NtMcp\Whmcs\AuthorizationException;
 use NtMcp\Whmcs\DownstreamFailureException;
 use NtMcp\Whmcs\DateNormalizer;
@@ -462,7 +463,7 @@ class QuoteTools
         }
 
         $correlationId = LocalApiClient::auditLog(
-            "MCP PARTIAL convert_quote_to_invoice: {$message}",
+            ActivityEvent::PARTIAL_FINANCIAL,
             AuditMetadata::ids(['quoteid' => $quoteid, 'invoiceid' => $invoiceId]),
             $causeCorrelation
         );
@@ -497,7 +498,7 @@ class QuoteTools
             // m1: esta recusa retorna ANTES do cliente central, então precisa
             // auditar aqui — senão a tentativa não deixa rastro nenhum.
             LocalApiClient::auditLog(
-                'MCP REFUSED whmcs_delete_quote (confirm=false)',
+                ActivityEvent::CONFIRM_REQUIRED,
                 AuditMetadata::ids(['quoteid' => $quoteid])
             );
 

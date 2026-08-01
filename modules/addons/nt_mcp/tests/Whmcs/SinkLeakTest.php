@@ -301,7 +301,7 @@ class SinkLeakTest extends TestCase
 
         $this->assertNoSinkLeaked('');
         $this->assertTrue(ErrorLogSpy::hasLineContaining('category=config_read_failure'));
-        $this->assertTrue(ActivityLogSpy::hasEntryContaining('readonly config read failed'));
+        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP CONFIG INVALID'));
     }
 
     public function test_config_read_failure_leaks_nowhere_in_capsule(): void
@@ -459,8 +459,8 @@ class SinkLeakTest extends TestCase
         $this->assertSame(1, preg_match('/correlation_id\D{0,8}([0-9a-f]{8})/', $payload, $match));
         $correlation = $match[1];
 
-        $updateError = ActivityLogSpy::matching('MCP API ERROR UpdateInvoice');
-        $partial = ActivityLogSpy::matching('MCP PARTIAL convert_quote_to_invoice');
+        $updateError = ActivityLogSpy::matching('MCP API ERROR command=UpdateInvoice');
+        $partial = ActivityLogSpy::matching('MCP PARTIAL FINANCIAL EFFECT');
         $this->assertCount(1, $updateError);
         $this->assertCount(1, $partial);
         $this->assertStringContainsString("[corr:{$correlation}]", $updateError[0]);
@@ -491,8 +491,8 @@ class SinkLeakTest extends TestCase
         $this->assertSame(1, preg_match('/correlation_id\D{0,8}([0-9a-f]{8})/', $payload, $match));
         $correlation = $match[1];
 
-        $acceptError = ActivityLogSpy::matching('MCP API ERROR AcceptQuote');
-        $partial = ActivityLogSpy::matching('MCP PARTIAL convert_quote_to_invoice');
+        $acceptError = ActivityLogSpy::matching('MCP API ERROR command=AcceptQuote');
+        $partial = ActivityLogSpy::matching('MCP PARTIAL FINANCIAL EFFECT');
         $this->assertCount(1, $acceptError);
         $this->assertCount(1, $partial);
         $this->assertStringContainsString("[corr:{$correlation}]", $acceptError[0]);
@@ -508,7 +508,7 @@ class SinkLeakTest extends TestCase
         $_SERVER['REMOTE_ADDR'] = '203.0.113.77';
 
         try {
-            LocalApiClient::auditLog('MCP TEST', \NtMcp\Whmcs\AuditMetadata::none());
+            LocalApiClient::auditLog(\NtMcp\Whmcs\ActivityEvent::API_CALL, \NtMcp\Whmcs\AuditMetadata::none());
             \NtMcp\Whmcs\Diagnostics::event(\NtMcp\Whmcs\Diagnostics::CATEGORY_TLS, 'allow_http_bypass');
         } finally {
             if ($previous === null) {
@@ -602,7 +602,7 @@ class SinkLeakTest extends TestCase
 
         try {
             LocalApiClient::auditLog(
-                'MCP API call: AddClient',
+                \NtMcp\Whmcs\ActivityEvent::API_CALL,
                 \NtMcp\Whmcs\AuditMetadata::forParams([
                     'password2' => self::SECRETS['senha'],
                     'tax_id' => self::SECRETS['cpf'],
@@ -615,7 +615,7 @@ class SinkLeakTest extends TestCase
         $log = ErrorLogSpy::contents();
 
         $this->assertStringContainsString('category=audit_sink_failure', $log);
-        $this->assertStringNotContainsString('MCP API call: AddClient', $log, 'entry não pode ser despejada');
+        $this->assertStringNotContainsString('MCP API CALL', $log, 'entry não pode ser despejada');
         foreach (self::SECRETS as $label => $secret) {
             $this->assertStringNotContainsString($secret, $log, "vazou {$label} no fallback do audit sink");
         }

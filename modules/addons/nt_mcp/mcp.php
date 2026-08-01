@@ -8,7 +8,7 @@
  */
 
 // ---------------------------------------------------------------
-// 0. Silenciar a saída de erro ANTES de qualquer require.
+// 0. Abrir a fronteira de output ANTES de qualquer require ou bootstrap.
 //
 // Isto precisa ser a primeira instrução do arquivo. Uma falha no próprio
 // autoload — ou no bootstrap do WHMCS — acontece antes de existir qualquer
@@ -22,17 +22,37 @@
 // fronteira existisse. Eventos capturados continuam indo explicitamente pelo
 // `Diagnostics`, cujo `error_log()` independe desta diretiva.
 // ---------------------------------------------------------------
+$ntMcpReleaseOutput = false;
+ob_start(
+    static function (string $buffer) use (&$ntMcpReleaseOutput): string {
+        return $ntMcpReleaseOutput ? $buffer : '';
+    },
+    0,
+    PHP_OUTPUT_HANDLER_CLEANABLE | PHP_OUTPUT_HANDLER_FLUSHABLE
+);
+$ntMcpOwnedBufferLevel = ob_get_level();
+
 @ini_set('display_errors', '0');
 @ini_set('display_startup_errors', '0');
 @ini_set('log_errors', '0');
 
 // Rede mínima para falha do PRÓPRIO autoload: não pode depender de nenhuma
 // classe do addon, porque elas ainda não existem.
-register_shutdown_function(static function (): void {
+register_shutdown_function(static function () use ($ntMcpOwnedBufferLevel, &$ntMcpReleaseOutput): void {
     $fatal = error_get_last();
     if ($fatal === null || !in_array($fatal['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
         return;
     }
+
+    while (ob_get_level() > $ntMcpOwnedBufferLevel) {
+        if (!@ob_end_clean()) {
+            break;
+        }
+    }
+    if (ob_get_level() === $ntMcpOwnedBufferLevel) {
+        @ob_clean();
+    }
+    $ntMcpReleaseOutput = true;
 
     if (!headers_sent()) {
         http_response_code(500);
@@ -50,11 +70,29 @@ require_once __DIR__ . '/vendor/autoload.php';
 
 // 2. Handler estruturado assim que as classes do addon existem — e ANTES do
 //    `init.php`, para cobrir também o bootstrap do WHMCS/DB.
-\NtMcp\Whmcs\Diagnostics::installExceptionHandler('mcp_endpoint');
+$ntMcpRelease = static function () use (&$ntMcpReleaseOutput): void {
+    $ntMcpReleaseOutput = true;
+};
+\NtMcp\Whmcs\Diagnostics::installExceptionHandler('mcp_endpoint', $ntMcpOwnedBufferLevel, $ntMcpRelease);
 
 // 3. Inicializar WHMCS (3 niveis: addons/nt_mcp -> modules -> whmcs root)
 define('CLIENTAREA', true);
-require_once __DIR__ . '/../../../init.php';
+try {
+    require_once __DIR__ . '/../../../init.php';
+} catch (\Throwable $e) {
+    \NtMcp\Whmcs\Diagnostics::respondToThrowable($e, 'mcp_endpoint', $ntMcpOwnedBufferLevel, $ntMcpRelease);
+}
+
+// O bootstrap pode imprimir incidentalmente e pode substituir os handlers.
+// Descartamos apenas o que veio antes da aplicação e reinstalamos a fronteira.
+while (ob_get_level() > $ntMcpOwnedBufferLevel) {
+    @ob_end_clean();
+}
+if (ob_get_level() === $ntMcpOwnedBufferLevel) {
+    ob_clean();
+}
+$ntMcpReleaseOutput = true;
+\NtMcp\Whmcs\Diagnostics::installExceptionHandler('mcp_endpoint', $ntMcpOwnedBufferLevel, $ntMcpRelease);
 
 use NtMcp\Auth\BearerAuth;
 use NtMcp\Http\TlsEnforcer;
@@ -95,3 +133,6 @@ if ($_authenticatedAdmin === null) {
 
 // 4. Iniciar MCP Server com o admin vinculado ao token
 NtMcp\Server::run($_authenticatedAdmin);
+
+// O buffer proprietário é não-removível e será entregue pelo PHP no fim
+// normal. Em fatal, o shutdown o limpa antes de escrever a resposta fechada.

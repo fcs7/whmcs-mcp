@@ -6,6 +6,7 @@ namespace NtMcp\Tests\Whmcs;
 
 use NtMcp\Tests\Support\ErrorLogSpy;
 use NtMcp\Whmcs\Diagnostics;
+use NtMcp\Whmcs\DiagnosticsKeyStore;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
@@ -32,6 +33,9 @@ class DiagnosticsKeyTest extends TestCase
     {
         \WHMCS\Config\Setting::reset();
         Diagnostics::resetFingerprintKey();
+        DiagnosticsKeyStore::setClaimOverrideForTests(static function (string $candidate): mixed {
+            return \WHMCS\Config\Setting::$store[Diagnostics::KEY_SETTING] ??= $candidate;
+        });
         ErrorLogSpy::start();
     }
 
@@ -39,6 +43,7 @@ class DiagnosticsKeyTest extends TestCase
     {
         ErrorLogSpy::stop();
         Diagnostics::resetFingerprintKey();
+        DiagnosticsKeyStore::setClaimOverrideForTests(null);
         \WHMCS\Config\Setting::reset();
     }
 
@@ -253,6 +258,91 @@ class DiagnosticsKeyTest extends TestCase
         });
 
         $this->assertArrayNotHasKey(Diagnostics::KEY_SETTING, \WHMCS\Config\Setting::$store);
+    }
+
+    public function test_atomic_store_failure_fails_closed_without_exposing_the_candidate(): void
+    {
+        require_once dirname(__DIR__, 2) . '/nt_mcp.php';
+        $candidate = self::validKey();
+        DiagnosticsKeyStore::setClaimOverrideForTests(static function (): never {
+            throw new \RuntimeException('database unavailable');
+        });
+
+        $this->assertNull(nt_mcp_provision_diagnostics_key(static fn(): string => $candidate));
+        $this->assertNull(Diagnostics::fingerprint('cause'));
+        $this->assertStringNotContainsString($candidate, ErrorLogSpy::contents());
+    }
+
+    public function test_two_real_processes_converge_on_one_winner(): void
+    {
+        if (!function_exists('pcntl_fork')) {
+            $this->markTestSkipped('pcntl is required for the process concurrency probe');
+        }
+
+        require_once dirname(__DIR__, 2) . '/nt_mcp.php';
+        $stateFile = tempnam(sys_get_temp_dir(), 'nt_mcp_key_state_');
+        $this->assertNotFalse($stateFile);
+        file_put_contents($stateFile, '');
+        $outputs = [$stateFile . '.one', $stateFile . '.two'];
+        $candidates = [self::validKey(), self::validKey(32)];
+        $children = [];
+
+        foreach ($candidates as $index => $candidate) {
+            $pid = pcntl_fork();
+            $this->assertGreaterThanOrEqual(0, $pid);
+            if ($pid === 0) {
+                DiagnosticsKeyStore::setClaimOverrideForTests(static function (string $proposed) use ($stateFile): ?string {
+                    $handle = fopen($stateFile, 'c+');
+                    if ($handle === false || !flock($handle, LOCK_EX)) {
+                        return null;
+                    }
+                    rewind($handle);
+                    $winner = trim((string) stream_get_contents($handle));
+                    if ($winner === '') {
+                        usleep(20000); // amplia a janela de disputa entre processos
+                        $winner = $proposed;
+                        ftruncate($handle, 0);
+                        rewind($handle);
+                        fwrite($handle, $winner);
+                        fflush($handle);
+                    }
+                    flock($handle, LOCK_UN);
+                    fclose($handle);
+
+                    return $winner;
+                });
+                $winner = nt_mcp_provision_diagnostics_key(static fn(): string => $candidate);
+                file_put_contents($outputs[$index], (string) $winner);
+                exit($winner === null ? 1 : 0);
+            }
+            $children[] = $pid;
+        }
+
+        foreach ($children as $pid) {
+            pcntl_waitpid($pid, $status);
+            $this->assertTrue(pcntl_wifexited($status));
+            $this->assertSame(0, pcntl_wexitstatus($status));
+        }
+
+        $first = (string) file_get_contents($outputs[0]);
+        $second = (string) file_get_contents($outputs[1]);
+        $this->assertTrue(Diagnostics::isValidKey($first));
+        $this->assertSame($first, $second);
+        $this->assertContains($first, $candidates);
+
+        foreach ($outputs as $output) {
+            @unlink($output);
+        }
+        @unlink($stateFile);
+    }
+
+    public function test_production_store_uses_atomic_insert_then_rereads_the_winner(): void
+    {
+        $source = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Whmcs/DiagnosticsKeyStore.php');
+
+        $this->assertStringContainsString("->insertOrIgnore([", $source);
+        $this->assertStringContainsString("->where('setting', Diagnostics::KEY_SETTING)", $source);
+        $this->assertStringNotContainsString('Setting::setValue', $source);
     }
 
     public function test_activation_never_exposes_the_diagnostics_key(): void

@@ -3,6 +3,9 @@
 namespace NtMcp\Auth;
 
 use NtMcp\Whmcs\Diagnostics;
+use NtMcp\Whmcs\ActivityEvent;
+use NtMcp\Whmcs\ActivityLog;
+use NtMcp\Whmcs\AuditMetadata;
 
 use Illuminate\Database\Capsule\Manager as Capsule;
 
@@ -193,9 +196,7 @@ class BearerAuth
             // exists in tbladmins and is not disabled.  If not, revoke the
             // token (expires_at=0) and return 401.
             if (!$this->validateAdminActive($resolved)) {
-                if (function_exists('logActivity')) {
-                    @logActivity("[NT-MCP] OAuth token revoked: admin '{$resolved}' missing or disabled (token id {$row->id})");
-                }
+                ActivityLog::record(ActivityEvent::OAUTH_ORPHAN_REVOKED, AuditMetadata::ids(['id' => (int) $row->id]));
                 $this->revokeToken((int) $row->id);
                 return null;
             }

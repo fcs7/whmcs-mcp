@@ -110,7 +110,7 @@ class CapsuleClient
     private function denyWrite(string $operation, string $table, array $context): never
     {
         LocalApiClient::auditLog(
-            "MCP BLOCKED DB {$operation}: {$table} (read-only / write gate)",
+            ActivityEvent::DB_BLOCKED,
             AuditMetadata::forTable($context['where'] ?? [], $context['data'] ?? $context)
         );
 
@@ -167,10 +167,10 @@ class CapsuleClient
      * a mensagem é sempre nossa e o `Throwable` viaja separado, para o
      * diagnóstico estrutural.
      */
-    private static function auditConfig(string $message, ?\Throwable $e = null): void
+    private static function auditConfig(string $_message, ?\Throwable $e = null): void
     {
         $correlationId = Diagnostics::report(Diagnostics::CATEGORY_CONFIG_READ, 'nt_mcp_config', $e);
-        LocalApiClient::auditLog($message, null, $correlationId);
+        LocalApiClient::auditLog(ActivityEvent::CONFIG_INVALID, null, $correlationId);
     }
 
     /**
@@ -226,7 +226,7 @@ class CapsuleClient
 
         // SECURITY FIX (F8): Audit log for DB reads
         LocalApiClient::auditLog(
-            "MCP DB SELECT: {$table}",
+            ActivityEvent::DB_SELECT,
             AuditMetadata::forTable($where, [], ['limit' => $limit, 'offset' => $offset])
         );
 
@@ -247,7 +247,7 @@ class CapsuleClient
 
         // SECURITY FIX (F8): Audit log for DB writes
         $correlationId = LocalApiClient::auditLog(
-            "MCP DB INSERT: {$table}",
+            ActivityEvent::DB_INSERT,
             AuditMetadata::forTable([], $data)
         );
 
@@ -268,7 +268,7 @@ class CapsuleClient
 
         // SECURITY FIX (F8): Audit log for DB mutations
         $correlationId = LocalApiClient::auditLog(
-            "MCP DB UPDATE: {$table}",
+            ActivityEvent::DB_UPDATE,
             AuditMetadata::forTable($where, $data)
         );
 
@@ -295,7 +295,7 @@ class CapsuleClient
 
         // SECURITY FIX (F8): Audit log for DB deletions
         $correlationId = LocalApiClient::auditLog(
-            "MCP DB DELETE: {$table}",
+            ActivityEvent::DB_DELETE,
             AuditMetadata::forTable($where)
         );
 
@@ -330,7 +330,7 @@ class CapsuleClient
         try {
             $affected = $operation();
         } catch (\Throwable $e) {
-            LocalApiClient::auditLog("MCP DB {$verb} EXCEPTION: {$table}", null, $correlationId);
+            LocalApiClient::auditLog(ActivityEvent::DB_EXCEPTION, null, $correlationId);
             // F2: a mensagem do driver pode carregar credencial de conexão,
             // fragmento de SQL e valores da linha. Só classe e fingerprint saem.
             Diagnostics::log($correlationId, Diagnostics::CATEGORY_DB_EXCEPTION, "{$verb}_{$table}", $e);
@@ -344,7 +344,7 @@ class CapsuleClient
             );
         }
 
-        LocalApiClient::auditLog("MCP DB {$verb} OK: {$table} (rows: {$affected})", null, $correlationId);
+        LocalApiClient::auditLog(ActivityEvent::DB_OK, null, $correlationId);
 
         return $affected;
     }

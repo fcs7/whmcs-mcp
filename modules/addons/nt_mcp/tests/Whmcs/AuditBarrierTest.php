@@ -7,6 +7,7 @@ namespace NtMcp\Tests\Whmcs;
 use NtMcp\Tests\Support\ActivityLogSpy;
 use NtMcp\Tests\Support\ErrorLogSpy;
 use NtMcp\Whmcs\AuditMetadata;
+use NtMcp\Whmcs\ActivityEvent;
 use NtMcp\Whmcs\LocalApiClient;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -52,7 +53,7 @@ class AuditBarrierTest extends TestCase
      */
     public function test_secret_in_free_text_value_never_reaches_the_log(): void
     {
-        LocalApiClient::auditLog('MCP TEST', AuditMetadata::forParams([
+        LocalApiClient::auditLog(ActivityEvent::API_CALL, AuditMetadata::forParams([
             'proposal' => 'tok_abcdef0123456789',
             'notes' => '123.456.789-00',
             'clientid' => 42,
@@ -69,7 +70,7 @@ class AuditBarrierTest extends TestCase
     /** Segredo como NOME de chave vira contagem, nunca nome. */
     public function test_secret_in_field_name_never_reaches_the_log(): void
     {
-        LocalApiClient::auditLog('MCP TEST', AuditMetadata::forParams([
+        LocalApiClient::auditLog(ActivityEvent::API_CALL, AuditMetadata::forParams([
             'tok_abcdef0123456789' => 'x',
             'sk_live_51H8yQ2eZvKYlo2C' => 1,
             'clientid' => 7,
@@ -89,7 +90,7 @@ class AuditBarrierTest extends TestCase
     #[DataProvider('newlineTokenProvider')]
     public function test_ids_with_trailing_newline_are_rejected(string $value): void
     {
-        LocalApiClient::auditLog('MCP TEST', AuditMetadata::forParams(['clientid' => $value]));
+        LocalApiClient::auditLog(ActivityEvent::API_CALL, AuditMetadata::forParams(['clientid' => $value]));
 
         $entry = ActivityLogSpy::entries()[0] ?? '';
 
@@ -108,7 +109,7 @@ class AuditBarrierTest extends TestCase
 
     public function test_valid_integer_id_is_still_recorded(): void
     {
-        LocalApiClient::auditLog('MCP TEST', AuditMetadata::forParams(['clientid' => '42']));
+        LocalApiClient::auditLog(ActivityEvent::API_CALL, AuditMetadata::forParams(['clientid' => '42']));
 
         $this->assertStringContainsString('42', ActivityLogSpy::entries()[0] ?? '');
     }
@@ -116,7 +117,7 @@ class AuditBarrierTest extends TestCase
     /** Flags só como boolean; string arbitrária em campo de flag some. */
     public function test_flags_only_accept_booleans(): void
     {
-        LocalApiClient::auditLog('MCP TEST', AuditMetadata::forParams([
+        LocalApiClient::auditLog(ActivityEvent::API_CALL, AuditMetadata::forParams([
             'noemail' => 'tok_secret_value',
             'markdown' => true,
         ]));
@@ -130,7 +131,7 @@ class AuditBarrierTest extends TestCase
     /** Metadata vazia não quebra e não inventa conteúdo. */
     public function test_none_metadata_logs_an_empty_shape(): void
     {
-        LocalApiClient::auditLog('MCP TEST', AuditMetadata::none());
+        LocalApiClient::auditLog(ActivityEvent::API_CALL, AuditMetadata::none());
 
         $this->assertStringContainsString('meta: {}', ActivityLogSpy::entries()[0] ?? '');
     }
@@ -138,7 +139,7 @@ class AuditBarrierTest extends TestCase
     /** Containers estruturais só aceitam shapes internos válidos. */
     public function test_table_containers_only_carry_metadata(): void
     {
-        LocalApiClient::auditLog('MCP TEST', AuditMetadata::forTable(
+        LocalApiClient::auditLog(ActivityEvent::API_CALL, AuditMetadata::forTable(
             ['id' => 5],
             ['note' => 'tok_abcdef0123456789'],
             ['limit' => 100, 'offset' => 0]
@@ -150,5 +151,40 @@ class AuditBarrierTest extends TestCase
         $this->assertStringContainsString('note', $entry, 'nome do campo é metadado');
         $this->assertStringContainsString('100', $entry, 'limit é inteiro estrutural');
         $this->assertStringNotContainsString('tok_abcdef0123456789', $entry);
+    }
+
+    public function test_token_like_unknown_command_is_absent_from_activity_log(): void
+    {
+        $tokenCommand = 'tok_abcdef0123456789';
+        $api = new LocalApiClient('testadmin');
+
+        try {
+            $api->call($tokenCommand, ['clientid' => 7]);
+            $this->fail('comando desconhecido deveria ser bloqueado');
+        } catch (\NtMcp\Whmcs\AuthorizationException) {
+            // esperado
+        }
+
+        $entry = implode("\n", ActivityLogSpy::entries());
+        $this->assertStringContainsString(ActivityEvent::API_BLOCKED_UNKNOWN->value, $entry);
+        $this->assertStringNotContainsString($tokenCommand, $entry);
+    }
+
+    public function test_reflection_forged_metadata_is_revalidated_at_the_sink(): void
+    {
+        $reflection = new \ReflectionClass(AuditMetadata::class);
+        $forged = $reflection->newInstanceWithoutConstructor();
+        $reflection->getProperty('shape')->setValue($forged, [
+            'ids' => ['clientid' => 'tok_abcdef0123456789'],
+            'fields' => ['tok_abcdef0123456789', 'clientid'],
+            'unknown_fields' => 'tok_abcdef0123456789',
+        ]);
+
+        LocalApiClient::auditLog(ActivityEvent::API_CALL, $forged);
+
+        $entry = ActivityLogSpy::entries()[0] ?? '';
+        $this->assertStringContainsString('clientid', $entry);
+        $this->assertStringNotContainsString('tok_abcdef0123456789', $entry);
+        $this->assertStringNotContainsString('"ids"', $entry);
     }
 }

@@ -78,10 +78,89 @@ class ErrorClassifierTest extends TestCase
         string $_expectedCode,
         string $_expectedCategory,
     ): void {
+        $unicodeEcho = "\u{00A0}" . strtoupper(str_replace(' ', "\u{00A0}", $message)) . "\u{00A0}";
+        $params = ['caller_value' => $unicodeEcho];
+        for ($depth = 0; $depth < 256; $depth++) {
+            $params = ['nested' => $params];
+        }
+
         $this->assertSame(
             ['code' => 'downstream_error', 'category' => ErrorClassifier::DOWNSTREAM],
-            ErrorClassifier::classify($command, $message, ['nested' => ['caller_value' => $message]])
+            ErrorClassifier::classify($command, $message, $params)
         );
+    }
+
+    #[DataProvider('allClassifierPatternsProvider')]
+    public function test_node_cap_fails_closed_for_every_closed_pattern(
+        string $command,
+        string $message,
+        string $_expectedCode,
+        string $_expectedCategory,
+    ): void {
+        $params = array_fill(0, 10001, 0);
+
+        $this->assertSame(
+            ['code' => 'downstream_error', 'category' => ErrorClassifier::DOWNSTREAM],
+            ErrorClassifier::classify($command, $message, $params)
+        );
+    }
+
+    #[DataProvider('allClassifierPatternsProvider')]
+    public function test_cycle_fails_closed_for_every_closed_pattern(
+        string $command,
+        string $message,
+        string $_expectedCode,
+        string $_expectedCategory,
+    ): void {
+        $params = [];
+        $params['self'] = &$params;
+
+        $this->assertSame(
+            ['code' => 'downstream_error', 'category' => ErrorClassifier::DOWNSTREAM],
+            ErrorClassifier::classify($command, $message, $params)
+        );
+    }
+
+    public function test_deep_acyclic_unrelated_params_do_not_trigger_an_arbitrary_depth_cap(): void
+    {
+        $params = ['caller_value' => 'unrelated'];
+        for ($depth = 0; $depth < 1000; $depth++) {
+            $params = ['nested' => $params];
+        }
+
+        $this->assertSame(
+            ['code' => 'client_not_found', 'category' => ErrorClassifier::NOT_FOUND],
+            ErrorClassifier::classify('GetClientsDetails', 'Client Not Found', $params)
+        );
+    }
+
+    public function test_byte_cap_fails_closed_before_normalizing_oversized_input(): void
+    {
+        $this->assertSame(
+            ['code' => 'downstream_error', 'category' => ErrorClassifier::DOWNSTREAM],
+            ErrorClassifier::classify(
+                'GetClientsDetails',
+                'Client Not Found',
+                ['caller_value' => str_repeat('x', 1048577)]
+            )
+        );
+    }
+
+    public function test_byte_cap_also_counts_array_keys(): void
+    {
+        $this->assertSame(
+            ['code' => 'downstream_error', 'category' => ErrorClassifier::DOWNSTREAM],
+            ErrorClassifier::classify(
+                'GetClientsDetails',
+                'Client Not Found',
+                [str_repeat('k', 1048577) => 1]
+            )
+        );
+    }
+
+    public function test_classifier_table_still_contains_exactly_37_closed_patterns(): void
+    {
+        $this->assertCount(37, self::allClassifierPatternsProvider());
     }
 
     public static function allClassifierPatternsProvider(): array
@@ -270,6 +349,7 @@ class ErrorClassifierTest extends TestCase
 
         $api->call('GetClientsDetails', ['clientid' => 1]);
 
-        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP API ERROR GetClientsDetails (client_not_found)'));
+        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP API ERROR command=GetClientsDetails'));
+        $this->assertFalse(ActivityLogSpy::hasEntryContaining('Client Not Found'));
     }
 }

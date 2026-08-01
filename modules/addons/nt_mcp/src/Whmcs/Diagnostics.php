@@ -250,7 +250,11 @@ final class Diagnostics
      * bootstrap do WHMCS pode lançar (DB fora do ar, config corrompida) e, sem
      * handler, a mensagem crua chega ao handler do PHP.
      */
-    public static function installExceptionHandler(string $context): void
+    public static function installExceptionHandler(
+        string $context,
+        ?int $ownedBufferLevel = null,
+        ?callable $releaseOutput = null,
+    ): void
     {
         // Warnings/notices posteriores ao autoload também não voltam ao
         // handler padrão do PHP. A mensagem serve apenas de entrada do HMAC;
@@ -261,29 +265,58 @@ final class Diagnostics
             }
 
             self::log(null, self::CATEGORY_RUNTIME, $context, rawText: $message);
-
-            return true;
+            throw new \ErrorException('Runtime warning intercepted.', 0, $severity);
         });
 
-        set_exception_handler(static function (\Throwable $e) use ($context): void {
-            $correlationId = self::report(self::CATEGORY_UNHANDLED, $context, $e);
+        set_exception_handler(static function (\Throwable $e) use ($context, $ownedBufferLevel, $releaseOutput): void {
+            self::respondToThrowable($e, $context, $ownedBufferLevel, $releaseOutput);
+        });
+    }
 
-            if (!headers_sent()) {
-                http_response_code(500);
-                header('Content-Type: application/json');
+    /** Emite uma resposta JSON exclusiva, descartando qualquer output parcial. */
+    public static function respondToThrowable(
+        \Throwable $e,
+        string $context,
+        ?int $ownedBufferLevel = null,
+        ?callable $releaseOutput = null,
+    ): never {
+        $correlationId = self::report(self::CATEGORY_UNHANDLED, $context, $e);
+        self::discardOutputFrom($ownedBufferLevel);
+        if ($releaseOutput !== null) {
+            $releaseOutput();
+        }
+
+        if (!headers_sent()) {
+            http_response_code(500);
+            header('Content-Type: application/json');
+        }
+
+        echo json_encode([
+            'jsonrpc' => '2.0',
+            'error' => [
+                'code' => -32603,
+                'message' => 'Internal server error. Correlation id: ' . $correlationId,
+            ],
+            'id' => null,
+        ], JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+
+    /** Limpa buffers criados desde a fronteira, inclusive o buffer proprietário. */
+    private static function discardOutputFrom(?int $ownedBufferLevel): void
+    {
+        if ($ownedBufferLevel === null || $ownedBufferLevel < 1) {
+            return;
+        }
+
+        while (ob_get_level() > $ownedBufferLevel) {
+            if (!@ob_end_clean()) {
+                break;
             }
-
-            // Só texto nosso e a correlação — nunca a mensagem da exceção.
-            echo json_encode([
-                'jsonrpc' => '2.0',
-                'error' => [
-                    'code' => -32603,
-                    'message' => 'Internal server error. Correlation id: ' . $correlationId,
-                ],
-                'id' => null,
-            ]);
-            exit;
-        });
+        }
+        if (ob_get_level() === $ownedBufferLevel) {
+            @ob_clean();
+        }
     }
 
     /** Atalho para quem não tem correlação própria. */

@@ -49,8 +49,8 @@ class AuditTrailTest extends TestCase
     {
         $this->client(['write' => true])->call('AddClient', ['firstname' => 'a', 'noemail' => true]);
 
-        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP API call: AddClient'), 'faltou o início');
-        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP API OK AddClient'), 'faltou o desfecho');
+        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP API CALL command=AddClient'), 'faltou o início');
+        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP API OK command=AddClient'), 'faltou o desfecho');
     }
 
     public function test_error_call_logs_explicit_error_outcome_and_not_ok(): void
@@ -58,8 +58,8 @@ class AuditTrailTest extends TestCase
         $this->client(['write' => true], fn() => ['result' => 'error', 'message' => 'Email already exists'])
             ->call('AddClient', ['firstname' => 'a', 'noemail' => true]);
 
-        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP API ERROR AddClient'));
-        $this->assertFalse(ActivityLogSpy::hasEntryContaining('MCP API OK AddClient'));
+        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP API ERROR command=AddClient'));
+        $this->assertFalse(ActivityLogSpy::hasEntryContaining('MCP API OK command=AddClient'));
     }
 
     // ---------------------------------------------------------------
@@ -91,7 +91,7 @@ class AuditTrailTest extends TestCase
             $this->assertStringNotContainsString($secret, $log, "vazou {$field} no Activity Log");
         }
         // O desfecho estável continua registrado.
-        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP API ERROR AddClient'));
+        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP API ERROR command=AddClient'));
         // E o texto downstream inteiro não é interpolado.
         $this->assertStringNotContainsString('Rejected password', $log);
     }
@@ -111,7 +111,7 @@ class AuditTrailTest extends TestCase
 
         $log = implode("\n", ActivityLogSpy::entries());
 
-        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP API EXCEPTION AddClient'));
+        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP API EXCEPTION command=AddClient'));
         $this->assertStringNotContainsString('hunter2SuperSecret', $log);
         $this->assertStringNotContainsString('abcdef0123456789', $log);
         $this->assertStringNotContainsString('boom', $log);
@@ -133,7 +133,7 @@ class AuditTrailTest extends TestCase
             // esperado
         }
 
-        $outcome = ActivityLogSpy::matching('MCP API EXCEPTION AddClient');
+        $outcome = ActivityLogSpy::matching('MCP API EXCEPTION command=AddClient');
         $this->assertCount(1, $outcome);
         $this->assertStringNotContainsString('Zoe', $outcome[0], 'outcome não repete params');
     }
@@ -148,9 +148,9 @@ class AuditTrailTest extends TestCase
             // esperado
         }
 
-        $outcome = ActivityLogSpy::matching('MCP API ERROR AddClient');
+        $outcome = ActivityLogSpy::matching('MCP API MALFORMED RESPONSE command=AddClient');
         $this->assertCount(1, $outcome);
-        $this->assertStringContainsString('malformed response', $outcome[0]);
+        $this->assertStringContainsString('MALFORMED RESPONSE', $outcome[0]);
         $this->assertStringNotContainsString('Zoe', $outcome[0]);
     }
 
@@ -166,8 +166,8 @@ class AuditTrailTest extends TestCase
             // esperado
         }
 
-        $this->assertFalse(ActivityLogSpy::hasEntryContaining('MCP API OK AddClient'));
-        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP API ERROR AddClient'));
+        $this->assertFalse(ActivityLogSpy::hasEntryContaining('MCP API OK command=AddClient'));
+        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP API MALFORMED RESPONSE command=AddClient'));
     }
 
     /** m1.1: o outcome de ERRO também não pode repetir o dump de params. */
@@ -176,7 +176,7 @@ class AuditTrailTest extends TestCase
         $this->client(['write' => true], fn() => ['result' => 'error', 'message' => 'nope'])
             ->call('AddClient', ['firstname' => 'Zoe', 'noemail' => true]);
 
-        $outcome = ActivityLogSpy::matching('MCP API ERROR AddClient');
+        $outcome = ActivityLogSpy::matching('MCP API ERROR command=AddClient');
         $this->assertCount(1, $outcome);
         $this->assertStringNotContainsString('Zoe', $outcome[0]);
     }
@@ -185,8 +185,8 @@ class AuditTrailTest extends TestCase
     {
         $this->client(['write' => true])->call('AddClient', ['firstname' => 'a', 'noemail' => true]);
 
-        $start = ActivityLogSpy::matching('MCP API call: AddClient')[0] ?? '';
-        $ok = ActivityLogSpy::matching('MCP API OK AddClient')[0] ?? '';
+        $start = ActivityLogSpy::matching('MCP API CALL command=AddClient')[0] ?? '';
+        $ok = ActivityLogSpy::matching('MCP API OK command=AddClient')[0] ?? '';
 
         $this->assertSame(1, preg_match('/\[corr:([0-9a-f]{8})\]/', $start, $m), 'início sem correlação');
         $this->assertStringContainsString("[corr:{$m[1]}]", $ok, 'desfecho deve reusar a correlação do início');
@@ -196,7 +196,7 @@ class AuditTrailTest extends TestCase
     {
         $this->client(['write' => true])->call('AddClient', ['firstname' => 'Zoe', 'noemail' => true]);
 
-        $ok = ActivityLogSpy::matching('MCP API OK AddClient');
+        $ok = ActivityLogSpy::matching('MCP API OK command=AddClient');
         $this->assertCount(1, $ok);
         $this->assertStringNotContainsString('Zoe', $ok[0], 'params já foram logados no início');
     }
@@ -220,7 +220,7 @@ class AuditTrailTest extends TestCase
             // esperado
         }
 
-        $blocked = ActivityLogSpy::matching('MCP BLOCKED WRITE');
+        $blocked = ActivityLogSpy::matching('MCP API BLOCKED BY GATE command=AddClient');
         $this->assertCount(1, $blocked);
 
         // Nomes de campo conhecidos aparecem; valores livres, nunca.
@@ -240,7 +240,7 @@ class AuditTrailTest extends TestCase
             // esperado
         }
 
-        $blocked = ActivityLogSpy::matching('MCP BLOCKED WRITE')[0];
+        $blocked = ActivityLogSpy::matching('MCP API BLOCKED BY GATE command=AddClient')[0];
         $this->assertStringContainsString('unknown_fields', $blocked);
         $this->assertStringNotContainsString('segredo_do_cliente', $blocked);
         $this->assertStringContainsString('firstname', $blocked);
@@ -254,7 +254,7 @@ class AuditTrailTest extends TestCase
             // esperado
         }
 
-        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP BLOCKED COMMS'));
+        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP API BLOCKED BY COMMS GATE command=OpenTicket'));
     }
 
     // ---------------------------------------------------------------
@@ -274,7 +274,7 @@ class AuditTrailTest extends TestCase
         }
 
         $this->assertTrue(
-            ActivityLogSpy::hasEntryContaining('MCP BLOCKED DB INSERT: mod_mgcrm_contacts'),
+            ActivityLogSpy::hasEntryContaining('MCP DB WRITE BLOCKED'),
             'bloqueio de write CRM precisa deixar rastro'
         );
     }
@@ -292,7 +292,7 @@ class AuditTrailTest extends TestCase
             // esperado
         }
 
-        $this->assertTrue(ActivityLogSpy::hasEntryContaining("MCP BLOCKED DB {$operation}"));
+        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP DB WRITE BLOCKED'));
     }
 
     public static function capsuleWriteProvider(): array
@@ -325,7 +325,7 @@ class AuditTrailTest extends TestCase
             // esperado
         }
 
-        $outcome = ActivityLogSpy::matching("MCP DB {$operation} EXCEPTION");
+        $outcome = ActivityLogSpy::matching('MCP DB EXCEPTION');
         $this->assertCount(1, $outcome, "faltou desfecho de exceção em {$operation}");
         $this->assertStringNotContainsString('Ana', $outcome[0], 'desfecho não repete dados');
     }
@@ -338,9 +338,9 @@ class AuditTrailTest extends TestCase
         $rows = $capsule->insert('mod_mgcrm_contacts', ['name' => 'Ana', 'email' => 'ana@example.com']);
 
         $this->assertSame(3, $rows);
-        $outcome = ActivityLogSpy::matching('MCP DB INSERT OK');
+        $outcome = ActivityLogSpy::matching('MCP DB OK');
         $this->assertCount(1, $outcome);
-        $this->assertStringContainsString('rows: 3', $outcome[0]);
+        $this->assertStringContainsString('meta: {}', $outcome[0]);
         $this->assertStringNotContainsString('Ana', $outcome[0]);
         $this->assertStringNotContainsString('ana@example.com', $outcome[0]);
     }
@@ -350,8 +350,8 @@ class AuditTrailTest extends TestCase
         $capsule = $this->capsuleWithFakeExecutor(static fn(): int => 1);
         $capsule->insert('mod_mgcrm_contacts', ['name' => 'Ana']);
 
-        $start = ActivityLogSpy::matching('MCP DB INSERT: mod_mgcrm_contacts')[0] ?? '';
-        $ok = ActivityLogSpy::matching('MCP DB INSERT OK')[0] ?? '';
+        $start = ActivityLogSpy::matching('MCP DB INSERT')[0] ?? '';
+        $ok = ActivityLogSpy::matching('MCP DB OK')[0] ?? '';
 
         $this->assertSame(1, preg_match('/\[corr:([0-9a-f]{8})\]/', $start, $m));
         $this->assertStringContainsString("[corr:{$m[1]}]", $ok);
@@ -371,7 +371,7 @@ class AuditTrailTest extends TestCase
         }
 
         $log = implode("\n", ActivityLogSpy::entries());
-        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP DB INSERT EXCEPTION'));
+        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP DB EXCEPTION'));
         $this->assertStringNotContainsString('hunter2SuperSecret', $log);
         $this->assertStringNotContainsString('SQLSTATE', $log);
     }
@@ -400,7 +400,7 @@ class AuditTrailTest extends TestCase
             // esperado
         }
 
-        $entry = ActivityLogSpy::matching('MCP BLOCKED DB INSERT')[0];
+        $entry = ActivityLogSpy::matching('MCP DB WRITE BLOCKED')[0];
         $this->assertStringContainsString('name', $entry, 'nome do campo é metadado');
         foreach (['Ana', 'POISON', '123.456.789-00', 'tok_secret'] as $secret) {
             $this->assertStringNotContainsString($secret, $entry, "vazou '{$secret}'");
@@ -415,14 +415,14 @@ class AuditTrailTest extends TestCase
     {
         (new OrderTools($this->client(['destructive' => true])))->cancelOrder(orderid: 12, confirm: false);
 
-        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP REFUSED whmcs_cancel_order (confirm=false)'));
+        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP CONFIRMATION REQUIRED'));
     }
 
     public function test_delete_quote_confirm_false_is_audited(): void
     {
         (new QuoteTools($this->client(['destructive' => true])))->deleteQuote(quoteid: 7, confirm: false);
 
-        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP REFUSED whmcs_delete_quote (confirm=false)'));
+        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP CONFIRMATION REQUIRED'));
     }
 
     // ---------------------------------------------------------------
@@ -446,7 +446,7 @@ class AuditTrailTest extends TestCase
 
         (new QuoteTools($api, $gateways))->convertQuoteToInvoice(quoteid: 10, paymentmethod: 'banktransfer');
 
-        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP PARTIAL convert_quote_to_invoice'));
+        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP PARTIAL FINANCIAL EFFECT'));
     }
 
     // ---------------------------------------------------------------
@@ -466,8 +466,8 @@ class AuditTrailTest extends TestCase
             // esperado
         }
 
-        $this->assertTrue(ActivityLogSpy::hasEntryContaining('nt_mcp_readonly'));
-        $this->assertTrue(ActivityLogSpy::hasEntryContaining('falhando fechado'));
+        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP CONFIG INVALID'));
+        $this->assertStringNotContainsString('nt_mcp_readonly', implode("\n", ActivityLogSpy::entries()));
     }
 
     // ---------------------------------------------------------------

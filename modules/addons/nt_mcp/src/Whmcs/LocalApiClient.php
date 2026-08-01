@@ -275,17 +275,17 @@ class LocalApiClient
      * para o error_log, correlacionados. A mensagem da exceção não é
      * concatenada em nenhum dos dois.
      */
-    private static function auditConfig(string $message, ?\Throwable $e = null): void
+    private static function auditConfig(string $_message, ?\Throwable $e = null): void
     {
         $correlationId = Diagnostics::report(Diagnostics::CATEGORY_CONFIG_READ, 'nt_mcp_config', $e);
-        self::auditLog($message, null, $correlationId);
+        self::auditLog(ActivityEvent::CONFIG_INVALID, null, $correlationId);
     }
 
     private function assertModeAllows(string $command, array $params = []): void
     {
         $class = $this->classOf($command);
         if (!$this->gateEnabled($class)) {
-            self::auditLog("MCP BLOCKED {$class} '{$command}' (gate disabled)", AuditMetadata::forParams($params));
+            self::auditLog(ActivityEvent::API_BLOCKED_GATE, AuditMetadata::forParams($params), command: $command);
             throw new AuthorizationException(
                 "LocalApiClient: command '{$command}' is blocked (class {$class} disabled by config)."
             );
@@ -295,7 +295,7 @@ class LocalApiClient
         // primária. Vale para qualquer caminho que chegue até aqui, inclusive
         // uma chamada direta ao LocalApiClient que omita 'noemail'.
         if ($this->sendsNotification($command, $params) && !$this->gateEnabled('COMMS')) {
-            self::auditLog("MCP BLOCKED COMMS '{$command}' (notification requested, comms gate disabled)", AuditMetadata::forParams($params));
+            self::auditLog(ActivityEvent::API_BLOCKED_COMMS, AuditMetadata::forParams($params), command: $command);
             throw new AuthorizationException(
                 "LocalApiClient: command '{$command}' is blocked (client notification requires the COMMS gate)."
             );
@@ -389,7 +389,7 @@ class LocalApiClient
             // ---------------------------------------------------------------
             // SECURITY FIX (F8): Log blocked command attempts for forensics.
             // ---------------------------------------------------------------
-            self::auditLog("MCP BLOCKED command '{$command}' (not in allowlist)", AuditMetadata::forParams($params));
+            self::auditLog(ActivityEvent::API_BLOCKED_UNKNOWN, AuditMetadata::forParams($params));
             throw new AuthorizationException(
                 "LocalApiClient: WHMCS API command '{$command}' is not in the allowed list."
             );
@@ -407,7 +407,7 @@ class LocalApiClient
         // ---------------------------------------------------------------
         // Identificador de correlação: liga a linha de início, a de desfecho e o
         // diagnóstico detalhado do error_log sem repetir dado nenhum entre eles.
-        $correlationId = self::auditLog("MCP API call: {$command}", AuditMetadata::forParams($params));
+        $correlationId = self::auditLog(ActivityEvent::API_CALL, AuditMetadata::forParams($params), command: $command);
 
         // ---------------------------------------------------------------
         // m1.1: TODO desfecho é registrado — sucesso, erro em array, retorno
@@ -429,7 +429,7 @@ class LocalApiClient
                 throw $e;
             }
 
-            self::auditLog("MCP API EXCEPTION {$command}", null, $correlationId);
+            self::auditLog(ActivityEvent::API_EXCEPTION, null, $correlationId, $command);
             Diagnostics::log($correlationId, Diagnostics::CATEGORY_API_EXCEPTION, $command, $e);
 
             // F2: a exceção original NÃO é relançada nem encadeada — o adapter
@@ -453,7 +453,7 @@ class LocalApiClient
         $outcome = is_array($result) ? ($result['result'] ?? null) : null;
 
         if ($outcome === 'success') {
-            self::auditLog("MCP API OK {$command}", null, $correlationId);
+            self::auditLog(ActivityEvent::API_OK, null, $correlationId, $command);
             ResponseRedactor::scrubSensitive($result);  // D defense-in-depth
 
             return $result;
@@ -468,11 +468,7 @@ class LocalApiClient
             // valor deles sai da classificação.
             $classification = ErrorClassifier::classify($command, $downstreamMessage, $params);
 
-            self::auditLog(
-                "MCP API ERROR {$command} ({$classification['code']})",
-                null,
-                $correlationId
-            );
+            self::auditLog(ActivityEvent::API_ERROR, null, $correlationId, $command);
             Diagnostics::log(
                 $correlationId,
                 Diagnostics::CATEGORY_API_ERROR,
@@ -494,8 +490,7 @@ class LocalApiClient
         }
 
         // Indeterminado: não-array, ou array sem `result` canônico.
-        $type = is_array($result) ? 'array without canonical result' : gettype($result);
-        self::auditLog("MCP API ERROR {$command} (malformed response: {$type})", null, $correlationId);
+        self::auditLog(ActivityEvent::API_MALFORMED, null, $correlationId, $command);
         Diagnostics::log($correlationId, Diagnostics::CATEGORY_API_MALFORMED, $command);
 
         throw new DownstreamFailureException(
@@ -511,16 +506,6 @@ class LocalApiClient
             . "Details were recorded in the operator log under correlation id {$correlationId}.";
     }
 
-    /** Correlação curta e sem valor semântico — não deriva de dado da chamada. */
-    private static function newCorrelationId(): string
-    {
-        try {
-            return bin2hex(random_bytes(4));
-        } catch (\Throwable) {
-            return str_pad(dechex(mt_rand(0, 0xFFFFFFFF)), 8, '0', STR_PAD_LEFT);
-        }
-    }
-
     // ---------------------------------------------------------------
     // Audit helpers
     // ---------------------------------------------------------------
@@ -532,138 +517,23 @@ class LocalApiClient
      * início, a de desfecho e o diagnóstico detalhado do error_log possam ser
      * ligadas sem repetir dado nenhum entre elas.
      *
-     * @param string             $message       Human-readable description (estável, sem texto downstream)
+     * @param ActivityEvent      $event         evento fechado; mensagem livre é impossível
      * @param AuditMetadata|null $metadata      D7: só o value object; array arbitrário é impossível por tipo
      * @param string|null        $correlationId Reusa uma correlação existente; gera uma nova se null
      * @return string                           a correlação usada
      */
-    public static function auditLog(string $message, ?AuditMetadata $metadata = null, ?string $correlationId = null): string
+    public static function auditLog(
+        ActivityEvent $event,
+        ?AuditMetadata $metadata = null,
+        ?string $correlationId = null,
+        ?string $command = null,
+    ): string
     {
-        $correlationId ??= self::newCorrelationId();
-        // D7: o value object já garante o shape. O render abaixo é a segunda
-        // barreira, agora fechada por CONTRATO e não por sintaxe de string.
-        $summary = json_encode(
-            (object) self::renderMetadata($metadata?->toArray() ?? []),
-            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
-        );
-
-        if (strlen($summary) > 1024) {
-            $summary = substr($summary, 0, 1021) . '...';
-        }
-
-        // IP externo não é necessário para correlacionar o incidente e é PII.
-        // A correlação segura substitui o identificador de rede nos logs.
-        $entry = "[NT-MCP] [corr:{$correlationId}] {$message} | meta: {$summary}";
-
-        try {
-            if (function_exists('logActivity')) {
-                logActivity($entry);
-            }
-        } catch (\Throwable $e) {
-            // Logging must never break the request flow, but we must never lose
-            // forensic visibility silently either.
-            //
-            // O que NÃO pode acontecer aqui: concatenar `$entry` (que carrega o
-            // dump de params) nem a mensagem da exceção. O sink que falhou é o
-            // que redige — cair para o error_log com o texto cru transformaria
-            // uma falha de log num vazamento.
-            Diagnostics::log($correlationId, Diagnostics::CATEGORY_AUDIT_SINK, 'activity_log', $e);
-        }
-
-        return $correlationId;
+        return ActivityLog::record($event, $metadata, $correlationId, $command);
     }
 
-    /**
-     * Última barreira do Activity Log (D7).
-     *
-     * `AuditMetadata` já entrega só metadado, mas esta função existe como
-     * segunda barreira. Só sobrevivem containers e campos explicitamente
-     * aprovados, com tipos fechados; qualquer outra chave ou valor é omitido.
-     */
-    private static function renderMetadata(array $shape, int $depth = 0): array
+    public static function isAllowedCommand(string $command): bool
     {
-        if ($depth > 1) {
-            return [];
-        }
-
-        $safe = [];
-        foreach ($shape as $key => $value) {
-            $name = is_string($key) ? $key : '';
-
-            switch ($name) {
-                case 'ids':
-                    // Só nomes da allowlist e valores inteiros.
-                    $ids = [];
-                    foreach ((array) $value as $field => $id) {
-                        if (AuditMetadata::isIdField((string) $field) && is_int($id)) {
-                            $ids[(string) $field] = $id;
-                        }
-                    }
-                    if ($ids !== []) {
-                        $safe['ids'] = $ids;
-                    }
-                    break;
-
-                case 'flags':
-                    $flags = [];
-                    foreach ((array) $value as $field => $flag) {
-                        if (AuditMetadata::isFlagField((string) $field) && is_bool($flag)) {
-                            $flags[(string) $field] = $flag;
-                        }
-                    }
-                    if ($flags !== []) {
-                        $safe['flags'] = $flags;
-                    }
-                    break;
-
-                case 'fields':
-                    // Lista de NOMES, e só os que estão na allowlist estática.
-                    $fields = [];
-                    foreach ((array) $value as $field) {
-                        if (is_string($field) && AuditMetadata::isKnownField($field)) {
-                            $fields[] = $field;
-                        }
-                    }
-                    if ($fields !== []) {
-                        $safe['fields'] = array_values($fields);
-                    }
-                    break;
-
-                case 'counts':
-                    $counts = [];
-                    foreach ((array) $value as $field => $count) {
-                        if (AuditMetadata::isKnownField((string) $field) && is_int($count)) {
-                            $counts[(string) $field] = $count;
-                        }
-                    }
-                    if ($counts !== []) {
-                        $safe['counts'] = $counts;
-                    }
-                    break;
-
-                case 'unknown_fields':
-                case 'limit':
-                case 'offset':
-                    if (is_int($value)) {
-                        $safe[$name] = $value;
-                    }
-                    break;
-
-                case 'where':
-                case 'data':
-                    $nested = is_array($value) ? self::renderMetadata($value, $depth + 1) : [];
-                    if ($nested !== []) {
-                        $safe[$name] = $nested;
-                    }
-                    break;
-
-                // Qualquer outra chave é DESCARTADA — sem registrar o nome nem
-                // o valor. Um segredo token-like não entra nem como chave.
-                default:
-                    break;
-            }
-        }
-
-        return $safe;
+        return in_array($command, self::ALLOWED_COMMANDS, true);
     }
 }

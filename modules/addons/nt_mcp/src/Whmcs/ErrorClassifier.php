@@ -25,6 +25,9 @@ namespace NtMcp\Whmcs;
  */
 final class ErrorClassifier
 {
+    private const MAX_PARAM_NODES = 10000;
+    private const MAX_PARAM_BYTES = 1048576;
+    private const MAX_SCAN_NANOSECONDS = 25000000; // 25 ms
     // Enum FECHADO de categorias.
     public const NOT_FOUND = 'not_found';
     public const CONFLICT = 'conflict';
@@ -171,22 +174,62 @@ final class ErrorClassifier
      *
      * @param array<string, mixed> $params
      */
-    private static function echoesCallerInput(string $normalized, array $params, int $depth = 0): bool
+    private static function echoesCallerInput(string $normalized, array $params): bool
     {
-        foreach ($params as $value) {
-            if (is_array($value)) {
-                if ($depth < 3 && self::echoesCallerInput($normalized, $value, $depth + 1)) {
+        $stack = [$params];
+        $seenReferences = [];
+        $nodes = 0;
+        $bytes = 0;
+        $deadline = hrtime(true) + self::MAX_SCAN_NANOSECONDS;
+
+        while ($stack !== []) {
+            if (hrtime(true) > $deadline) {
+                return true; // cap excedido => downstream conservador
+            }
+
+            $current = array_pop($stack);
+            foreach ($current as $key => $value) {
+                if (++$nodes > self::MAX_PARAM_NODES) {
                     return true;
                 }
-                continue;
-            }
 
-            if (!is_string($value) || $value === '') {
-                continue;
-            }
+                if (is_string($key)) {
+                    $bytes += strlen($key);
+                    if ($bytes > self::MAX_PARAM_BYTES) {
+                        return true;
+                    }
+                }
 
-            if (self::normalize($value) === $normalized) {
-                return true;
+                $reference = \ReflectionReference::fromArrayElement($current, $key);
+                if ($reference !== null) {
+                    $id = bin2hex($reference->getId());
+                    if (isset($seenReferences[$id])) {
+                        return true; // ciclo/alias anômalo => downstream
+                    }
+                    $seenReferences[$id] = true;
+                }
+
+                if (is_array($value)) {
+                    $stack[] = $value;
+                    continue;
+                }
+
+                if (is_object($value) || is_resource($value)) {
+                    return true; // fora da estrutura serializável aceita
+                }
+
+                if (!is_string($value) || $value === '') {
+                    continue;
+                }
+
+                $bytes += strlen($value);
+                if ($bytes > self::MAX_PARAM_BYTES) {
+                    return true;
+                }
+
+                if (self::normalize($value) === $normalized) {
+                    return true;
+                }
             }
         }
 
@@ -203,8 +246,11 @@ final class ErrorClassifier
             return '';
         }
 
-        $normalized = strtolower(trim($message));
-        $normalized = preg_replace('/\s+/', ' ', $normalized) ?? '';
+        $normalized = preg_replace('/^\s+|\s+$/u', '', $message) ?? '';
+        $normalized = function_exists('mb_strtolower')
+            ? mb_strtolower($normalized, 'UTF-8')
+            : strtolower($normalized);
+        $normalized = preg_replace('/\s+/u', ' ', $normalized) ?? '';
 
         return rtrim($normalized, " \t\n\r.!");
     }

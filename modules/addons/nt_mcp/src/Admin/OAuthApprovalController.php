@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace NtMcp\Admin;
 
 use NtMcp\Whmcs\Diagnostics;
+use NtMcp\Whmcs\ActivityEvent;
+use NtMcp\Whmcs\ActivityLog;
+use NtMcp\Whmcs\AuditMetadata;
 
 use Illuminate\Database\Capsule\Manager as Capsule;
-use NtMcp\Http\IpResolver;
 use NtMcp\Security\CsrfProtection;
 use NtMcp\Whmcs\AdminSession;
 
@@ -22,7 +24,7 @@ use NtMcp\Whmcs\AdminSession;
  *  2. Explicit admin session verification via AdminSession::getAdminId() (belt-and-suspenders)
  *  3. CSRF token tied to admin session via HMAC (anti-forgery)
  *  4. Pending request expires in 10 minutes (temporal window)
- *  5. Admin ID + IP logged in WHMCS activity log (audit trail)
+ *  5. Evento fechado + admin ID numérico no Activity Log (audit trail)
  */
 final class OAuthApprovalController
 {
@@ -105,12 +107,9 @@ final class OAuthApprovalController
         $redirectUri = $pending->redirect_uri;
         $state       = $pending->state;
 
-        // SECURITY FIX (F3 -- audit): Use proxy-aware IP for forensic value
-        $clientIp = IpResolver::resolve();
-
         if ($_POST['authorize_action'] !== 'approve') {
             // DENIED
-            logActivity("NT MCP: OAuth authorization DENIED for client '{$clientName}' by admin ID {$adminId} from IP {$clientIp}");
+            ActivityLog::record(ActivityEvent::OAUTH_AUTH_DENIED, AuditMetadata::ids(['adminid' => $adminId]));
 
             $params = http_build_query(array_filter([
                 'error'             => 'access_denied',
@@ -159,7 +158,7 @@ final class OAuthApprovalController
         }
 
         // Layer 5: Audit trail
-        logActivity("NT MCP: OAuth authorization APPROVED for client '{$clientName}' (client_id: {$pending->client_id}) by admin ID {$adminId} from IP {$clientIp}");
+        ActivityLog::record(ActivityEvent::OAUTH_AUTH_APPROVED, AuditMetadata::ids(['adminid' => $adminId]));
 
         $params = http_build_query(array_filter([
             'code'  => $authCode,

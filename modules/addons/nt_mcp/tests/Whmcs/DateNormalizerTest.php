@@ -25,13 +25,10 @@ class DateNormalizerTest extends TestCase
         return [
             'data simples'         => ['2026-08-10', '2026-08-10'],
             'date-time Z'          => ['2026-08-10T00:00:00Z', '2026-08-10'],
-            'date-time minúsculo'  => ['2026-08-10t00:00:00z', '2026-08-10'],
             'date-time offset'     => ['2026-08-10T13:45:00+03:00', '2026-08-10'],
-            'date-time sem colon'  => ['2026-08-10T13:45:00+0300', '2026-08-10'],
             'date-time fração'     => ['2026-08-10T13:45:00.123Z', '2026-08-10'],
-            'date-time sem zona'   => ['2026-08-10T13:45:00', '2026-08-10'],
-            'date-time sem seg'    => ['2026-08-10T13:45', '2026-08-10'],
-            'espaço separador'     => ['2026-08-10 13:45:00', '2026-08-10'],
+            'offset extremo positivo' => ['2026-08-10T13:45:00+14:00', '2026-08-10'],
+            'offset extremo negativo' => ['2026-08-10T13:45:00-14:00', '2026-08-10'],
             'espaços em volta'     => ['  2026-08-10  ', '2026-08-10'],
         ];
     }
@@ -56,6 +53,17 @@ class DateNormalizerTest extends TestCase
             'vazio'            => [''],
             'lixo com T'       => ['2026-02-31T00:00:00Z'],
             'sem padding'      => ['2026-8-10'],
+            'T minúsculo'      => ['2026-08-10t00:00:00Z'],
+            'Z minúsculo'      => ['2026-08-10T00:00:00z'],
+            'espaço separador' => ['2026-08-10 13:45:00Z'],
+            'sem colon offset' => ['2026-08-10T13:45:00+0300'],
+            'sem zona'         => ['2026-08-10T13:45:00'],
+            'sem segundos'     => ['2026-08-10T13:45Z'],
+            'offset 14:01'     => ['2026-08-10T13:45:00+14:01'],
+            'offset 15:00'     => ['2026-08-10T13:45:00-15:00'],
+            'offset minuto'    => ['2026-08-10T13:45:00+03:60'],
+            'hora inválida'    => ['2026-08-10T24:00:00Z'],
+            'segundo leap'     => ['2026-08-10T23:59:60Z'],
         ];
     }
 
