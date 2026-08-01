@@ -185,59 +185,43 @@ class LocalizedDate
     }
 
     /**
-     * Aceita as TRÊS famílias de entrada que o contrato público admite para um
-     * campo de data localizada (`validuntil` em Create/UpdateQuote):
+     * Entrada pública de um campo de data que o WHMCS quer LOCALIZADO (D9).
      *
-     *   1. `Y-m-d`               — forma canônica;
-     *   2. ISO-8601 date-time    — o que o schema da SDK publica em campos
-     *                              cujo nome contém "date";
-     *   3. já LOCALIZADO         — o formato que a API oficial documenta e que
-     *                              um cliente seguindo a doc da WHMCS envia.
+     * Aceita apenas `Y-m-d` e ISO-8601 date-time. A família "já localizado" foi
+     * REMOVIDA da superfície pública, e a razão é específica: o round-trip
+     * prova que a string é bem-formada para a configuração instalada, não que
+     * ela signifique o que o chamador quis. Numa instalação MM/DD,
+     * `validuntil=10/08/2026` fecha o round-trip e vira 8 de outubro; se a
+     * intenção era 10 de agosto, a cotação vence dois meses depois e nenhuma
+     * camada emite erro, porque a data é válida nas duas leituras. Recusar só
+     * o ambíguo eliminaria todo dia de 1 a 12 — faixa grande demais de datas
+     * legítimas. Então a entrada passa a ser sempre não ambígua.
      *
-     * A família 3 é validada estritamente: `toMySQLDate()` para obter a data
-     * civil, validação de calendário, e então `fromMySQLDate()` de volta com
-     * igualdade EXATA contra o que o chamador mandou. Assim uma data escrita no
-     * formato de OUTRA configuração (`08/10/2026` numa instalação DD/MM/YYYY)
-     * não passa disfarçada de válida — ela volta diferente e é recusada.
+     * A conversão para localizado continua acontecendo aqui dentro, porque é o
+     * que `CreateQuote`/`UpdateQuote`/`GetActivityLog` exigem.
      *
-     * @throws \InvalidArgumentException entrada que não é data em nenhuma família
+     * @throws \InvalidArgumentException entrada ambígua ou que não é data
      * @throws \RuntimeException         localização indisponível/não verificável
      */
-    public function fromFlexibleInput(string $value, string $field): string
+    public function fromPublicInput(string $value, string $field): string
     {
         $input = trim($value);
         if ($input === '') {
             throw new \InvalidArgumentException("{$field} must not be empty.");
         }
 
-        // Famílias 1 e 2: reconhecíveis pela própria sintaxe.
         $canonical = DateNormalizer::tryNormalize($input);
-        if ($canonical !== null) {
-            return $this->fromWhmcsDate($canonical, $field);
-        }
-
-        // Família 3: assume-se localizado. Só é aceito se o round-trip fechar.
-        $ymd = $this->toMySQL($input);
-        if ($ymd === null) {
+        if ($canonical === null) {
             throw new \InvalidArgumentException(sprintf(
-                '%s must be a date as YYYY-MM-DD, an ISO-8601 date-time, or a date in the '
-                . 'WHMCS administrative date format; got "%s"',
+                '%s must be an unambiguous date: YYYY-MM-DD or an ISO-8601 date-time '
+                . '(e.g. "2026-08-10" or "2026-08-10T00:00:00Z"). Localised formats such as '
+                . 'DD/MM/YYYY are not accepted because they cannot be told apart from MM/DD/YYYY. '
+                . 'Got "%s"',
                 $field,
                 $input
             ));
         }
 
-        $localized = $this->fromWhmcsDate($ymd, $field);
-
-        if ($localized !== $input) {
-            throw new \InvalidArgumentException(sprintf(
-                '%s "%s" is not written in this installation\'s WHMCS date format; '
-                . 'use YYYY-MM-DD to avoid ambiguity.',
-                $field,
-                $input
-            ));
-        }
-
-        return $localized;
+        return $this->fromWhmcsDate($canonical, $field);
     }
 }

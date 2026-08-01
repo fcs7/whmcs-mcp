@@ -75,6 +75,18 @@ class CapsuleClient
     public function setWritableForTests(bool $writable): void { $this->writableOverride = $writable; }
 
     /**
+     * Seam explícito para substituir a execução no banco em teste — sem WHMCS
+     * bootstrapado não há `Capsule`. Preferido ao `protected` anterior, que
+     * abria a classe de produção para override.
+     *
+     * @var (callable():int)|null
+     */
+    private $executorOverride = null;
+
+    /** @param callable():int $executor */
+    public function setExecutorForTests(callable $executor): void { $this->executorOverride = $executor; }
+
+    /**
      * Bloqueio de write no Capsule agora é AUDITADO (m1): antes, um write CRM
      * negado não deixava rastro nenhum no Activity Log, porque esta rota nunca
      * passa por LocalApiClient::call(). Reusa a mesma redação central.
@@ -97,7 +109,10 @@ class CapsuleClient
 
     private function denyWrite(string $operation, string $table, array $context): never
     {
-        LocalApiClient::auditLog("MCP BLOCKED DB {$operation}: {$table} (read-only / write gate)", $context);
+        LocalApiClient::auditLog(
+            "MCP BLOCKED DB {$operation}: {$table} (read-only / write gate)",
+            AuditMetadata::forTable($context['where'] ?? [], $context['data'] ?? $context)
+        );
 
         throw new \InvalidArgumentException('CapsuleClient: writes disabled (read-only / write gate).');
     }
@@ -118,7 +133,7 @@ class CapsuleClient
         try {
             $raw = \WHMCS\Config\Setting::getValue('nt_mcp_readonly');
         } catch (\Throwable $e) {
-            self::auditConfig('NT MCP CapsuleClient: readonly config read failed — failing closed: ' . $e->getMessage());
+            self::auditConfig('CapsuleClient: readonly config read failed — failing closed', $e);
             return true;
         }
 
@@ -146,11 +161,16 @@ class CapsuleClient
         );
     }
 
-    private static function auditConfig(string $message): void
+    /**
+     * O comentário anterior aqui ("mensagem escrita por nós") era falso para o
+     * call-site de falha de leitura, que concatenava `$e->getMessage()`. Agora
+     * a mensagem é sempre nossa e o `Throwable` viaja separado, para o
+     * diagnóstico estrutural.
+     */
+    private static function auditConfig(string $message, ?\Throwable $e = null): void
     {
-        // Mensagem escrita por nós (ConfigFlag), sem conteúdo de terceiro.
-        error_log($message);
-        LocalApiClient::auditLog($message, []);
+        $correlationId = Diagnostics::report(Diagnostics::CATEGORY_CONFIG_READ, 'nt_mcp_config', $e);
+        LocalApiClient::auditLog($message, [], $correlationId);
     }
 
     /**
@@ -164,11 +184,19 @@ class CapsuleClient
     {
         $invalid = array_diff(array_keys($data), $allowlist);
         if ($invalid !== []) {
+            // Os nomes vêm do chamador. Hoje todos os call-sites os passam
+            // fixos, mas higienizar é barato e impede que um nome de coluna
+            // construído dinamicamente vire veículo de texto arbitrário.
+            $safe = array_map(
+                static fn(mixed $name): string => Diagnostics::safeToken((string) $name),
+                $invalid
+            );
+
             throw new \InvalidArgumentException(
                 sprintf(
                     "CapsuleClient: column(s) [%s] are not permitted for table '%s'.",
-                    implode(', ', $invalid),
-                    $table
+                    implode(', ', $safe),
+                    Diagnostics::safeToken($table)
                 )
             );
         }
@@ -197,11 +225,10 @@ class CapsuleClient
         $limit = min(max($limit, 1), self::MAX_QUERY_LIMIT);
 
         // SECURITY FIX (F8): Audit log for DB reads
-        LocalApiClient::auditLog("MCP DB SELECT: {$table}", [
-            'where' => $where,
-            'limit' => $limit,
-            'offset' => $offset,
-        ]);
+        LocalApiClient::auditLog(
+            "MCP DB SELECT: {$table}",
+            AuditMetadata::forTable($where) + ['limit' => $limit, 'offset' => $offset]
+        );
 
         $query = Capsule::table($table)->select($columns);
 
@@ -219,7 +246,10 @@ class CapsuleClient
         $this->assertColumnsAllowed($table, $data, self::ALLOWED_COLUMNS[$table]);
 
         // SECURITY FIX (F8): Audit log for DB writes
-        $correlationId = LocalApiClient::auditLog("MCP DB INSERT: {$table}", $data);
+        $correlationId = LocalApiClient::auditLog(
+            "MCP DB INSERT: {$table}",
+            AuditMetadata::forTable([], $data)
+        );
 
         return $this->runWithOutcome(
             'INSERT',
@@ -237,10 +267,10 @@ class CapsuleClient
         $this->assertColumnsAllowed($table, $data, self::ALLOWED_COLUMNS[$table]);
 
         // SECURITY FIX (F8): Audit log for DB mutations
-        $correlationId = LocalApiClient::auditLog("MCP DB UPDATE: {$table}", [
-            'where' => $where,
-            'data' => $data,
-        ]);
+        $correlationId = LocalApiClient::auditLog(
+            "MCP DB UPDATE: {$table}",
+            AuditMetadata::forTable($where, $data)
+        );
 
         return $this->runWithOutcome('UPDATE', $table, $correlationId, static function () use ($table, $where, $data): int {
             $query = Capsule::table($table);
@@ -264,7 +294,10 @@ class CapsuleClient
         }
 
         // SECURITY FIX (F8): Audit log for DB deletions
-        $correlationId = LocalApiClient::auditLog("MCP DB DELETE: {$table}", ['where' => $where]);
+        $correlationId = LocalApiClient::auditLog(
+            "MCP DB DELETE: {$table}",
+            AuditMetadata::forTable($where)
+        );
 
         return $this->runWithOutcome('DELETE', $table, $correlationId, static function () use ($table, $where): int {
             $query = Capsule::table($table);
@@ -282,13 +315,18 @@ class CapsuleClient
      * a mensagem do driver ao Activity Log (F2: pode carregar credencial de
      * conexão). O detalhe redigido vai só para o error_log.
      *
-     * `protected` (e não `private`) apenas para permitir exercitar sucesso e
-     * exceção sem um WHMCS bootstrapado; o comportamento é idêntico.
+     * Voltou a ser `private`: o override `protected` existia só para teste e
+     * ampliava a superfície de subclasse da classe de produção. Quem precisa
+     * substituir a execução usa `setExecutorForTests()`, um seam explícito.
      *
      * @param callable():int $operation
      */
-    protected function runWithOutcome(string $verb, string $table, string $correlationId, callable $operation): int
+    private function runWithOutcome(string $verb, string $table, string $correlationId, callable $operation): int
     {
+        if ($this->executorOverride !== null) {
+            $operation = $this->executorOverride;
+        }
+
         try {
             $affected = $operation();
         } catch (\Throwable $e) {
@@ -300,8 +338,9 @@ class CapsuleClient
             throw new DownstreamFailureException(
                 "CapsuleClient: the {$verb} on '{$table}' did not complete. "
                 . "Details were recorded in the operator log under correlation id {$correlationId}.",
-                0,
-                $e
+                $correlationId,
+                Diagnostics::fingerprint($e->getMessage()),
+                get_class($e)
             );
         }
 

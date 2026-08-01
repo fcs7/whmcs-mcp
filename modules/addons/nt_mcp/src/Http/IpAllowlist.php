@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace NtMcp\Http;
 
+use NtMcp\Whmcs\Diagnostics;
+
 /**
  * SECURITY CONTROL (9.4): Optional IP allowlist.
  * If nt_mcp_allowed_ips is configured in WHMCS settings, only
@@ -20,7 +22,7 @@ final class IpAllowlist
         } catch (\Throwable $e) {
             // Config read failed (DB error etc.) — fail closed: deny rather than silently allow.
             // Note: getValue() returns null for non-existent settings, not throws.
-            error_log('NT MCP IpAllowlist: Failed to read allowed IPs config: ' . $e->getMessage());
+            Diagnostics::report(Diagnostics::CATEGORY_CONFIG_READ, 'nt_mcp_allowed_ips', $e);
             http_response_code(503);
             header('Content-Type: application/json');
             echo json_encode(['error' => 'Service temporarily unavailable.']);

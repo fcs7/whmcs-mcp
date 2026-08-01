@@ -157,64 +157,98 @@ class LocalizedDateTest extends TestCase
     }
 
     // ---------------------------------------------------------------
-    // fromFlexibleInput — as três famílias aceitas em `validuntil`
+    // fromPublicInput — D9: só entrada NÃO AMBÍGUA
     // ---------------------------------------------------------------
 
-    #[DataProvider('flexibleInputProvider')]
-    public function test_flexible_input_accepts_the_three_families(string $input, string $expected): void
+    #[DataProvider('unambiguousInputProvider')]
+    public function test_public_input_accepts_unambiguous_forms(string $input, string $expected): void
     {
-        $this->assertSame($expected, (new LocalizedDate())->fromFlexibleInput($input, 'validuntil'));
+        $this->assertSame($expected, (new LocalizedDate())->fromPublicInput($input, 'validuntil'));
     }
 
-    public static function flexibleInputProvider(): array
+    public static function unambiguousInputProvider(): array
     {
         return [
             'Y-m-d'          => ['2026-08-10', '10/08/2026'],
             'ISO date-time'  => ['2026-08-10T00:00:00Z', '10/08/2026'],
             'ISO com offset' => ['2026-08-10T23:30:00-03:00', '10/08/2026'],
-            'já localizado'  => ['10/08/2026', '10/08/2026'],
+            'ISO sem zona'   => ['2026-08-10T13:45:00', '10/08/2026'],
         ];
     }
 
-    /** Data escrita no formato de OUTRA configuração não passa disfarçada. */
-    public function test_flexible_input_rejects_a_date_from_another_configuration(): void
+    /**
+     * D9: o round-trip prova o locale, não a INTENÇÃO. `10/08/2026` fecha o
+     * round-trip nas duas configurações e significa coisas diferentes em cada
+     * uma — 10 de agosto em DD/MM, 8 de outubro em MM/DD. Aceitar isso deixa
+     * uma cotação vencer na data errada sem erro em lugar nenhum.
+     */
+    #[DataProvider('localisedFormatProvider')]
+    public function test_public_input_rejects_localised_dates(string $phpFormat, string $localised): void
     {
-        WhmcsDateFormat::$phpFormat = 'd/m/Y'; // instalação usa DD/MM/YYYY
+        WhmcsDateFormat::$phpFormat = $phpFormat;
 
-        // 08/10/2026 é uma data VÁLIDA em DD/MM (8 de outubro), então volta como
-        // 08/10/2026 e o round-trip fecha — é aceita, mas como 8 de outubro.
-        $this->assertSame('08/10/2026', (new LocalizedDate())->fromFlexibleInput('08/10/2026', 'validuntil'));
-
-        // Já 10/20/2026 (MM/DD/YYYY) não existe em DD/MM e é recusada.
         $this->expectException(\InvalidArgumentException::class);
-        (new LocalizedDate())->fromFlexibleInput('10/20/2026', 'validuntil');
+        $this->expectExceptionMessage('unambiguous date');
+
+        (new LocalizedDate())->fromPublicInput($localised, 'validuntil');
     }
 
-    public function test_flexible_input_rejects_garbage(): void
+    public static function localisedFormatProvider(): array
     {
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('validuntil must be a date');
-
-        (new LocalizedDate())->fromFlexibleInput('ontem', 'validuntil');
+        return [
+            'DD/MM/YYYY' => ['d/m/Y', '10/08/2026'],
+            'MM/DD/YYYY' => ['m/d/Y', '08/10/2026'],
+            'DD.MM.YYYY' => ['d.m.Y', '10.08.2026'],
+            'DD-MM-YYYY' => ['d-m-Y', '10-08-2026'],
+            'YYYY/MM/DD' => ['Y/m/d', '2026/08/10'],
+        ];
     }
 
-    public function test_flexible_input_rejects_empty(): void
+    public function test_public_input_rejects_garbage(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('validuntil must be an unambiguous date');
+
+        (new LocalizedDate())->fromPublicInput('ontem', 'validuntil');
+    }
+
+    public function test_public_input_rejects_empty(): void
     {
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('must not be empty');
 
-        (new LocalizedDate())->fromFlexibleInput('   ', 'validuntil');
+        (new LocalizedDate())->fromPublicInput('   ', 'validuntil');
     }
 
-    /** Sem inverso, nem a família localizada nem as demais passam. */
-    public function test_flexible_input_fails_closed_without_inverse_helper(): void
+    public function test_public_input_fails_closed_without_inverse_helper(): void
     {
         $localized = new LocalizedDate();
         $localized->setParser(null);
 
         $this->expectException(\RuntimeException::class);
 
-        $localized->fromFlexibleInput('2026-08-10', 'validuntil');
+        $localized->fromPublicInput('2026-08-10', 'validuntil');
+    }
+
+    /** ISO com componentes impossíveis é recusado antes de virar data. */
+    #[DataProvider('impossibleIsoProvider')]
+    public function test_public_input_rejects_impossible_iso(string $input): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+
+        (new LocalizedDate())->fromPublicInput($input, 'validuntil');
+    }
+
+    public static function impossibleIsoProvider(): array
+    {
+        return [
+            'hora/minuto/segundo' => ['2026-08-10T99:99:99+99:99'],
+            'hora 24'             => ['2026-08-10T24:00:00Z'],
+            'minuto 60'           => ['2026-08-10T10:60:00Z'],
+            'segundo 60'          => ['2026-08-10T10:00:60Z'],
+            'offset 99'           => ['2026-08-10T10:00:00+99:00'],
+            'dia inexistente'     => ['2026-02-31T00:00:00Z'],
+        ];
     }
 
     public function test_error_message_names_the_field(): void

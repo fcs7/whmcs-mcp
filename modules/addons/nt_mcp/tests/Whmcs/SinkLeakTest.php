@@ -241,19 +241,225 @@ class SinkLeakTest extends TestCase
 
     private function capsuleThrowing(\Throwable $error): CapsuleClient
     {
-        $capsule = new class($error) extends CapsuleClient {
-            public function __construct(private \Throwable $error) {}
-
-            protected function runWithOutcome(string $verb, string $table, string $correlationId, callable $operation): int
-            {
-                return parent::runWithOutcome($verb, $table, $correlationId, function (): int {
-                    throw $this->error;
-                });
-            }
-        };
+        $capsule = new CapsuleClient();
         $capsule->setWritableForTests(true);
+        $capsule->setExecutorForTests(static function () use ($error): int {
+            throw $error;
+        });
 
         return $capsule;
+    }
+
+    // ---------------------------------------------------------------
+    // Falha de CONFIG — o ramo que a revisão reproduziu vazando nos dois sinks
+    // ---------------------------------------------------------------
+
+    /**
+     * `Setting::getValue()` lançando com DSN/credencial dentro. Antes, tanto
+     * `LocalApiClient` quanto `CapsuleClient` concatenavam a mensagem e
+     * gravavam nos DOIS sinks.
+     */
+    public function test_config_read_failure_leaks_nowhere_in_localapi(): void
+    {
+        \WHMCS\Config\Setting::$throwOnRead = true;
+
+        $api = new LocalApiClient('testadmin');
+        $api->setCallable(fn() => ['result' => 'success']);
+
+        try {
+            $api->call('AddClient', ['firstname' => 'a', 'noemail' => true]);
+            $this->fail('deveria falhar fechado');
+        } catch (\RuntimeException) {
+            // esperado
+        } finally {
+            \WHMCS\Config\Setting::reset();
+        }
+
+        $this->assertNoSinkLeaked('');
+        $this->assertTrue(ErrorLogSpy::hasLineContaining('category=config_read_failure'));
+        $this->assertTrue(ActivityLogSpy::hasEntryContaining('readonly config read failed'));
+    }
+
+    public function test_config_read_failure_leaks_nowhere_in_capsule(): void
+    {
+        \WHMCS\Config\Setting::$throwOnRead = true;
+
+        try {
+            (new CapsuleClient())->insert('mod_mgcrm_contacts', ['name' => 'Ana']);
+            $this->fail('deveria falhar fechado');
+        } catch (\InvalidArgumentException) {
+            // esperado
+        } finally {
+            \WHMCS\Config\Setting::reset();
+        }
+
+        $this->assertNoSinkLeaked('');
+        $this->assertTrue(ErrorLogSpy::hasLineContaining('category=config_read_failure'));
+    }
+
+    /**
+     * A mensagem simulada carrega os segredos; provamos que nem o Activity Log
+     * nem o error_log a reproduzem, em nenhuma das duas rotas.
+     */
+    public function test_poisoned_config_exception_never_appears_in_any_sink(): void
+    {
+        \WHMCS\Config\Setting::$throwOnRead = true;
+        \WHMCS\Config\Setting::$readFailure = new \RuntimeException(self::poisonedText());
+
+        $api = new LocalApiClient('testadmin');
+        $api->setCallable(fn() => ['result' => 'success']);
+
+        try {
+            $api->call('AddClient', ['firstname' => 'a', 'noemail' => true]);
+        } catch (\RuntimeException) {
+            // esperado
+        }
+
+        try {
+            (new CapsuleClient())->insert('mod_mgcrm_contacts', ['name' => 'Ana']);
+        } catch (\InvalidArgumentException) {
+            // esperado
+        }
+
+        \WHMCS\Config\Setting::reset();
+
+        $this->assertNoSinkLeaked('');
+    }
+
+    // ---------------------------------------------------------------
+    // Texto livre pelo adapter — proposal/notes/description
+    // ---------------------------------------------------------------
+
+    /**
+     * D7: o segredo dentro de um campo de TEXTO LIVRE. Nenhuma denylist de
+     * nomes protege isso — foi assim que `proposal` gravou a string inteira.
+     */
+    #[DataProvider('freeTextFieldProvider')]
+    public function test_free_text_field_value_never_reaches_the_activity_log(string $tool, array $args): void
+    {
+        $adapter = $this->adapter(fn() => ['result' => 'success', 'quoteid' => 1, 'ticketid' => 1, 'clientid' => 1]);
+
+        $payload = $this->callTool($adapter, $tool, $args, 'sink-free-' . substr(md5($tool), 0, 6));
+
+        $this->assertNoSinkLeaked($payload);
+    }
+
+    public static function freeTextFieldProvider(): array
+    {
+        $poison = 'POISON ' . implode(' ', self::SECRETS);
+
+        return [
+            'quote.proposal' => ['whmcs_create_quote', [
+                'subject' => 'S', 'stage' => 'Draft', 'proposal' => $poison,
+            ]],
+            'quote.customernotes' => ['whmcs_create_quote', [
+                'subject' => 'S', 'stage' => 'Draft', 'proposal' => 'P', 'customernotes' => $poison,
+            ]],
+            'quote.adminnotes' => ['whmcs_create_quote', [
+                'subject' => 'S', 'stage' => 'Draft', 'proposal' => 'P', 'adminnotes' => $poison,
+            ]],
+            'ticket.message' => ['whmcs_open_ticket', [
+                'deptid' => 1, 'subject' => 'S', 'message' => $poison,
+            ]],
+            'client.notes' => ['whmcs_create_client', [
+                'firstname' => 'A', 'lastname' => 'B', 'email' => 'a@b.c', 'password2' => 'x', 'notes' => $poison,
+            ]],
+            'project.notes' => ['whmcs_create_project', [
+                'title' => 'T', 'adminid' => 1, 'notes' => $poison,
+            ]],
+        ];
+    }
+
+    // ---------------------------------------------------------------
+    // Fingerprint da causa: estável e ligado pela correlação
+    // ---------------------------------------------------------------
+
+    /** Mesma causa em duas execuções ⇒ mesmo fingerprint. */
+    public function test_same_cause_yields_the_same_fingerprint_across_partial_failures(): void
+    {
+        $fingerprints = [];
+        $correlations = [];
+
+        for ($i = 0; $i < 2; $i++) {
+            ErrorLogSpy::start();
+
+            $adapter = $this->adapter(function (string $cmd) {
+                if ($cmd === 'GetQuotes') {
+                    return ['result' => 'success', 'quotes' => ['quote' => [['id' => 10, 'stage' => 'Delivered']]]];
+                }
+                if ($cmd === 'AcceptQuote') {
+                    return ['result' => 'success', 'invoiceid' => 99];
+                }
+                throw new \RuntimeException('the very same downstream cause');
+            });
+
+            $payload = $this->callTool($adapter, 'whmcs_convert_quote_to_invoice', [
+                'quoteid' => 10, 'duedate' => '2026-08-10T00:00:00Z',
+            ], 'sink-fp-' . str_pad((string) $i, 7, '0'));
+
+            $log = ErrorLogSpy::contents();
+            $this->assertSame(1, preg_match('/fingerprint=([0-9a-f]{32})/', $log, $fp), 'faltou fingerprint');
+            $fingerprints[] = $fp[1];
+
+            // O payload vem JSON dentro de JSON, então as aspas estão escapadas.
+            $this->assertSame(1, preg_match('/correlation_id\D{0,8}([0-9a-f]{8})/', $payload, $corr));
+            $correlations[] = $corr[1];
+
+            // A correlação do payload precisa aparecer no diagnóstico.
+            $this->assertStringContainsString("[corr:{$corr[1]}]", $log, 'payload e log precisam se ligar');
+        }
+
+        $this->assertSame($fingerprints[0], $fingerprints[1], 'mesma causa deve dar o mesmo fingerprint');
+        $this->assertNotSame($correlations[0], $correlations[1], 'correlações são por execução');
+    }
+
+    /** Causas diferentes ⇒ fingerprints diferentes. */
+    public function test_different_causes_yield_different_fingerprints(): void
+    {
+        $seen = [];
+
+        foreach (['cause A', 'cause B'] as $i => $cause) {
+            ErrorLogSpy::start();
+
+            $adapter = $this->adapter(function (string $cmd) use ($cause) {
+                if ($cmd === 'GetQuotes') {
+                    return ['result' => 'success', 'quotes' => ['quote' => [['id' => 10, 'stage' => 'Delivered']]]];
+                }
+                if ($cmd === 'AcceptQuote') {
+                    return ['result' => 'success', 'invoiceid' => 99];
+                }
+                throw new \RuntimeException($cause);
+            });
+
+            $this->callTool($adapter, 'whmcs_convert_quote_to_invoice', [
+                'quoteid' => 10, 'duedate' => '2026-08-10T00:00:00Z',
+            ], 'sink-fpd-' . str_pad((string) $i, 6, '0'));
+
+            preg_match('/fingerprint=([0-9a-f]{32})/', ErrorLogSpy::contents(), $fp);
+            $seen[] = $fp[1] ?? '';
+        }
+
+        $this->assertNotSame($seen[0], $seen[1]);
+    }
+
+    /** HMAC de 128 bits — hash nu era oráculo de dicionário. */
+    public function test_fingerprint_is_keyed_and_128_bits(): void
+    {
+        \NtMcp\Whmcs\Diagnostics::setFingerprintKey('key-one');
+        $withKeyOne = \NtMcp\Whmcs\Diagnostics::fingerprint('Client Not Found');
+
+        \NtMcp\Whmcs\Diagnostics::setFingerprintKey('key-two');
+        $withKeyTwo = \NtMcp\Whmcs\Diagnostics::fingerprint('Client Not Found');
+
+        $this->assertMatchesRegularExpression('/^[0-9a-f]{32}$/', $withKeyOne, '128 bits');
+        $this->assertNotSame($withKeyOne, $withKeyTwo, 'sem chave, o log confirmaria palpites');
+        $this->assertNotSame(
+            substr(hash('sha256', 'Client Not Found'), 0, 32),
+            $withKeyOne,
+            'não pode ser SHA-256 nu'
+        );
+
+        \NtMcp\Whmcs\Diagnostics::setFingerprintKey(null);
     }
 
     // ---------------------------------------------------------------

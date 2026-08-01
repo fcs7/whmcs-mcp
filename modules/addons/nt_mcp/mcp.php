@@ -22,7 +22,38 @@ use NtMcp\Http\SecurityHeaders;
 use NtMcp\Http\CorsHandler;
 use NtMcp\Http\IpAllowlist;
 use NtMcp\Security\RateLimiter;
+use NtMcp\Whmcs\Diagnostics;
 use NtMcp\Whmcs\SystemUrl;
+
+// ---------------------------------------------------------------
+// F2 — rede de segurança do endpoint.
+//
+// Tudo abaixo (TLS, CORS, allowlist, rate limit, auth, montagem do servidor)
+// roda ANTES do Processor do MCP, portanto fora do tratamento de erro do
+// adapter. Uma exceção aqui — falha de config, de DB, de bootstrap — chegaria
+// ao handler do PHP e, com `display_errors` ligado, imprimiria a mensagem crua
+// (DSN, credencial, path) direto na resposta HTTP.
+//
+// O catch devolve um erro estável e manda só classe + fingerprint ao log.
+// ---------------------------------------------------------------
+set_exception_handler(static function (\Throwable $e): void {
+    $correlationId = Diagnostics::report(Diagnostics::CATEGORY_UNHANDLED, 'mcp_endpoint', $e);
+
+    if (!headers_sent()) {
+        http_response_code(500);
+        header('Content-Type: application/json');
+    }
+
+    echo json_encode([
+        'jsonrpc' => '2.0',
+        'error' => [
+            'code' => -32603,
+            'message' => 'Internal server error. Correlation id: ' . $correlationId,
+        ],
+        'id' => null,
+    ]);
+    exit;
+});
 
 // SECURITY CONTROL (9.2 -- F13): TLS enforcement
 TlsEnforcer::enforce();

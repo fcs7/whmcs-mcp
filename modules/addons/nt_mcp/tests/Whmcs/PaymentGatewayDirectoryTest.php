@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace NtMcp\Tests\Whmcs;
 
+use NtMcp\Tests\Support\FakeCapsule;
 use NtMcp\Whmcs\PaymentGatewayDirectory;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -15,6 +16,16 @@ use PHPUnit\Framework\TestCase;
  */
 class PaymentGatewayDirectoryTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        FakeCapsule::reset();
+    }
+
+    protected function tearDown(): void
+    {
+        FakeCapsule::reset();
+    }
+
     /** Diretório alimentado por resolver (equivale à projeção da coluna). */
     private function directory(array $rows): PaymentGatewayDirectory
     {
@@ -173,10 +184,29 @@ class PaymentGatewayDirectoryTest extends TestCase
         ];
     }
 
-    /** Linha com espaço em volta é limpa, não rejeitada. */
-    public function test_rows_are_trimmed(): void
+    /**
+     * A linha é validada CRUA. Aparar antes do regex fazia `' banktransfer '`
+     * passar e chegar ao `UpdateInvoice` aparado — valor que não é o exato do
+     * banco. Espaço em volta é coluna suja e invalida o diretório.
+     */
+    #[DataProvider('whitespaceRowProvider')]
+    public function test_rows_with_surrounding_whitespace_invalidate_the_directory(string $row): void
     {
-        $this->assertSame(['paypal', 'banktransfer'], $this->directory(['  paypal ', "banktransfer\n"])->configuredGateways());
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('unreliable directory');
+
+        $this->directory(['paypal', $row])->resolve('paypal');
+    }
+
+    public static function whitespaceRowProvider(): array
+    {
+        return [
+            'espaço à esquerda'  => [' banktransfer'],
+            'espaço à direita'   => ['banktransfer '],
+            'espaço nos dois'    => [' banktransfer '],
+            'newline à direita'  => ["banktransfer\n"],
+            'tab à esquerda'     => ["\tbanktransfer"],
+        ];
     }
 
     public function test_exact_duplicates_are_deduplicated(): void
@@ -231,15 +261,52 @@ class PaymentGatewayDirectoryTest extends TestCase
         }
     }
 
-    public function test_without_whmcs_capsule_it_fails_closed(): void
-    {
-        $this->assertFalse(
-            class_exists('\WHMCS\Database\Capsule'),
-            'pré-condição do teste: o suite não bootstrapa o Capsule do WHMCS'
-        );
+    // ---------------------------------------------------------------
+    // Caminho REAL do Capsule — sem resolver injetado
+    // ---------------------------------------------------------------
 
+    public function test_reads_through_the_real_capsule_query_and_projects_only_gateway(): void
+    {
+        FakeCapsule::withGateways(['banktransfer', 'paypal']);
+
+        $directory = new PaymentGatewayDirectory();
+
+        $this->assertSame(['banktransfer', 'paypal'], $directory->configuredGateways());
+        $this->assertSame(
+            ['table(tblpaymentgateways)', 'select(gateway)', 'distinct()', 'get()'],
+            FakeCapsule::$calls,
+            'a consulta de produção precisa ser exatamente esta'
+        );
+        // A projeção nunca traz as colunas de credencial.
+        $this->assertStringNotContainsString('sk_live', json_encode($directory->configuredGateways()));
+    }
+
+    public function test_resolves_through_the_real_capsule_query(): void
+    {
+        FakeCapsule::withGateways(['banktransfer']);
+
+        $this->assertSame('banktransfer', (new PaymentGatewayDirectory())->resolve('BankTransfer'));
+    }
+
+    /** Driver fora do ar: falha fechada, sem propagar a mensagem. */
+    public function test_capsule_failure_fails_closed_without_leaking(): void
+    {
+        FakeCapsule::$failure = new \RuntimeException('SQLSTATE[28000] password=hunter2SuperSecret');
+
+        try {
+            (new PaymentGatewayDirectory())->resolve('paypal');
+            $this->fail('deveria falhar fechado');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('failed to read configured payment gateways', $e->getMessage());
+            $this->assertStringNotContainsString('hunter2SuperSecret', $e->getMessage());
+        }
+    }
+
+    /** Capsule indisponível (sem WHMCS) continua fail-closed. */
+    public function test_without_whmcs_database_it_fails_closed(): void
+    {
+        // FakeCapsule desligado no setUp reproduz o ambiente sem banco.
         $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('Capsule unavailable');
 
         (new PaymentGatewayDirectory())->resolve('paypal');
     }

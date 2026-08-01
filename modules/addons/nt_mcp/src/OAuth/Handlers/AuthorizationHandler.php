@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace NtMcp\OAuth\Handlers;
 
+use NtMcp\Whmcs\Diagnostics;
+
 use Illuminate\Database\Capsule\Manager as Capsule;
 use NtMcp\OAuth\OAuthHelper;
 use NtMcp\Security\RateLimiter;
@@ -77,7 +79,7 @@ final class AuthorizationHandler
                 'created_at'     => date('Y-m-d H:i:s'),
             ]);
         } catch (\Throwable $e) {
-            error_log('NT MCP: Failed to create authorization request: ' . $e->getMessage());
+            Diagnostics::report(Diagnostics::CATEGORY_OAUTH, 'authorization_request', $e);
             OAuthHelper::error(500, 'server_error', 'Failed to create authorization request');
             return;
         }

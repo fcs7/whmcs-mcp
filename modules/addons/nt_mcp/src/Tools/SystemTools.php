@@ -29,8 +29,10 @@ class SystemTools
 
     /**
      * `GetActivityLog` documenta `date` como "in localised format (eg
-     * 01/01/2016)" — não `Y-m-d`. Aceitamos ISO/`Y-m-d` do chamador e
-     * convertemos para o formato efetivo da instalação.
+     * 01/01/2016)" — não `Y-m-d`. A conversão para o formato da instalação
+     * acontece aqui; a ENTRADA é sempre não ambígua (D9).
+     *
+     * @param string $date Filtro de data. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY não são aceitos por serem ambíguos.
      */
     #[McpTool(name: 'whmcs_get_activity_log', description: 'Obtém log de atividades do sistema')]
     public function getActivityLog(int $limitnum = 25, int $limitstart = 0, string $user = '', string $description = '', string $date = ''): string
@@ -39,10 +41,7 @@ class SystemTools
         if ($user !== '') $params['user'] = $user;
         if ($description !== '') $params['description'] = $description;
         if ($date !== '') {
-            $params['date'] = $this->localizedDate()->fromWhmcsDate(
-                DateNormalizer::toWhmcsDate($date, 'date'),
-                'date'
-            );
+            $params['date'] = $this->localizedDate()->fromPublicInput($date, 'date');
         }
         return json_encode($this->api->call('GetActivityLog', $params), JSON_PRETTY_PRINT);
     }

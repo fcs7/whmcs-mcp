@@ -22,6 +22,30 @@ require_once __DIR__ . '/../vendor/autoload.php';
 // testes atravessem o caminho real (função global) e possam exercitar
 // formatos de localização distintos e os modos de falha fail-closed.
 // ---------------------------------------------------------------
+// ---------------------------------------------------------------
+// Stub de \WHMCS\Database\Capsule.
+//
+// Existe para que `PaymentGatewayDirectory` exercite o caminho REAL —
+// `Capsule::table('tblpaymentgateways')->select('gateway')->distinct()->get()` —
+// em vez de só o resolver injetado. O fake registra a cadeia chamada, para o
+// teste provar que a projeção é a esperada e que nunca toca `setting`/`value`.
+//
+// Controlado por NtMcp\Tests\Support\FakeCapsule.
+// ---------------------------------------------------------------
+if (!class_exists('\WHMCS\Database\Capsule')) {
+    eval('
+        namespace WHMCS\Database;
+
+        class Capsule
+        {
+            public static function table(string $table): mixed
+            {
+                return \NtMcp\Tests\Support\FakeCapsule::table($table);
+            }
+        }
+    ');
+}
+
 if (!function_exists('fromMySQLDate')) {
     function fromMySQLDate($date, $includeTime = false, $applyClientDateFormat = false) {
         return \NtMcp\Tests\Support\WhmcsDateFormat::format((string) $date);
@@ -61,10 +85,13 @@ if (!class_exists('\WHMCS\Config\Setting')) {
             /** @var bool quando true, getValue() lança (simula falha de leitura) */
             public static bool $throwOnRead = false;
 
+            /** @var \Throwable|null exceção específica a lançar */
+            public static ?\Throwable $readFailure = null;
+
             public static function getValue(string $key): mixed
             {
                 if (static::$throwOnRead) {
-                    throw new \RuntimeException("simulated config read failure for {$key}");
+                    throw static::$readFailure ?? new \RuntimeException("simulated config read failure for {$key}");
                 }
 
                 return static::$store[$key] ?? null;
@@ -74,6 +101,7 @@ if (!class_exists('\WHMCS\Config\Setting')) {
             {
                 static::$store = [];
                 static::$throwOnRead = false;
+                static::$readFailure = null;
             }
         }
     ');

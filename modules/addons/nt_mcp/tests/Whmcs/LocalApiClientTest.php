@@ -98,8 +98,17 @@ class LocalApiClientTest extends TestCase
             $this->assertStringNotContainsString('abcdef0123456789', $e->getMessage());
             $this->assertStringNotContainsString('/var/www', $e->getMessage());
             $this->assertStringContainsString('correlation id', $e->getMessage());
-            // A original continua acessível internamente, mas não serializada.
-            $this->assertInstanceOf(\RuntimeException::class, $e->getPrevious());
+            // A causa NÃO é encadeada: `(string)$exception` incluiria a cadeia
+            // anterior e reintroduziria o texto downstream em qualquer handler
+            // que estringifique a exceção. Classe e fingerprint viajam como
+            // dado estruturado.
+            $this->assertNull($e->getPrevious());
+            $this->assertSame(\RuntimeException::class, $e->causeClass);
+            $this->assertMatchesRegularExpression('/^[0-9a-f]{32}$/', $e->causeFingerprint);
+            $this->assertMatchesRegularExpression('/^[0-9a-f]{8}$/', $e->correlationId);
+            // E a estringificação completa também não carrega o texto.
+            $this->assertStringNotContainsString('hunter', (string) $e);
+            $this->assertStringNotContainsString('SQLSTATE', (string) $e);
         }
     }
 
@@ -279,130 +288,4 @@ class LocalApiClientTest extends TestCase
         $this->assertFalse($called);
     }
 
-    // ---------------------------------------------------------------
-    // redactParams tests (private static, accessed via Reflection)
-    // ---------------------------------------------------------------
-
-    private function callRedactParams(array $params, int $depth = 0): array
-    {
-        $method = new \ReflectionMethod(LocalApiClient::class, 'redactParams');
-        return $method->invoke(null, $params, $depth);
-    }
-
-    public function test_redact_params_hides_password(): void
-    {
-        $result = $this->callRedactParams(['password' => 'secret']);
-        $this->assertSame(['password' => '[REDACTED]'], $result);
-    }
-
-    public function test_redact_params_hides_card_fields(): void
-    {
-        $result = $this->callRedactParams([
-            'cardnum' => '4111',
-            'cvv' => '123',
-            'expdate' => '12/26',
-        ]);
-
-        $this->assertSame('[REDACTED]', $result['cardnum']);
-        $this->assertSame('[REDACTED]', $result['cvv']);
-        $this->assertSame('[REDACTED]', $result['expdate']);
-    }
-
-    public function test_redact_params_preserves_safe_fields(): void
-    {
-        $input = ['clientid' => 1, 'firstname' => 'John'];
-        $result = $this->callRedactParams($input);
-        $this->assertSame($input, $result);
-    }
-
-    public function test_redact_params_recurses_nested_arrays(): void
-    {
-        $result = $this->callRedactParams(['data' => ['password' => 'secret']]);
-        $this->assertSame(['data' => ['password' => '[REDACTED]']], $result);
-    }
-
-    public function test_redact_params_limits_depth_to_5(): void
-    {
-        // Build 7-level nested array: level0 > level1 > ... > level5 > {innerkey}
-        // At depth 5, the array value for level5 triggers $depth >= 5 → '[NESTED]'
-        $nested = ['innerkey' => 'innervalue'];
-        for ($i = 5; $i >= 0; $i--) {
-            $nested = ["level{$i}" => $nested];
-        }
-
-        $result = $this->callRedactParams($nested);
-
-        // Traverse to level5 — its value should be '[NESTED]' (not recursed)
-        $cursor = $result;
-        for ($i = 0; $i < 5; $i++) {
-            $this->assertIsArray($cursor["level{$i}"]);
-            $cursor = $cursor["level{$i}"];
-        }
-
-        $this->assertSame('[NESTED]', $cursor['level5']);
-    }
-
-    public function test_redact_params_is_case_insensitive(): void
-    {
-        $result = $this->callRedactParams([
-            'Password' => 'x',
-            'CARDNUM' => '4111',
-        ]);
-
-        $this->assertSame('[REDACTED]', $result['Password']);
-        $this->assertSame('[REDACTED]', $result['CARDNUM']);
-    }
-
-    /**
-     * Guardrail do T1: credenciais, campos fiscais e dados de pagamento nunca
-     * podem aparecer no Activity Log.
-     */
-    public function test_redact_params_hides_credentials_fiscal_and_payment_fields(): void
-    {
-        $result = $this->callRedactParams([
-            // credenciais
-            'password' => 'p1', 'password2' => 'p2', 'securityqans' => 'mother',
-            // campo fiscal
-            'tax_id' => '123.456.789-00',
-            // dados de pagamento
-            'cardnum' => '4111111111111111', 'cardnumber' => '4111111111111111',
-            'cvv' => '123', 'cvc' => '456', 'expdate' => '12/26',
-            'bankacct' => '00012345', 'bankcode' => '341',
-            // não sensível: deve sobreviver
-            'clientid' => 7,
-        ]);
-
-        foreach ([
-            'password', 'password2', 'securityqans', 'tax_id',
-            'cardnum', 'cardnumber', 'cvv', 'cvc', 'expdate',
-            'bankacct', 'bankcode',
-        ] as $sensitive) {
-            $this->assertSame('[REDACTED]', $result[$sensitive], "campo sensível vazou: {$sensitive}");
-        }
-
-        $this->assertSame(7, $result['clientid']);
-    }
-
-    /**
-     * A tentativa BLOQUEADA por gate também passa pela redação: o log de
-     * bloqueio recebe os params, então não pode carregar segredo em claro.
-     */
-    public function test_blocked_attempt_params_go_through_redaction(): void
-    {
-        $client = new LocalApiClient('testadmin');
-        $client->setGates([]); // WRITE off
-        $client->setCallable(fn() => ['result' => 'success']);
-
-        try {
-            $client->call('AddClient', ['firstname' => 'a', 'password2' => 'secret', 'tax_id' => '111']);
-            $this->fail('AddClient deveria estar bloqueado');
-        } catch (\RuntimeException $e) {
-            $this->assertStringContainsString('blocked', $e->getMessage());
-            $this->assertStringNotContainsString('secret', $e->getMessage());
-        }
-
-        $redacted = $this->callRedactParams(['firstname' => 'a', 'password2' => 'secret', 'tax_id' => '111']);
-        $this->assertSame('[REDACTED]', $redacted['password2']);
-        $this->assertSame('[REDACTED]', $redacted['tax_id']);
-    }
 }

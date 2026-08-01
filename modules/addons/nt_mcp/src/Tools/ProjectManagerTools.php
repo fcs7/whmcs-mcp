@@ -31,6 +31,9 @@ class ProjectManagerTools
         return json_encode($this->api->call('GetProject', ['projectid' => $projectid]), JSON_PRETTY_PRINT);
     }
 
+    /**
+     * @param string $duedate Prazo do projeto. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY nao sao aceitos por serem ambiguos.
+     */
     #[McpTool(name: 'whmcs_create_project', description: 'Cria um novo projeto no WHMCS Project Manager')]
     public function createProject(
         string $title,
@@ -50,6 +53,9 @@ class ProjectManagerTools
         return json_encode($this->api->call('CreateProject', $params), JSON_PRETTY_PRINT);
     }
 
+    /**
+     * @param string $duedate Prazo do projeto. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY nao sao aceitos por serem ambiguos.
+     */
     #[McpTool(name: 'whmcs_update_project', description: 'Atualiza um projeto existente')]
     public function updateProject(
         int $projectid,
@@ -66,6 +72,9 @@ class ProjectManagerTools
         return json_encode($this->api->call('UpdateProject', $params), JSON_PRETTY_PRINT);
     }
 
+    /**
+     * @param string $duedate Prazo da tarefa. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY nao sao aceitos por serem ambiguos.
+     */
     #[McpTool(name: 'whmcs_add_project_task', description: 'Adiciona uma tarefa a um projeto')]
     public function addProjectTask(
         int $projectid,
@@ -80,6 +89,9 @@ class ProjectManagerTools
         return json_encode($this->api->call('AddProjectTask', $params), JSON_PRETTY_PRINT);
     }
 
+    /**
+     * @param string $duedate Prazo da tarefa. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY nao sao aceitos por serem ambiguos.
+     */
     #[McpTool(name: 'whmcs_update_project_task', description: 'Atualiza uma tarefa de projeto')]
     public function updateProjectTask(
         int $projectid,

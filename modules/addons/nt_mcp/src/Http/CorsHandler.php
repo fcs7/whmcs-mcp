@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace NtMcp\Http;
 
+use NtMcp\Whmcs\Diagnostics;
+
 /**
  * CORS headers for browser-based MCP clients (Claude.ai Custom Connectors).
  * OPTIONS preflight must be handled before auth (no Authorization header).
@@ -115,7 +117,7 @@ final class CorsHandler
         try {
             $raw = \WHMCS\Config\Setting::getValue('nt_mcp_cors_origins') ?? '';
         } catch (\Throwable $e) {
-            error_log('NT MCP CorsHandler: Failed to read CORS origins config: ' . $e->getMessage());
+            Diagnostics::report(Diagnostics::CATEGORY_CONFIG_READ, 'nt_mcp_cors_origins', $e);
             return false;
         }
 

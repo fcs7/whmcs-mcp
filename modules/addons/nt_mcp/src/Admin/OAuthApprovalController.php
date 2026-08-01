@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace NtMcp\Admin;
 
+use NtMcp\Whmcs\Diagnostics;
+
 use Illuminate\Database\Capsule\Manager as Capsule;
 use NtMcp\Http\IpResolver;
 use NtMcp\Security\CsrfProtection;
@@ -130,7 +132,7 @@ final class OAuthApprovalController
         try {
             $adminUsername = Capsule::table('tbladmins')->where('id', $adminId)->value('username') ?? 'admin';
         } catch (\Throwable $ex) {
-            error_log('NT MCP OAuth: Failed to look up admin username for ID ' . $adminId . ': ' . $ex->getMessage());
+            Diagnostics::report(Diagnostics::CATEGORY_ADMIN_LOOKUP, 'tbladmins', $ex);
         }
 
         // SECURITY FIX (S2A-01): Store hash, not plaintext
@@ -151,7 +153,7 @@ final class OAuthApprovalController
             }
             Capsule::table('mod_nt_mcp_oauth_codes')->insert($codeData);
         } catch (\Throwable $dbEx) {
-            error_log('NT MCP: Failed to insert authorization code: ' . $dbEx->getMessage());
+            Diagnostics::report(Diagnostics::CATEGORY_OAUTH, 'authorization_code_insert', $dbEx);
             echo '<div class="alert alert-danger">Erro interno ao gerar codigo de autorizacao. Tente novamente.</div>';
             return;
         }

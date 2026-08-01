@@ -95,8 +95,16 @@ class LocalApiClient
     ];
 
     /**
-     * Sensitive parameter keys whose values must NEVER appear in logs.
-     * Values are replaced with '[REDACTED]' before writing audit entries.
+     * Campos sensíveis por NOME.
+     *
+     * D7 aposentou esta lista como mecanismo de auditoria — uma denylist de
+     * nomes nunca protege segredo colocado em campo de texto livre
+     * (`proposal`, `notes`, `description`), e foi assim que um segredo inteiro
+     * acabou no Activity Log. O que grava hoje é `AuditMetadata`, por
+     * allowlist.
+     *
+     * A lista permanece porque `ResponseRedactor` e revisões de segurança ainda
+     * a usam como referência do que é sensível na RESPOSTA.
      */
     private const REDACTED_PARAMS = [
         'password', 'password2', 'cardnum', 'cvv', 'expdate',
@@ -226,7 +234,9 @@ class LocalApiClient
         try {
             $raw = \WHMCS\Config\Setting::getValue('nt_mcp_readonly');
         } catch (\Throwable $e) {
-            self::auditConfig('NT MCP LocalApiClient: readonly config read failed — failing closed: ' . $e->getMessage());
+            // A mensagem NÃO é concatenada: uma PDOException aqui carrega DSN,
+            // credencial e SQL, e este ramo grava nos dois sinks.
+            self::auditConfig('LocalApiClient: readonly config read failed — failing closed', $e);
             return true;
         }
 
@@ -262,20 +272,22 @@ class LocalApiClient
     }
 
     /**
-     * Config corrompida é evento de segurança: vai para o error_log E para o
-     * Activity Log, sem parâmetros (a mensagem não carrega dado de chamada).
+     * Config corrompida é evento de segurança: vai para o Activity Log com
+     * texto ESTÁVEL nosso, e o diagnóstico estrutural (classe + fingerprint)
+     * para o error_log, correlacionados. A mensagem da exceção não é
+     * concatenada em nenhum dos dois.
      */
-    private static function auditConfig(string $message): void
+    private static function auditConfig(string $message, ?\Throwable $e = null): void
     {
-        error_log($message);
-        self::auditLog($message, []);
+        $correlationId = Diagnostics::report(Diagnostics::CATEGORY_CONFIG_READ, 'nt_mcp_config', $e);
+        self::auditLog($message, [], $correlationId);
     }
 
     private function assertModeAllows(string $command, array $params = []): void
     {
         $class = $this->classOf($command);
         if (!$this->gateEnabled($class)) {
-            self::auditLog("MCP BLOCKED {$class} '{$command}' (gate disabled)", $params);
+            self::auditLog("MCP BLOCKED {$class} '{$command}' (gate disabled)", AuditMetadata::forParams($params));
             throw new AuthorizationException(
                 "LocalApiClient: command '{$command}' is blocked (class {$class} disabled by config)."
             );
@@ -285,7 +297,7 @@ class LocalApiClient
         // primária. Vale para qualquer caminho que chegue até aqui, inclusive
         // uma chamada direta ao LocalApiClient que omita 'noemail'.
         if ($this->sendsNotification($command, $params) && !$this->gateEnabled('COMMS')) {
-            self::auditLog("MCP BLOCKED COMMS '{$command}' (notification requested, comms gate disabled)", $params);
+            self::auditLog("MCP BLOCKED COMMS '{$command}' (notification requested, comms gate disabled)", AuditMetadata::forParams($params));
             throw new AuthorizationException(
                 "LocalApiClient: command '{$command}' is blocked (client notification requires the COMMS gate)."
             );
@@ -368,7 +380,7 @@ class LocalApiClient
             if ($id !== null) $this->adminIdCache[$username] = $id;
             return $id;
         } catch (\Throwable $e) {
-            error_log('NT MCP: resolveAdminId failed: ' . $e->getMessage());
+            Diagnostics::report(Diagnostics::CATEGORY_ADMIN_LOOKUP, 'tbladmins', $e);
             return null;
         }
     }
@@ -379,7 +391,7 @@ class LocalApiClient
             // ---------------------------------------------------------------
             // SECURITY FIX (F8): Log blocked command attempts for forensics.
             // ---------------------------------------------------------------
-            self::auditLog("MCP BLOCKED command '{$command}' (not in allowlist)", $params);
+            self::auditLog("MCP BLOCKED command '{$command}' (not in allowlist)", AuditMetadata::forParams($params));
             throw new AuthorizationException(
                 "LocalApiClient: WHMCS API command '{$command}' is not in the allowed list."
             );
@@ -397,7 +409,7 @@ class LocalApiClient
         // ---------------------------------------------------------------
         // Identificador de correlação: liga a linha de início, a de desfecho e o
         // diagnóstico detalhado do error_log sem repetir dado nenhum entre eles.
-        $correlationId = self::auditLog("MCP API call: {$command}", $params);
+        $correlationId = self::auditLog("MCP API call: {$command}", AuditMetadata::forParams($params));
 
         // ---------------------------------------------------------------
         // m1.1: TODO desfecho é registrado — sucesso, erro em array, retorno
@@ -422,13 +434,15 @@ class LocalApiClient
             self::auditLog("MCP API EXCEPTION {$command}", [], $correlationId);
             Diagnostics::log($correlationId, Diagnostics::CATEGORY_API_EXCEPTION, $command, $e);
 
-            // F2: a exceção original NÃO é relançada — o adapter a converteria
-            // em "Tool execution failed: <mensagem crua>", entregando texto
-            // arbitrário (token, CPF, path, SQL) ao chamador MCP.
+            // F2: a exceção original NÃO é relançada nem encadeada — o adapter
+            // a converteria em "Tool execution failed: <mensagem crua>", e
+            // `(string)$exception` inclui a cadeia anterior. Classe e
+            // fingerprint da causa viajam como dado estruturado.
             throw new DownstreamFailureException(
                 self::publicFailureMessage($command, $correlationId),
-                0,
-                $e
+                $correlationId,
+                Diagnostics::fingerprint($e->getMessage()),
+                get_class($e)
             );
         }
 
@@ -448,21 +462,32 @@ class LocalApiClient
         }
 
         if ($outcome === 'error') {
-            self::auditLog("MCP API ERROR {$command}", [], $correlationId);
+            // D6: a mensagem é inspecionada APENAS aqui, em memória, para
+            // reduzir a um código do nosso enum. Nada derivado do texto sai
+            // desta expressão — nem para o retorno, nem para o log.
+            $downstreamMessage = is_array($result) ? (string) ($result['message'] ?? '') : '';
+            $classification = ErrorClassifier::classify($command, $downstreamMessage);
+
+            self::auditLog(
+                "MCP API ERROR {$command} ({$classification['code']})",
+                [],
+                $correlationId
+            );
             Diagnostics::log(
                 $correlationId,
                 Diagnostics::CATEGORY_API_ERROR,
                 $command,
                 null,
-                is_array($result) ? (string) ($result['message'] ?? '') : null
+                $downstreamMessage
             );
 
-            // F2: o `message` do WHMCS é texto arbitrário — hook ou módulo de
-            // terceiro podem ecoar o input recebido. O chamador MCP recebe um
-            // contrato ESTÁVEL com a correlação para o operador achar o
-            // incidente no log; o texto original não atravessa.
+            // F2 + D6: o texto do WHMCS não atravessa; o chamador recebe um
+            // código estável que permite ramificar (corrigir input, buscar o
+            // existente, desistir) mais a correlação para o operador.
             return [
                 'result' => 'error',
+                'error_code' => $classification['code'],
+                'error_category' => $classification['category'],
                 'message' => self::publicFailureMessage($command, $correlationId),
                 'correlation_id' => $correlationId,
             ];
@@ -474,7 +499,8 @@ class LocalApiClient
         Diagnostics::log($correlationId, Diagnostics::CATEGORY_API_MALFORMED, $command);
 
         throw new DownstreamFailureException(
-            self::publicFailureMessage($command, $correlationId)
+            self::publicFailureMessage($command, $correlationId),
+            $correlationId
         );
     }
 
@@ -507,26 +533,28 @@ class LocalApiClient
      * ligadas sem repetir dado nenhum entre elas.
      *
      * @param string      $message       Human-readable description (estável, sem texto downstream)
-     * @param array       $params        Tool parameters (sensitive values redacted)
+     * @param array       $metadata      METADADOS já seguros (ver AuditMetadata) — nunca params crus
      * @param string|null $correlationId Reusa uma correlação existente; gera uma nova se null
      * @return string                    a correlação usada
      */
-    public static function auditLog(string $message, array $params = [], ?string $correlationId = null): string
+    public static function auditLog(string $message, array $metadata = [], ?string $correlationId = null): string
     {
         $correlationId ??= self::newCorrelationId();
         // SECURITY FIX (F3 -- audit, revised H1): Use IpResolver directly.
         // Behind Plesk reverse proxy, REMOTE_ADDR is 127.0.0.1 — useless for
         // forensics. IpResolver respects nt_mcp_trusted_proxies and walks XFF.
         $ip = IpResolver::resolve();
-        $safe = self::redactParams($params);
-        $summary = json_encode($safe, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
-        // Truncate the parameter summary to avoid bloating the log table
+        // D7: o que chega aqui já deveria ser metadado de allowlist. Esta é a
+        // última barreira — qualquer string fora de token curto é descartada,
+        // para que um call-site futuro não reintroduza dump de valores.
+        $summary = json_encode(self::sanitizeMetadata($metadata), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
         if (strlen($summary) > 1024) {
             $summary = substr($summary, 0, 1021) . '...';
         }
 
-        $entry = "[NT-MCP] [{$ip}] [corr:{$correlationId}] {$message} | params: {$summary}";
+        $entry = "[NT-MCP] [{$ip}] [corr:{$correlationId}] {$message} | meta: {$summary}";
 
         try {
             if (function_exists('logActivity')) {
@@ -547,20 +575,33 @@ class LocalApiClient
     }
 
     /**
-     * Replace sensitive parameter values with '[REDACTED]'.
+     * Última barreira do Activity Log (D7).
+     *
+     * `AuditMetadata` já entrega só metadado, mas esta função existe para que
+     * um call-site novo — ou um refactor distraído — não consiga passar valores
+     * de campo. Só sobrevivem: inteiros, booleanos, tokens curtos que casem
+     * `[A-Za-z0-9_]` e listas desses tokens. Qualquer outra coisa vira um
+     * marcador de tipo.
      */
-    private static function redactParams(array $params, int $depth = 0): array
+    private static function sanitizeMetadata(array $metadata, int $depth = 0): array
     {
-        $redacted = [];
-        foreach ($params as $key => $value) {
-            if (in_array(strtolower($key), self::REDACTED_PARAMS, true)) {
-                $redacted[$key] = '[REDACTED]';
+        $safe = [];
+        foreach ($metadata as $key => $value) {
+            $name = is_string($key) ? Diagnostics::safeToken($key) : (string) (int) $key;
+
+            if (is_int($value) || is_bool($value)) {
+                $safe[$name] = $value;
+            } elseif (is_string($value)) {
+                $safe[$name] = preg_match('/^[A-Za-z0-9_]{1,64}\z/', $value) === 1 ? $value : '[omitted]';
             } elseif (is_array($value)) {
-                $redacted[$key] = $depth >= 5 ? '[NESTED]' : self::redactParams($value, $depth + 1);
+                $safe[$name] = $depth >= 4 ? '[nested]' : self::sanitizeMetadata($value, $depth + 1);
+            } elseif ($value === null) {
+                $safe[$name] = null;
             } else {
-                $redacted[$key] = $value;
+                $safe[$name] = '[' . gettype($value) . ']';
             }
         }
-        return $redacted;
+
+        return $safe;
     }
 }

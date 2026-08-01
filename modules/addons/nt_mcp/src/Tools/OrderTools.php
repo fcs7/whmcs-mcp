@@ -2,6 +2,7 @@
 // src/Tools/OrderTools.php
 namespace NtMcp\Tools;
 
+use NtMcp\Whmcs\AuditMetadata;
 use NtMcp\Whmcs\LocalApiClient;
 use PhpMcp\Server\Attributes\McpTool;
 
@@ -38,7 +39,10 @@ class OrderTools
         if ($confirm !== true) {
             // m1: esta recusa retorna ANTES do cliente central, então precisa
             // auditar aqui — senão a tentativa não deixa rastro nenhum.
-            LocalApiClient::auditLog('MCP REFUSED whmcs_cancel_order (confirm=false)', ['orderid' => $orderid]);
+            LocalApiClient::auditLog(
+                'MCP REFUSED whmcs_cancel_order (confirm=false)',
+                AuditMetadata::ids(['orderid' => $orderid])
+            );
 
             return json_encode([
                 'result' => 'error',

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace NtMcp\OAuth\Handlers;
 
+use NtMcp\Whmcs\Diagnostics;
+
 use Illuminate\Database\Capsule\Manager as Capsule;
 use NtMcp\Http\IpResolver;
 use NtMcp\OAuth\OAuthHelper;
@@ -119,7 +121,7 @@ final class TokenHandler
             }
             Capsule::table('mod_nt_mcp_oauth_tokens')->insert($tokenData);
         } catch (\Throwable $dbEx) {
-            error_log('NT MCP: Failed to insert OAuth token: ' . $dbEx->getMessage());
+            Diagnostics::report(Diagnostics::CATEGORY_OAUTH, 'token_insert', $dbEx);
             OAuthHelper::error(500, 'server_error', 'Failed to persist access token');
             return;
         }

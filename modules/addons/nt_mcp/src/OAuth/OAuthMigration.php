@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace NtMcp\OAuth;
 
+use NtMcp\Whmcs\Diagnostics;
+
 use Illuminate\Database\Capsule\Manager as Capsule;
 
 /**
@@ -98,7 +100,7 @@ final class OAuthMigration
             }
             return true;
         } catch (\Throwable $e) {
-            error_log('NT MCP: OAuth migration failed: ' . $e->getMessage());
+            Diagnostics::report(Diagnostics::CATEGORY_MIGRATION, 'oauth_migration', $e);
             return false;
         }
     }

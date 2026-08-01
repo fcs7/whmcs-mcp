@@ -92,15 +92,35 @@ final class DateNormalizer
         }
 
         // 2) Date-time ISO-8601/RFC3339 — a forma que o schema publicado exige.
-        if (preg_match('/^(\d{4}-\d{2}-\d{2})[Tt ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?([Zz]|[+-]\d{2}:?\d{2})?$/', $value, $m) === 1) {
-            $datePart = $m[1];
-            $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $datePart);
-            if ($parsed !== false && $parsed->format('Y-m-d') === $datePart) {
-                return $datePart;
+        //
+        // O TIMESTAMP INTEIRO é validado, não só a parte civil. A regex sozinha
+        // deixava passar `2026-08-10T99:99:99+99:99`, que atravessava o adapter
+        // e virava uma data válida downstream — hora, minuto, segundo e offset
+        // impossíveis simplesmente ignorados.
+        if (preg_match('/^(\d{4}-\d{2}-\d{2})[Tt ](\d{2}):(\d{2})(?::(\d{2})(\.\d+)?)?([Zz]|[+-]\d{2}:?\d{2})?$/', $value, $m) !== 1) {
+            return null;
+        }
+
+        [$datePart, $hour, $minute] = [$m[1], (int) $m[2], (int) $m[3]];
+        $second = isset($m[4]) && $m[4] !== '' ? (int) $m[4] : 0;
+
+        if ($hour > 23 || $minute > 59 || $second > 59) {
+            return null;
+        }
+
+        $offset = $m[6] ?? '';
+        if ($offset !== '' && strcasecmp($offset, 'Z') !== 0) {
+            $offsetHour = (int) substr($offset, 1, 2);
+            $offsetMinute = (int) substr(str_replace(':', '', $offset), 3, 2);
+            // RFC 3339: offset entre -23:59 e +23:59.
+            if ($offsetHour > 23 || $offsetMinute > 59) {
+                return null;
             }
         }
 
-        return null;
+        $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $datePart);
+
+        return ($parsed !== false && $parsed->format('Y-m-d') === $datePart) ? $datePart : null;
     }
 
     /**

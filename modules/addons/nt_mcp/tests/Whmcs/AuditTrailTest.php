@@ -201,19 +201,49 @@ class AuditTrailTest extends TestCase
         $this->assertStringNotContainsString('Zoe', $ok[0], 'params já foram logados no início');
     }
 
-    public function test_gate_block_is_audited_with_redacted_params(): void
+    /**
+     * D7: o bloqueio continua auditado, mas agora com METADADOS de allowlist —
+     * nomes de campo e IDs. Nenhum valor livre, nem sequer marcado como
+     * redigido, porque valor nenhum é copiado.
+     */
+    public function test_gate_block_is_audited_with_metadata_only(): void
     {
         try {
-            $this->client([])->call('AddClient', ['password2' => 'hunter2', 'tax_id' => '111', 'cardnum' => '4111']);
+            $this->client([])->call('AddClient', [
+                'clientid' => 42,
+                'password2' => 'hunter2',
+                'tax_id' => '111',
+                'cardnum' => '4111111111111111',
+                'proposal' => 'POISON tok_secret',
+            ]);
         } catch (\RuntimeException) {
             // esperado
         }
 
         $blocked = ActivityLogSpy::matching('MCP BLOCKED WRITE');
         $this->assertCount(1, $blocked);
-        $this->assertStringContainsString('[REDACTED]', $blocked[0]);
-        $this->assertStringNotContainsString('hunter2', $blocked[0]);
-        $this->assertStringNotContainsString('4111', $blocked[0]);
+
+        // Nomes de campo conhecidos aparecem; valores livres, nunca.
+        $this->assertStringContainsString('password2', $blocked[0], 'o NOME do campo é metadado');
+        $this->assertStringContainsString('42', $blocked[0], 'IDs conhecidos são metadado');
+        foreach (['hunter2', '4111111111111111', 'POISON', 'tok_secret'] as $secret) {
+            $this->assertStringNotContainsString($secret, $blocked[0], "vazou '{$secret}'");
+        }
+    }
+
+    /** `cardnum` não está na allowlist de nomes: vira contagem, não nome. */
+    public function test_unknown_field_names_are_counted_not_named(): void
+    {
+        try {
+            $this->client([])->call('AddClient', ['segredo_do_cliente' => 'x', 'firstname' => 'Ana']);
+        } catch (\RuntimeException) {
+            // esperado
+        }
+
+        $blocked = ActivityLogSpy::matching('MCP BLOCKED WRITE')[0];
+        $this->assertStringContainsString('unknown_fields', $blocked);
+        $this->assertStringNotContainsString('segredo_do_cliente', $blocked);
+        $this->assertStringContainsString('firstname', $blocked);
     }
 
     public function test_comms_block_is_audited(): void
@@ -346,42 +376,35 @@ class AuditTrailTest extends TestCase
         $this->assertStringNotContainsString('SQLSTATE', $log);
     }
 
-    /** CapsuleClient com o executor de banco substituído. */
+    /** CapsuleClient com o executor de banco substituído pelo seam dedicado. */
     private function capsuleWithFakeExecutor(callable $executor): CapsuleClient
     {
-        $capsule = new class($executor) extends CapsuleClient {
-            /** @var callable */
-            private $executor;
-
-            public function __construct(callable $executor)
-            {
-                $this->executor = $executor;
-            }
-
-            protected function runWithOutcome(string $verb, string $table, string $correlationId, callable $operation): int
-            {
-                return parent::runWithOutcome($verb, $table, $correlationId, $this->executor);
-            }
-        };
+        $capsule = new CapsuleClient();
         $capsule->setWritableForTests(true);
+        $capsule->setExecutorForTests($executor);
 
         return $capsule;
     }
 
-    public function test_blocked_capsule_write_redacts_sensitive_columns(): void
+    public function test_blocked_capsule_write_logs_metadata_only(): void
     {
         $capsule = new CapsuleClient();
         $capsule->setWritableForTests(false);
 
         try {
-            $capsule->insert('mod_mgcrm_contacts', ['name' => 'Ana', 'tax_id' => '123.456.789-00']);
+            $capsule->insert('mod_mgcrm_contacts', [
+                'name' => 'Ana',
+                'note' => 'POISON 123.456.789-00 tok_secret',
+            ]);
         } catch (\InvalidArgumentException) {
             // esperado
         }
 
         $entry = ActivityLogSpy::matching('MCP BLOCKED DB INSERT')[0];
-        $this->assertStringContainsString('[REDACTED]', $entry);
-        $this->assertStringNotContainsString('123.456.789-00', $entry);
+        $this->assertStringContainsString('name', $entry, 'nome do campo é metadado');
+        foreach (['Ana', 'POISON', '123.456.789-00', 'tok_secret'] as $secret) {
+            $this->assertStringNotContainsString($secret, $entry, "vazou '{$secret}'");
+        }
     }
 
     // ---------------------------------------------------------------

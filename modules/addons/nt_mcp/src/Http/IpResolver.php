@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace NtMcp\Http;
 
+use NtMcp\Whmcs\Diagnostics;
+
 /**
  * SECURITY FIX (M-01): Resolve the real client IP behind reverse proxies.
  *
@@ -136,7 +138,7 @@ final class IpResolver
             }
             return $ip;
         } catch (\Throwable $e) {
-            error_log('NT MCP: native client IP resolution failed: ' . $e->getMessage());
+            Diagnostics::report(Diagnostics::CATEGORY_NETWORK_CONTEXT, 'native_client_ip', $e);
             return null;
         }
     }
@@ -208,7 +210,7 @@ final class IpResolver
             return \WHMCS\Config\Setting::getValue($key);
         } catch (\Throwable $e) {
             // SECURITY FIX (F-05): Log config load failures
-            error_log("NT MCP: Failed to load {$key}: " . $e->getMessage());
+            Diagnostics::report(Diagnostics::CATEGORY_CONFIG_READ, $key, $e);
             return null;
         }
     }

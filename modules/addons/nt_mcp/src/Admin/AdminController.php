@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace NtMcp\Admin;
 
+use NtMcp\Whmcs\Diagnostics;
+
 use Illuminate\Database\Capsule\Manager as Capsule;
 use NtMcp\Security\CsrfProtection;
 use NtMcp\Whmcs\AdminSession;
@@ -33,7 +35,7 @@ final class AdminController
                     ->where('id', $currentAdminId)
                     ->value('username') ?? 'admin';
             } catch (\Throwable $ex) {
-                error_log('NT MCP Admin: Failed to look up admin username for ID ' . $currentAdminId . ': ' . $ex->getMessage());
+                Diagnostics::report(Diagnostics::CATEGORY_ADMIN_LOOKUP, 'tbladmins', $ex);
             }
         }
 
@@ -73,7 +75,7 @@ final class AdminController
                         $flashClass   = 'success';
                         logActivity("NT MCP: OAuth token ID {$tokenId} revoked by admin ID {$currentAdminId} ({$currentAdminName})");
                     } catch (\Throwable $ex) {
-                        error_log('NT MCP: Failed to revoke OAuth token: ' . $ex->getMessage());
+                        Diagnostics::report(Diagnostics::CATEGORY_ADMIN_UI, 'oauth_token_revoke', $ex);
                         $flashMessage = 'Erro ao revogar token. Verifique o log de erros.';
                         $flashClass   = 'danger';
                     }
@@ -85,7 +87,7 @@ final class AdminController
                     $flashClass   = 'success';
                     logActivity("NT MCP: All OAuth tokens revoked ({$deleted} total) by admin ID {$currentAdminId} ({$currentAdminName})");
                 } catch (\Throwable $ex) {
-                    error_log('NT MCP: Failed to revoke all OAuth tokens: ' . $ex->getMessage());
+                    Diagnostics::report(Diagnostics::CATEGORY_ADMIN_UI, 'oauth_token_revoke_all', $ex);
                     $flashMessage = 'Erro ao revogar tokens. Verifique o log de erros.';
                     $flashClass   = 'danger';
                 }
@@ -105,7 +107,7 @@ final class AdminController
                         $flashClass   = 'success';
                         logActivity("NT MCP: OAuth client '{$clientIdToRemove}' removed by admin ID {$currentAdminId} ({$currentAdminName})");
                     } catch (\Throwable $ex) {
-                        error_log('NT MCP: Failed to remove OAuth client: ' . $ex->getMessage());
+                        Diagnostics::report(Diagnostics::CATEGORY_ADMIN_UI, 'oauth_client_remove', $ex);
                         $flashMessage = 'Erro ao remover client. Verifique o log de erros.';
                         $flashClass   = 'danger';
                     }
@@ -179,7 +181,7 @@ final class AdminController
                     ->all();
             }
         } catch (\Throwable $ex) {
-            error_log('NT MCP Admin: Failed to load OAuth data: ' . $ex->getMessage());
+            Diagnostics::report(Diagnostics::CATEGORY_ADMIN_UI, 'oauth_data_load', $ex);
             if ($flashMessage === '') {
                 $flashMessage = 'Aviso: Nao foi possivel carregar dados OAuth. Verifique a conexao com o banco.';
                 $flashClass   = 'warning';

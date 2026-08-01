@@ -2,7 +2,9 @@
 // src/Tools/QuoteTools.php
 namespace NtMcp\Tools;
 
+use NtMcp\Whmcs\AuditMetadata;
 use NtMcp\Whmcs\AuthorizationException;
+use NtMcp\Whmcs\DownstreamFailureException;
 use NtMcp\Whmcs\DateNormalizer;
 use NtMcp\Whmcs\LocalApiClient;
 use NtMcp\Whmcs\LocalizedDate;
@@ -41,30 +43,25 @@ class QuoteTools
      * documenta `Y-m-d`. Convertemos para o formato localizado efetivo da
      * instalação.
      *
-     * `validuntil` aceita as TRÊS famílias (ver `LocalizedDate::fromFlexibleInput`):
-     * `Y-m-d`, ISO date-time e já-localizado. O schema publicado para ele é
-     * string livre — o nome não contém "date", então a SDK não impõe
-     * `date-time` — e a API oficial documenta o formato localizado; recusar
-     * esse input quebraria clientes que seguem a documentação da WHMCS.
+     * D9: a ENTRADA pública é sempre não ambígua — `Y-m-d` ou ISO-8601
+     * date-time. Data já localizada não é aceita, porque `10/08/2026` não pode
+     * ser distinguido entre 10 de agosto e 8 de outubro sem adivinhar a
+     * configuração da instalação, e errar aqui muda a data de vencimento de uma
+     * cotação sem nenhum erro visível.
      *
-     * `datecreated` é diferente: a SDK publica `format: date-time` e o validator
-     * barra qualquer outra forma antes da tool, então a família localizada é
-     * inalcançável por MCP e não faz sentido anunciá-la.
+     * `datecreated` tem ainda o schema `date-time` da SDK, que recusa `Y-m-d`
+     * antes da tool; `validuntil` aceita as duas formas. A assimetria é
+     * limitação do heurístico da v1 e some no T2 — ambas continuam não
+     * ambíguas, então não é bug de contrato.
      */
     private function toLocalized(string $value, string $field): string
     {
-        return $this->localizedDate()->fromWhmcsDate(
-            DateNormalizer::toWhmcsDate($value, $field),
-            $field
-        );
+        return $this->localizedDate()->fromPublicInput($value, $field);
     }
 
-    /** Como toLocalized(), mas aceitando também a data já localizada. */
-    private function toLocalizedFlexible(string $value, string $field): string
-    {
-        return $this->localizedDate()->fromFlexibleInput($value, $field);
-    }
-
+    /**
+     * @param string $datecreated Filtro por data de criação. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY nao sao aceitos por serem ambiguos.
+     */
     #[McpTool(name: 'whmcs_list_quotes', description: 'Lista orçamentos com filtros')]
     public function listQuotes(
         int $clientid = 0,
@@ -92,6 +89,10 @@ class QuoteTools
         return json_encode($this->api->call('GetQuotes', ['quoteid' => $quoteid]), JSON_PRETTY_PRINT);
     }
 
+    /**
+     * @param string $validuntil  Validade do orçamento. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY nao sao aceitos por serem ambiguos.
+     * @param string $datecreated Data de criação. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY nao sao aceitos por serem ambiguos.
+     */
     #[McpTool(name: 'whmcs_create_quote', description: 'Cria um novo orçamento')]
     public function createQuote(
         string $subject,
@@ -107,7 +108,7 @@ class QuoteTools
     ): string {
         $params = ['subject' => $subject, 'stage' => $stage, 'proposal' => $proposal];
         if ($userid > 0) $params['userid'] = $userid;
-        if ($validuntil !== '') $params['validuntil'] = $this->toLocalizedFlexible($validuntil, 'validuntil');
+        if ($validuntil !== '') $params['validuntil'] = $this->toLocalized($validuntil, 'validuntil');
         if ($currencyid > 0) $params['currency'] = $currencyid;
         if ($datecreated !== '') $params['datecreated'] = $this->toLocalized($datecreated, 'datecreated');
         if ($customernotes !== '') $params['customernotes'] = $customernotes;
@@ -132,7 +133,7 @@ class QuoteTools
         if ($subject !== '') $params['subject'] = $subject;
         if ($stage !== '') $params['stage'] = $stage;
         if ($proposal !== '') $params['proposal'] = $proposal;
-        if ($validuntil !== '') $params['validuntil'] = $this->toLocalizedFlexible($validuntil, 'validuntil');
+        if ($validuntil !== '') $params['validuntil'] = $this->toLocalized($validuntil, 'validuntil');
         if ($datecreated !== '') $params['datecreated'] = $this->toLocalized($datecreated, 'datecreated');
         if ($customernotes !== '') $params['customernotes'] = $customernotes;
         if ($adminnotes !== '') $params['adminnotes'] = $adminnotes;
@@ -140,6 +141,10 @@ class QuoteTools
         return json_encode($this->api->call('UpdateQuote', $params), JSON_PRETTY_PRINT);
     }
 
+    /**
+     * @param string $validuntil  Override da validade. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY nao sao aceitos por serem ambiguos.
+     * @param string $datecreated Override da data de criação. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY nao sao aceitos por serem ambiguos.
+     */
     #[McpTool(name: 'whmcs_duplicate_quote', description: 'Duplica uma cotação existente, com overrides opcionais')]
     public function duplicateQuote(
         int $quoteid,
@@ -195,7 +200,7 @@ class QuoteTools
         // errado justamente pelo caminho que ninguém digita.
         $validUntilValue = $validuntil !== '' ? $validuntil : (string)($source['validuntil'] ?? '');
         if ($validUntilValue !== '') {
-            $newQuote['validuntil'] = $this->toLocalizedFlexible($validUntilValue, 'validuntil');
+            $newQuote['validuntil'] = $this->toLocalized($validUntilValue, 'validuntil');
         }
 
         $dateCreatedValue = $datecreated !== '' ? $datecreated : (string)($source['datecreated'] ?? '');
@@ -406,19 +411,32 @@ class QuoteTools
         $payload['message'] = $message;
         $payload['warning'] = self::NO_RETRY_WARNING;
 
+        // A correlação da CAUSA é reaproveitada quando existe. Gerar uma nova
+        // desligava o payload do diagnóstico que a LocalAPI já havia emitido, e
+        // o operador ficava com dois identificadores sem ligação.
+        $causeCorrelation = $detail instanceof DownstreamFailureException && $detail->correlationId !== ''
+            ? $detail->correlationId
+            : null;
+
         $correlationId = LocalApiClient::auditLog(
             "MCP PARTIAL convert_quote_to_invoice: {$message}",
-            ['quoteid' => $quoteid, 'invoiceid' => $invoiceId]
+            AuditMetadata::ids(['quoteid' => $quoteid, 'invoiceid' => $invoiceId]),
+            $causeCorrelation
         );
         $payload['correlation_id'] = $correlationId;
 
         if ($detail !== null) {
-            // Só classe + fingerprint; o texto downstream não é registrado.
-            Diagnostics::log(
+            // Fingerprint SEMPRE da causa. Fingerprintar a wrapper produzia
+            // valores diferentes para a mesma causa, porque a mensagem dela
+            // carrega uma correlação aleatória.
+            $isWrapped = $detail instanceof DownstreamFailureException;
+
+            Diagnostics::logWithFingerprint(
                 $correlationId,
                 Diagnostics::CATEGORY_PARTIAL_EFFECT,
                 'convert_quote_to_invoice',
-                $detail
+                $isWrapped ? $detail->causeFingerprint : Diagnostics::fingerprint($detail->getMessage()),
+                $isWrapped ? $detail->causeClass : get_class($detail)
             );
         }
 
@@ -435,7 +453,10 @@ class QuoteTools
         if ($confirm !== true) {
             // m1: esta recusa retorna ANTES do cliente central, então precisa
             // auditar aqui — senão a tentativa não deixa rastro nenhum.
-            LocalApiClient::auditLog('MCP REFUSED whmcs_delete_quote (confirm=false)', ['quoteid' => $quoteid]);
+            LocalApiClient::auditLog(
+                'MCP REFUSED whmcs_delete_quote (confirm=false)',
+                AuditMetadata::ids(['quoteid' => $quoteid])
+            );
 
             return json_encode([
                 'result' => 'error',

@@ -404,7 +404,7 @@ class PhpMcpV1AdapterTest extends TestCase
      * que a API oficial documenta — precisa continuar funcionando.
      */
     #[\PHPUnit\Framework\Attributes\DataProvider('validUntilInputProvider')]
-    public function test_validuntil_accepts_all_three_families_on_create_and_update(string $input): void
+    public function test_validuntil_accepts_unambiguous_forms_on_create_and_update(string $input): void
     {
         $captured = [];
         $adapter = $this->makeCallableAdapter(['write' => true], function (string $cmd, array $params) use (&$captured) {
@@ -434,13 +434,72 @@ class PhpMcpV1AdapterTest extends TestCase
         return [
             'Y-m-d'         => ['2026-08-10'],
             'ISO date-time' => ['2026-08-10T00:00:00Z'],
-            'localizado'    => ['10/08/2026'],
         ];
     }
 
-    /** O override do duplicate também aceita as três famílias. */
+    /**
+     * D9: data localizada é RECUSADA na entrada, nas três rotas de cotação —
+     * `10/08/2026` não pode ser distinguido entre 10 de agosto e 8 de outubro.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('localisedRejectionProvider')]
+    public function test_localised_validuntil_is_rejected_on_every_quote_route(string $tool, array $args): void
+    {
+        $called = false;
+        $adapter = $this->makeCallableAdapter(['write' => true], function (string $cmd) use (&$called) {
+            if ($cmd === 'GetQuotes') {
+                return ['result' => 'success', 'quotes' => ['quote' => [[
+                    'id' => 10, 'subject' => 'S', 'stage' => 'Draft', 'proposal' => 'P', 'userid' => 3,
+                ]]]];
+            }
+            $called = true;
+            return ['result' => 'success'];
+        });
+
+        $messages = $adapter->handle(
+            $this->toolsCallRequest(1, $tool, $args + ['validuntil' => '10/08/2026']),
+            'client-loc-' . substr(md5($tool), 0, 6),
+            'tools/call'
+        );
+
+        $this->assertTrue($this->callOutcome($messages, 1)['isError'] ?? false, "{$tool} deveria recusar localizado");
+        $this->assertStringContainsString('unambiguous', $this->callText($messages, 1));
+        $this->assertFalse($called, "{$tool} não pode escrever com data ambígua");
+    }
+
+    public static function localisedRejectionProvider(): array
+    {
+        return [
+            'create'    => ['whmcs_create_quote', ['subject' => 'Q', 'stage' => 'Draft', 'proposal' => 'P']],
+            'update'    => ['whmcs_update_quote', ['quoteid' => 3]],
+            'duplicate' => ['whmcs_duplicate_quote', ['quoteid' => 10]],
+        ];
+    }
+
+    /** ISO impossível não atravessa mais `validuntil` (o schema não o barra). */
+    public function test_impossible_iso_is_rejected_on_validuntil(): void
+    {
+        $called = false;
+        $adapter = $this->makeCallableAdapter(['write' => true], function () use (&$called) {
+            $called = true;
+            return ['result' => 'success'];
+        });
+
+        $messages = $adapter->handle(
+            $this->toolsCallRequest(1, 'whmcs_create_quote', [
+                'subject' => 'Q', 'stage' => 'Draft', 'proposal' => 'P',
+                'validuntil' => '2026-08-10T99:99:99+99:99',
+            ]),
+            'client-badiso-001',
+            'tools/call'
+        );
+
+        $this->assertTrue($this->callOutcome($messages, 1)['isError'] ?? false);
+        $this->assertFalse($called);
+    }
+
+    /** O override do duplicate aceita as formas não ambíguas. */
     #[\PHPUnit\Framework\Attributes\DataProvider('validUntilInputProvider')]
-    public function test_validuntil_override_on_duplicate_accepts_all_three_families(string $input): void
+    public function test_validuntil_override_on_duplicate_accepts_unambiguous_forms(string $input): void
     {
         $captured = [];
         $adapter = $this->makeCallableAdapter(['write' => true], function (string $cmd, array $params) use (&$captured) {
