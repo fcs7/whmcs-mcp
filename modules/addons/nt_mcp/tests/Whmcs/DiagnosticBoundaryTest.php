@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace NtMcp\Tests\Whmcs;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /** Probes mecânicos da fronteira de bootstrap e do único writer operacional. */
 final class DiagnosticBoundaryTest extends TestCase
 {
+    private const FIXED_FAILURE_JSON = '{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal server error."},"id":null}';
+
     /** @var list<string> */
     private array $sandboxes = [];
 
@@ -32,7 +35,7 @@ final class DiagnosticBoundaryTest extends TestCase
         $result = $this->runEndpoint($root);
 
         $this->assertNotSame(0, $result['exit']);
-        $this->assertStringContainsString('Internal server error during bootstrap', $result['stdout']);
+        $this->assertSame(self::FIXED_FAILURE_JSON, $result['stdout']);
         $this->assertStringNotContainsString('vendor/autoload.php', $result['stdout'] . $result['stderr'] . $result['log']);
         $this->assertStringNotContainsString($root, $result['stdout'] . $result['stderr'] . $result['log']);
         $this->assertStringNotContainsString('Fatal error', $result['stdout'] . $result['stderr'] . $result['log']);
@@ -48,8 +51,8 @@ final class DiagnosticBoundaryTest extends TestCase
         $result = $this->runEndpoint($root);
         $all = $result['stdout'] . "\n" . $result['stderr'] . "\n" . $result['log'];
 
-        $this->assertStringContainsString('Internal server error. Correlation id:', $result['stdout']);
-        $this->assertMatchesRegularExpression('/Correlation id: [0-9a-f]{8}/', $result['stdout']);
+        $this->assertSame(self::FIXED_FAILURE_JSON, $result['stdout']);
+        $this->assertMatchesRegularExpression('/\[corr:[0-9a-f]{8}\]/', $result['log']);
         $this->assertStringContainsString('category=unhandled_exception', $result['log']);
         $this->assertStringContainsString('exception=RuntimeException', $result['log']);
         $this->assertStringNotContainsString($poison, $all);
@@ -101,7 +104,8 @@ final class DiagnosticBoundaryTest extends TestCase
         $root = $this->sandbox(
             withAutoload: true,
             bootstrap: '<?php while (ob_get_level() > 0) { if (!@ob_end_flush()) break; } echo '
-                . var_export($poison, true) . '; undefined_nt_mcp_function();'
+                . var_export($poison, true) . '; restore_error_handler(); '
+                . 'trigger_error("fatal-secret", E_USER_ERROR);'
         );
         $result = $this->runEndpoint($root);
 
@@ -116,13 +120,43 @@ final class DiagnosticBoundaryTest extends TestCase
     {
         $root = $this->sandbox(
             withAutoload: true,
-            bootstrap: '<?php echo "bootstrap-noise";',
-            afterReinstall: 'echo \'{"transport":"ok"}\'; exit;'
+            bootstrap: '<?php ob_start(static fn (string $buffer): string => "transformed:" . $buffer); '
+                . 'echo "bootstrap-noise"; set_error_handler(static fn (): bool => true);',
+            afterReinstall: 'echo \'{"transport":"ok"}\'; $ntMcpResponseState = \'success\'; exit;'
         );
         $result = $this->runEndpoint($root);
 
         $this->assertSame('{"transport":"ok"}', $result['stdout']);
         $this->assertStringNotContainsString('bootstrap-noise', $result['stdout']);
+        $this->assertStringNotContainsString('transformed:', $result['stdout']);
+        $this->assertSame('', $result['stderr']);
+        $this->assertFalse($result['timed_out']);
+    }
+
+    #[DataProvider('normalTerminationProvider')]
+    public function test_exit_and_die_replace_bootstrap_status_headers_and_body(string $termination): void
+    {
+        $root = $this->sandbox(
+            withAutoload: true,
+            bootstrap: '<?php http_response_code(418); header("Content-Type: text/html"); '
+                . 'header("X-Bootstrap-Secret: present"); echo "bootstrap-secret<html>"; ' . $termination . ';'
+        );
+        $response = $this->runEndpointOverHttp($root);
+
+        $this->assertSame(500, $response['status']);
+        $this->assertSame('application/json', $response['headers']['content-type'] ?? null);
+        $this->assertArrayNotHasKey('x-bootstrap-secret', $response['headers']);
+        $this->assertSame(self::FIXED_FAILURE_JSON, $response['body']);
+        $this->assertStringNotContainsString('bootstrap-secret', $response['body']);
+        $this->assertStringNotContainsString('<html>', $response['body']);
+    }
+
+    public static function normalTerminationProvider(): array
+    {
+        return [
+            'exit' => ['exit'],
+            'die' => ['die'],
+        ];
     }
 
     public function test_handler_replaced_by_init_is_reinstalled_before_application_code(): void
@@ -140,6 +174,69 @@ final class DiagnosticBoundaryTest extends TestCase
         $this->assertStringNotContainsString('host-handler-leak', $result['stdout']);
         $this->assertStringNotContainsString('partial-app-output', $result['stdout']);
         $this->assertStringNotContainsString('application poison', $result['stdout'] . $result['log']);
+    }
+
+    #[DataProvider('childBufferOutcomeProvider')]
+    public function test_root_buffer_arbitrates_every_child_buffer_and_termination(
+        string $bufferSetup,
+        string $outcome,
+        bool $expectSuccess,
+    ): void {
+        $bootstrap = '<?php ' . $bufferSetup . ' echo "child-secret"; ';
+        $afterReinstall = '';
+
+        if ($outcome === 'success') {
+            $afterReinstall = 'echo \'{"transport":"ok"}\'; $ntMcpResponseState = \'success\'; exit;';
+        } elseif ($outcome === 'throwable') {
+            $bootstrap .= 'throw new \\RuntimeException("throw-secret");';
+        } elseif ($outcome === 'warning') {
+            $bootstrap .= 'trigger_error("warning-secret", E_USER_WARNING);';
+        } elseif ($outcome === 'fatal') {
+            $bootstrap .= 'restore_error_handler(); trigger_error("fatal-secret", E_USER_ERROR);';
+        } else {
+            $bootstrap .= 'exit;';
+        }
+
+        $root = $this->sandbox(withAutoload: true, bootstrap: $bootstrap, afterReinstall: $afterReinstall);
+        $result = $this->runEndpoint($root);
+
+        $this->assertFalse($result['timed_out'], 'unwind de buffer entrou em loop sem progresso');
+        if ($expectSuccess) {
+            $this->assertSame('{"transport":"ok"}', $result['stdout']);
+        } else {
+            $this->assertSame(self::FIXED_FAILURE_JSON, $result['stdout']);
+            $this->assertIsArray(json_decode($result['stdout'], true));
+        }
+        $this->assertStringNotContainsString('child-secret', $result['stdout']);
+        $this->assertStringNotContainsString('child-transform', $result['stdout']);
+        $this->assertSame(1, substr_count($result['stdout'], '"jsonrpc"') + substr_count($result['stdout'], '"transport"'));
+    }
+
+    public static function childBufferOutcomeProvider(): array
+    {
+        $buffers = [
+            'removable' => [
+                'ob_start(static fn (string $buffer): string => "child-transform:" . $buffer);',
+                true,
+            ],
+            'non-removable-cleanable' => [
+                'ob_start(static fn (string $buffer): string => "child-transform:" . $buffer, 0, PHP_OUTPUT_HANDLER_CLEANABLE | PHP_OUTPUT_HANDLER_FLUSHABLE);',
+                false,
+            ],
+            'non-removable-non-cleanable' => [
+                'ob_start(static fn (string $buffer): string => "child-transform:" . $buffer, 0, 0);',
+                false,
+            ],
+        ];
+        $cases = [];
+
+        foreach ($buffers as $bufferName => [$setup, $canSucceed]) {
+            foreach (['success', 'throwable', 'warning', 'fatal', 'exit'] as $outcome) {
+                $cases["{$bufferName}-{$outcome}"] = [$setup, $outcome, $canSucceed && $outcome === 'success'];
+            }
+        }
+
+        return $cases;
     }
 
     public function test_diagnostics_is_the_only_error_log_writer_in_production_php(): void
@@ -230,7 +327,7 @@ final class DiagnosticBoundaryTest extends TestCase
         mkdir($module . '/vendor', 0700, true);
         $endpoint = (string) file_get_contents(dirname(__DIR__, 2) . '/mcp.php');
         if ($afterReinstall !== '') {
-            $needle = "\\NtMcp\\Whmcs\\Diagnostics::installExceptionHandler('mcp_endpoint', \$ntMcpOwnedBufferLevel, \$ntMcpRelease);";
+            $needle = "\\NtMcp\\Whmcs\\Diagnostics::installExceptionHandler('mcp_endpoint', \$ntMcpMarkFailure);";
             $position = strrpos($endpoint, $needle);
             $this->assertNotFalse($position);
             $position += strlen($needle);
@@ -249,7 +346,7 @@ final class DiagnosticBoundaryTest extends TestCase
         return $root;
     }
 
-    /** @return array{stdout:string,stderr:string,log:string,exit:int} */
+    /** @return array{stdout:string,stderr:string,log:string,exit:int,timed_out:bool} */
     private function runEndpoint(string $root): array
     {
         $endpoint = $root . '/modules/addons/nt_mcp/mcp.php';
@@ -266,8 +363,28 @@ final class DiagnosticBoundaryTest extends TestCase
         $pipes = [];
         $process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
         $this->assertIsResource($process);
-        $stdout = stream_get_contents($pipes[1]);
-        $stderr = stream_get_contents($pipes[2]);
+        stream_set_blocking($pipes[1], false);
+        stream_set_blocking($pipes[2], false);
+        $stdout = '';
+        $stderr = '';
+        $timedOut = false;
+        $deadline = microtime(true) + 3.0;
+        do {
+            $stdout .= (string) stream_get_contents($pipes[1]);
+            $stderr .= (string) stream_get_contents($pipes[2]);
+            $status = proc_get_status($process);
+            if (!$status['running']) {
+                break;
+            }
+            if (microtime(true) >= $deadline) {
+                $timedOut = true;
+                proc_terminate($process);
+                break;
+            }
+            usleep(10000);
+        } while (true);
+        $stdout .= (string) stream_get_contents($pipes[1]);
+        $stderr .= (string) stream_get_contents($pipes[2]);
         fclose($pipes[1]);
         fclose($pipes[2]);
         $exit = proc_close($process);
@@ -277,6 +394,74 @@ final class DiagnosticBoundaryTest extends TestCase
             'stderr' => $stderr,
             'log' => is_file($log) ? (string) file_get_contents($log) : '',
             'exit' => $exit,
+            'timed_out' => $timedOut,
+        ];
+    }
+
+    /** @return array{status:int,headers:array<string,string>,body:string} */
+    private function runEndpointOverHttp(string $root): array
+    {
+        $reservation = stream_socket_server('tcp://127.0.0.1:0', $errno, $error);
+        $this->assertIsResource($reservation, "porta local indisponível: {$errno} {$error}");
+        $address = (string) stream_socket_get_name($reservation, false);
+        fclose($reservation);
+        $port = (int) substr(strrchr($address, ':'), 1);
+
+        $log = $root . '/php-http-error.log';
+        $command = [
+            PHP_BINARY,
+            '-d', 'display_errors=1',
+            '-d', 'display_startup_errors=1',
+            '-d', 'log_errors=1',
+            '-d', 'error_log=' . $log,
+            '-S', "127.0.0.1:{$port}",
+            '-t', $root,
+        ];
+        $pipes = [];
+        $process = proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        $this->assertIsResource($process);
+
+        $client = false;
+        $deadline = microtime(true) + 3.0;
+        while ($client === false && microtime(true) < $deadline) {
+            $client = @stream_socket_client("tcp://127.0.0.1:{$port}", $connectErrno, $connectError, 0.1);
+            if ($client === false) {
+                usleep(20000);
+            }
+        }
+        $this->assertIsResource($client, "servidor HTTP não iniciou: {$connectErrno} {$connectError}");
+
+        fwrite(
+            $client,
+            "GET /modules/addons/nt_mcp/mcp.php HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+        );
+        stream_set_timeout($client, 3);
+        $raw = (string) stream_get_contents($client);
+        fclose($client);
+
+        proc_terminate($process);
+        foreach ($pipes as $pipe) {
+            fclose($pipe);
+        }
+        proc_close($process);
+
+        [$headerBlock, $body] = array_pad(explode("\r\n\r\n", $raw, 2), 2, '');
+        $lines = explode("\r\n", $headerBlock);
+        $statusLine = array_shift($lines) ?? '';
+        preg_match('/^HTTP\/\d\.\d\s+(\d{3})/', $statusLine, $match);
+        $headers = [];
+        foreach ($lines as $line) {
+            if (!str_contains($line, ':')) {
+                continue;
+            }
+            [$name, $value] = explode(':', $line, 2);
+            $headers[strtolower(trim($name))] = trim($value);
+        }
+
+        return [
+            'status' => isset($match[1]) ? (int) $match[1] : 0,
+            'headers' => $headers,
+            'body' => $body,
         ];
     }
 }

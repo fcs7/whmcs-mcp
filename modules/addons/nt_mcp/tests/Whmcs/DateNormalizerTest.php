@@ -29,7 +29,6 @@ class DateNormalizerTest extends TestCase
             'date-time fração'     => ['2026-08-10T13:45:00.123Z', '2026-08-10'],
             'offset extremo positivo' => ['2026-08-10T13:45:00+14:00', '2026-08-10'],
             'offset extremo negativo' => ['2026-08-10T13:45:00-14:00', '2026-08-10'],
-            'espaços em volta'     => ['  2026-08-10  ', '2026-08-10'],
         ];
     }
 
@@ -64,6 +63,12 @@ class DateNormalizerTest extends TestCase
             'offset minuto'    => ['2026-08-10T13:45:00+03:60'],
             'hora inválida'    => ['2026-08-10T24:00:00Z'],
             'segundo leap'     => ['2026-08-10T23:59:60Z'],
+            'espaço antes data' => [' 2026-08-10'],
+            'espaço depois data' => ['2026-08-10 '],
+            'tab antes timestamp' => ["\t2026-08-10T00:00:00Z"],
+            'newline depois timestamp' => ["2026-08-10T00:00:00Z\n"],
+            'NBSP antes timestamp' => ["\u{00A0}2026-08-10T00:00:00Z"],
+            'NBSP depois timestamp' => ["2026-08-10T00:00:00Z\u{00A0}"],
         ];
     }
 

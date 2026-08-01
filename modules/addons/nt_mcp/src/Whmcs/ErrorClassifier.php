@@ -137,7 +137,8 @@ final class ErrorClassifier
     /**
      * Classifica sem devolver NADA derivado do texto.
      *
-     * `$params` são os parâmetros da própria chamada. Servem a uma única
+     * `$params` são os parâmetros da própria chamada. Suas chaves e valores
+     * servem a uma única
      * verificação, feita em memória: se a mensagem do WHMCS for IGUAL a uma
      * string que o chamador enviou, ela não é diagnóstico — é eco do input, e
      * classificá-la produziria um código falso. Um cliente que mandasse
@@ -169,8 +170,9 @@ final class ErrorClassifier
     }
 
     /**
-     * true quando a mensagem normalizada coincide com algum valor não confiável
-     * enviado na chamada. Comparação só em memória; os valores morrem aqui.
+     * true quando a mensagem normalizada coincide com alguma chave ou valor
+     * não confiável enviado na chamada. Comparação só em memória; os dados
+     * morrem aqui.
      *
      * @param array<string, mixed> $params
      */
@@ -197,6 +199,13 @@ final class ErrorClassifier
                     $bytes += strlen($key);
                     if ($bytes > self::MAX_PARAM_BYTES) {
                         return true;
+                    }
+
+                    if ($key !== '') {
+                        $normalizedKey = self::normalize($key);
+                        if (hrtime(true) > $deadline || $normalizedKey === $normalized) {
+                            return true;
+                        }
                     }
                 }
 
@@ -227,7 +236,8 @@ final class ErrorClassifier
                     return true;
                 }
 
-                if (self::normalize($value) === $normalized) {
+                $normalizedValue = self::normalize($value);
+                if (hrtime(true) > $deadline || $normalizedValue === $normalized) {
                     return true;
                 }
             }

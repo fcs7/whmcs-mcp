@@ -252,8 +252,7 @@ final class Diagnostics
      */
     public static function installExceptionHandler(
         string $context,
-        ?int $ownedBufferLevel = null,
-        ?callable $releaseOutput = null,
+        ?callable $markFailure = null,
     ): void
     {
         // Warnings/notices posteriores ao autoload também não voltam ao
@@ -268,55 +267,22 @@ final class Diagnostics
             throw new \ErrorException('Runtime warning intercepted.', 0, $severity);
         });
 
-        set_exception_handler(static function (\Throwable $e) use ($context, $ownedBufferLevel, $releaseOutput): void {
-            self::respondToThrowable($e, $context, $ownedBufferLevel, $releaseOutput);
+        set_exception_handler(static function (\Throwable $e) use ($context, $markFailure): void {
+            self::respondToThrowable($e, $context, $markFailure);
         });
     }
 
-    /** Emite uma resposta JSON exclusiva, descartando qualquer output parcial. */
+    /** Registra a falha; o buffer raiz do endpoint arbitra o corpo no shutdown. */
     public static function respondToThrowable(
         \Throwable $e,
         string $context,
-        ?int $ownedBufferLevel = null,
-        ?callable $releaseOutput = null,
+        ?callable $markFailure = null,
     ): never {
-        $correlationId = self::report(self::CATEGORY_UNHANDLED, $context, $e);
-        self::discardOutputFrom($ownedBufferLevel);
-        if ($releaseOutput !== null) {
-            $releaseOutput();
+        self::report(self::CATEGORY_UNHANDLED, $context, $e);
+        if ($markFailure !== null) {
+            $markFailure();
         }
-
-        if (!headers_sent()) {
-            http_response_code(500);
-            header('Content-Type: application/json');
-        }
-
-        echo json_encode([
-            'jsonrpc' => '2.0',
-            'error' => [
-                'code' => -32603,
-                'message' => 'Internal server error. Correlation id: ' . $correlationId,
-            ],
-            'id' => null,
-        ], JSON_UNESCAPED_SLASHES);
         exit;
-    }
-
-    /** Limpa buffers criados desde a fronteira, inclusive o buffer proprietário. */
-    private static function discardOutputFrom(?int $ownedBufferLevel): void
-    {
-        if ($ownedBufferLevel === null || $ownedBufferLevel < 1) {
-            return;
-        }
-
-        while (ob_get_level() > $ownedBufferLevel) {
-            if (!@ob_end_clean()) {
-                break;
-            }
-        }
-        if (ob_get_level() === $ownedBufferLevel) {
-            @ob_clean();
-        }
     }
 
     /** Atalho para quem não tem correlação própria. */

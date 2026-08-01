@@ -83,7 +83,6 @@ final class DateNormalizer
     /** Como toWhmcsDate(), mas devolve null em vez de lançar. */
     public static function tryNormalize(string $value): ?string
     {
-        $value = trim($value);
         if ($value === '') {
             return null;
         }

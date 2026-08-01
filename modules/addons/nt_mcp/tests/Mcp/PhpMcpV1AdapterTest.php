@@ -761,6 +761,37 @@ class PhpMcpV1AdapterTest extends TestCase
         }
     }
 
+    /** D9: whitespace externo nunca é normalizado antes da gramática pública. */
+    public function test_dates_with_external_whitespace_never_reach_whmcs(): void
+    {
+        $invalid = [
+            ' 2026-08-10T00:00:00Z',
+            "2026-08-10T00:00:00Z\t",
+            "\n2026-08-10T00:00:00Z",
+            "2026-08-10T00:00:00Z\u{00A0}",
+        ];
+
+        foreach ($invalid as $i => $badDate) {
+            $called = false;
+            $adapter = $this->makeCallableAdapter([], function () use (&$called) {
+                $called = true;
+                return ['result' => 'success'];
+            });
+
+            $messages = $adapter->handle(
+                $this->toolsCallRequest(1, 'whmcs_get_activity_log', ['date' => $badDate]),
+                'client-d9-space' . str_pad((string) $i, 3, '0'),
+                'tools/call'
+            );
+
+            $outcome = $this->callOutcome($messages, 1);
+            $rejected = isset($outcome['jsonrpc_error']) || ($outcome['isError'] ?? false);
+
+            $this->assertTrue($rejected, "data com whitespace aceita: " . json_encode($badDate));
+            $this->assertFalse($called, 'data com whitespace chegou ao WHMCS');
+        }
+    }
+
     // ---------------------------------------------------------------
     // M2 — contrato parcial sobrevive a exceção, pelo protocolo real.
     // ---------------------------------------------------------------

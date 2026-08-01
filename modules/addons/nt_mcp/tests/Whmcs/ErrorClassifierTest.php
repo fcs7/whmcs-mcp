@@ -90,6 +90,26 @@ class ErrorClassifierTest extends TestCase
         );
     }
 
+    /** Toda chave também é input não confiável e obedece à mesma comparação. */
+    #[DataProvider('allClassifierPatternsProvider')]
+    public function test_exact_key_echo_for_every_closed_pattern_is_downstream(
+        string $command,
+        string $message,
+        string $_expectedCode,
+        string $_expectedCategory,
+    ): void {
+        $unicodeEcho = "\u{00A0}" . strtoupper(str_replace(' ', "\u{00A0}", $message)) . "\u{00A0}";
+        $params = [$unicodeEcho => 'unrelated'];
+        for ($depth = 0; $depth < 256; $depth++) {
+            $params = ['nested' => $params];
+        }
+
+        $this->assertSame(
+            ['code' => 'downstream_error', 'category' => ErrorClassifier::DOWNSTREAM],
+            ErrorClassifier::classify($command, $message, $params)
+        );
+    }
+
     #[DataProvider('allClassifierPatternsProvider')]
     public function test_node_cap_fails_closed_for_every_closed_pattern(
         string $command,
