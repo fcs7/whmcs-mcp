@@ -31,6 +31,11 @@ require_once __DIR__ . '/../vendor/autoload.php';
 // teste provar que a projeção é a esperada e que nunca toca `setting`/`value`.
 //
 // Controlado por NtMcp\Tests\Support\FakeCapsule.
+//
+// `schema()` existe pelo mesmo motivo, para NtMcp\Crm\CapsuleSchemaProbe: o
+// probe de schema precisa ser exercitado no caminho real (metadata abstrata),
+// e a separação entre os dois fakes é o que permite provar que ele nunca toca
+// dados — `FakeCapsule::$calls` fica vazio durante um probe.
 // ---------------------------------------------------------------
 if (!class_exists('\WHMCS\Database\Capsule')) {
     eval('
@@ -41,6 +46,11 @@ if (!class_exists('\WHMCS\Database\Capsule')) {
             public static function table(string $table): mixed
             {
                 return \NtMcp\Tests\Support\FakeCapsule::table($table);
+            }
+
+            public static function schema(): mixed
+            {
+                return \NtMcp\Tests\Support\FakeSchemaBuilder::builder();
             }
         }
     ');

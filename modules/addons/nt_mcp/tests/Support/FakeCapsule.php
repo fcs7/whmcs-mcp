@@ -12,6 +12,11 @@ namespace NtMcp\Tests\Support;
  * roda `table()->select()->distinct()->get()` de verdade, e o teste inspeciona
  * a cadeia chamada além do resultado.
  *
+ * O CRM (`CapsuleQueryPort`) usa o mesmo fake pelo mesmo motivo: a afirmação
+ * "a projeção é sempre explícita e o soft-deleted nunca é lido" precisa ser
+ * provada contra a cadeia de produção, não contra um dublê do repositório. Por
+ * isso `where()`/`whereNull()` FILTRAM de verdade e as mutações são contadas.
+ *
  * Desligado por padrão (`$enabled = false`): `table()` lança, reproduzindo o
  * ambiente sem WHMCS bootstrapado que a maioria dos testes assume.
  */
@@ -28,12 +33,20 @@ final class FakeCapsule
     /** Quando setado, `table()` lança — simula driver fora do ar. */
     public static ?\Throwable $failure = null;
 
+    /** @var array<int, array{verb:string, table:string, values:array<string,mixed>}> mutações tentadas */
+    public static array $mutations = [];
+
+    /** Próximo id devolvido por `insertGetId()`. */
+    public static int $nextInsertId = 1;
+
     public static function reset(): void
     {
         self::$enabled = false;
         self::$rows = [];
         self::$calls = [];
         self::$failure = null;
+        self::$mutations = [];
+        self::$nextInsertId = 1;
     }
 
     /** Popula uma tabela com valores da coluna `gateway`. */
@@ -49,6 +62,17 @@ final class FakeCapsule
             $row->value = 'sk_live_MUST_NEVER_BE_READ';
             return $row;
         }, $gatewayValues);
+    }
+
+    /**
+     * Popula uma tabela a partir de linhas associativas.
+     *
+     * @param array<int, array<string, mixed>> $rows
+     */
+    public static function withRows(string $table, array $rows): void
+    {
+        self::$enabled = true;
+        self::$rows[$table] = array_map(static fn(array $row): object => (object) $row, $rows);
     }
 
     public static function table(string $table): FakeCapsuleQuery
@@ -74,12 +98,32 @@ final class FakeCapsuleQuery
     private array $columns = [];
     private bool $distinct = false;
 
+    /** @var array<string, mixed> */
+    private array $wheres = [];
+
+    /** @var array<int, string> */
+    private array $nullWheres = [];
+
+    /** @var array<int, array{0:string,1:string}> */
+    private array $orders = [];
+
+    private ?int $take = null;
+    private int $skip = 0;
+
     public function __construct(private readonly string $table) {}
 
-    public function select(string ...$columns): self
+    /** Aceita `select('a')` e `select(['a','b'])`, como o builder real. */
+    public function select(array|string ...$columns): self
     {
-        $this->columns = $columns;
-        FakeCapsule::$calls[] = 'select(' . implode(',', $columns) . ')';
+        $flat = [];
+        foreach ($columns as $column) {
+            foreach ((array) $column as $name) {
+                $flat[] = (string) $name;
+            }
+        }
+
+        $this->columns = $flat;
+        FakeCapsule::$calls[] = 'select(' . implode(',', $flat) . ')';
 
         return $this;
     }
@@ -95,6 +139,39 @@ final class FakeCapsuleQuery
     public function where(string $column, mixed $value): self
     {
         FakeCapsule::$calls[] = "where({$column})";
+        $this->wheres[$column] = $value;
+
+        return $this;
+    }
+
+    public function whereNull(string $column): self
+    {
+        FakeCapsule::$calls[] = "whereNull({$column})";
+        $this->nullWheres[] = $column;
+
+        return $this;
+    }
+
+    public function orderBy(string $column, string $direction = 'asc'): self
+    {
+        FakeCapsule::$calls[] = "orderBy({$column},{$direction})";
+        $this->orders[] = [$column, $direction];
+
+        return $this;
+    }
+
+    public function take(int $limit): self
+    {
+        FakeCapsule::$calls[] = "take({$limit})";
+        $this->take = $limit;
+
+        return $this;
+    }
+
+    public function skip(int $offset): self
+    {
+        FakeCapsule::$calls[] = "skip({$offset})";
+        $this->skip = $offset;
 
         return $this;
     }
@@ -103,7 +180,25 @@ final class FakeCapsuleQuery
     {
         FakeCapsule::$calls[] = 'first()';
 
-        return FakeCapsule::$rows[$this->table][0] ?? null;
+        return $this->get()[0] ?? null;
+    }
+
+    /** @param array<string, mixed> $values */
+    public function insertGetId(array $values): int
+    {
+        FakeCapsule::$calls[] = 'insertGetId()';
+        FakeCapsule::$mutations[] = ['verb' => 'INSERT', 'table' => $this->table, 'values' => $values];
+
+        return FakeCapsule::$nextInsertId++;
+    }
+
+    /** @param array<string, mixed> $values */
+    public function update(array $values): int
+    {
+        FakeCapsule::$calls[] = 'update()';
+        FakeCapsule::$mutations[] = ['verb' => 'UPDATE', 'table' => $this->table, 'values' => $values];
+
+        return count($this->matchingRows());
     }
 
     /** @return array<int, object> linhas com APENAS as colunas projetadas */
@@ -111,18 +206,57 @@ final class FakeCapsuleQuery
     {
         FakeCapsule::$calls[] = 'get()';
 
-        $rows = FakeCapsule::$rows[$this->table] ?? [];
+        $rows = $this->matchingRows();
+
+        foreach (array_reverse($this->orders) as [$column, $direction]) {
+            usort($rows, static function (object $a, object $b) use ($column, $direction): int {
+                $comparison = ($a->{$column} ?? null) <=> ($b->{$column} ?? null);
+
+                return $direction === 'desc' ? -$comparison : $comparison;
+            });
+        }
+
+        if ($this->skip > 0) {
+            $rows = array_slice($rows, $this->skip);
+        }
+
+        if ($this->take !== null) {
+            $rows = array_slice($rows, 0, $this->take);
+        }
+
         if ($this->columns === []) {
-            return $rows;
+            return array_values($rows);
         }
 
         // Projeção real: só as colunas pedidas sobrevivem, como no driver.
-        return array_map(function (object $row): object {
+        return array_values(array_map(function (object $row): object {
             $projected = new \stdClass();
             foreach ($this->columns as $column) {
                 $projected->{$column} = $row->{$column} ?? null;
             }
             return $projected;
-        }, $rows);
+        }, $rows));
+    }
+
+    /** @return array<int, object> */
+    private function matchingRows(): array
+    {
+        $rows = FakeCapsule::$rows[$this->table] ?? [];
+
+        foreach ($this->wheres as $column => $value) {
+            $rows = array_filter(
+                $rows,
+                static fn(object $row): bool => ($row->{$column} ?? null) == $value
+            );
+        }
+
+        foreach ($this->nullWheres as $column) {
+            $rows = array_filter(
+                $rows,
+                static fn(object $row): bool => ($row->{$column} ?? null) === null
+            );
+        }
+
+        return array_values($rows);
     }
 }
