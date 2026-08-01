@@ -129,7 +129,14 @@ $ntMcpApplyFinalHeaders = static function () use (
     foreach ($headers as $name => $value) {
         header($name . ': ' . $value, true);
     }
-    header('Content-Length: ' . strlen($body), true);
+    // Em falha anterior ao autoload, o estado é necessariamente 500 e permite
+    // body. Após o autoload, a mesma regra do emissor OAuth arbitra 1xx/204/304.
+    $contentLength = class_exists(\NtMcp\Http\TerminalResponse::class)
+        ? \NtMcp\Http\TerminalResponse::contentLength($status, $body)
+        : strlen($body);
+    if ($contentLength !== null) {
+        header('Content-Length: ' . $contentLength, true);
+    }
 };
 
 header_register_callback($ntMcpApplyFinalHeaders);

@@ -46,6 +46,9 @@ final class CorsHandler
         }
 
         if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') {
+            if (!self::allowsRequestedMethod($methods) || !self::allowsRequestedHeaders()) {
+                return CorsDecision::terminal(TerminalResponse::corsForbidden());
+            }
             return CorsDecision::preflight($originHeader, $exposeHeaders, $methods);
         }
 
@@ -69,6 +72,42 @@ final class CorsHandler
             return in_array($origin, $allowedOrigins, true) ? $origin : null;
         }
         return '*';
+    }
+
+    private static function allowsRequestedMethod(string $methods): bool
+    {
+        $requested = $_SERVER['HTTP_ACCESS_CONTROL_REQUEST_METHOD'] ?? '';
+        if ($requested === '') {
+            return true;
+        }
+
+        return preg_match('/^[A-Z]+\z/D', $requested) === 1
+            && in_array($requested, explode(', ', $methods), true);
+    }
+
+    private static function allowsRequestedHeaders(): bool
+    {
+        $requested = $_SERVER['HTTP_ACCESS_CONTROL_REQUEST_HEADERS'] ?? '';
+        if ($requested === '') {
+            return true;
+        }
+
+        $allowed = [
+            'content-type',
+            'authorization',
+            'mcp-protocol-version',
+            'mcp-session-id',
+        ];
+        foreach (explode(',', $requested) as $header) {
+            $header = trim($header);
+            if ($header === ''
+                || preg_match('/^[!#$%&\'*+.^_`|~0-9A-Za-z-]+\z/D', $header) !== 1
+                || !in_array(strtolower($header), $allowed, true)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

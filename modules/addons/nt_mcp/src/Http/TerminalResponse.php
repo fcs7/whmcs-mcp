@@ -94,6 +94,16 @@ final readonly class TerminalResponse
         return $this->headers;
     }
 
+    /** Comprimento em bytes quando o status permite Content-Length. */
+    public static function contentLength(int $status, string $body): ?int
+    {
+        if (($status >= 100 && $status < 200) || in_array($status, [204, 304], true)) {
+            return null;
+        }
+
+        return strlen($body);
+    }
+
     /** Emissão direta para endpoints legados que não possuem árbitro raiz. */
     public function emit(): void
     {
@@ -101,7 +111,12 @@ final readonly class TerminalResponse
         foreach ($this->headers as $name => $value) {
             header($name . ': ' . $value, true);
         }
-        header('Content-Length: ' . strlen($this->body), true);
+        $contentLength = self::contentLength($this->status, $this->body);
+        if ($contentLength !== null) {
+            header('Content-Length: ' . $contentLength, true);
+        } else {
+            header_remove('Content-Length');
+        }
         if ($this->body !== '') {
             echo $this->body;
         }

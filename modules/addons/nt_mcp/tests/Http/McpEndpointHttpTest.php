@@ -50,6 +50,7 @@ final class McpEndpointHttpTest extends TestCase
         string $expectedBody,
         array $expectedHeaders,
         array $absentHeaders = [],
+        bool $expectContentLength = true,
     ): void {
         $root = $this->sandbox(...$sandboxOptions);
         $server = $this->startServer($root);
@@ -58,7 +59,11 @@ final class McpEndpointHttpTest extends TestCase
         $diagnostics = (string) stream_get_contents($server['pipes'][2]);
         $this->assertSame($expectedStatus, $response['status'], json_encode($response) . "\n" . $diagnostics);
         $this->assertSame($expectedBody, $response['body']);
-        $this->assertSame((string) strlen($expectedBody), $response['headers']['content-length'] ?? null);
+        if ($expectContentLength) {
+            $this->assertSame((string) strlen($expectedBody), $response['headers']['content-length'] ?? null);
+        } else {
+            $this->assertArrayNotHasKey('content-length', $response['headers']);
+        }
         foreach ($expectedHeaders as $name => $value) {
             $this->assertSame($value, $response['headers'][strtolower($name)] ?? null, $name);
         }
@@ -74,7 +79,11 @@ final class McpEndpointHttpTest extends TestCase
             'OPTIONS CORS' => [
                 ['settings' => ['nt_mcp_cors_origins' => 'https://client.example']],
                 'OPTIONS',
-                ['Origin' => 'https://client.example'],
+                [
+                    'Origin' => 'https://client.example',
+                    'Access-Control-Request-Method' => 'POST',
+                    'Access-Control-Request-Headers' => 'Content-Type, Authorization',
+                ],
                 204,
                 '',
                 [
@@ -83,6 +92,8 @@ final class McpEndpointHttpTest extends TestCase
                     'Access-Control-Expose-Headers' => 'MCP-Session-Id',
                     'Vary' => 'Origin',
                 ],
+                [],
+                false,
             ],
             'TLS 421' => [
                 ['secure' => false],
@@ -120,6 +131,43 @@ final class McpEndpointHttpTest extends TestCase
                 ['Content-Type' => 'application/json'],
                 ['Access-Control-Allow-Origin'],
             ],
+            'CORS preflight origin denied' => [
+                ['settings' => ['nt_mcp_cors_origins' => 'https://client.example']],
+                'OPTIONS',
+                [
+                    'Origin' => 'https://evil.example',
+                    'Access-Control-Request-Method' => 'POST',
+                ],
+                403,
+                '{"error":"Forbidden: origin not allowed."}',
+                ['Content-Type' => 'application/json'],
+                ['Access-Control-Allow-Origin'],
+            ],
+            'CORS preflight method denied' => [
+                ['settings' => ['nt_mcp_cors_origins' => 'https://client.example']],
+                'OPTIONS',
+                [
+                    'Origin' => 'https://client.example',
+                    'Access-Control-Request-Method' => 'DELETE',
+                ],
+                403,
+                '{"error":"Forbidden: origin not allowed."}',
+                ['Content-Type' => 'application/json'],
+                ['Access-Control-Allow-Origin'],
+            ],
+            'CORS preflight header denied' => [
+                ['settings' => ['nt_mcp_cors_origins' => 'https://client.example']],
+                'OPTIONS',
+                [
+                    'Origin' => 'https://client.example',
+                    'Access-Control-Request-Method' => 'POST',
+                    'Access-Control-Request-Headers' => 'Content-Type, X-Poison',
+                ],
+                403,
+                '{"error":"Forbidden: origin not allowed."}',
+                ['Content-Type' => 'application/json'],
+                ['Access-Control-Allow-Origin'],
+            ],
             'config 503' => [
                 ['throwSetting' => 'nt_mcp_cors_origins'],
                 'POST',
@@ -129,6 +177,30 @@ final class McpEndpointHttpTest extends TestCase
                 ['Content-Type' => 'application/json'],
             ],
         ];
+    }
+
+    public function test_real_oauth_preflight_omits_content_length(): void
+    {
+        $root = $this->sandbox(settings: ['nt_mcp_cors_origins' => 'https://client.example']);
+        $server = $this->startServer($root);
+        $response = $this->request(
+            $server,
+            'OPTIONS',
+            [
+                'Origin' => 'https://client.example',
+                'Access-Control-Request-Method' => 'POST',
+                'Access-Control-Request-Headers' => 'Content-Type, Authorization',
+            ],
+            '',
+            'oauth.php',
+        );
+
+        $this->assertSame(204, $response['status']);
+        $this->assertSame('', $response['body']);
+        $this->assertArrayNotHasKey('content-length', $response['headers']);
+        $this->assertSame('https://client.example', $response['headers']['access-control-allow-origin'] ?? null);
+        $this->assertSame('GET, POST, OPTIONS', $response['headers']['access-control-allow-methods'] ?? null);
+        $this->assertSame('Origin', $response['headers']['vary'] ?? null);
     }
 
     public function test_real_rate_limit_preserves_429_and_retry_after(): void
@@ -308,6 +380,7 @@ final class McpEndpointHttpTest extends TestCase
         $module = $root . '/modules/addons/nt_mcp';
         mkdir($module . '/vendor', 0700, true);
         file_put_contents($module . '/mcp.php', (string) file_get_contents(dirname(__DIR__, 2) . '/mcp.php'));
+        file_put_contents($module . '/oauth.php', (string) file_get_contents(dirname(__DIR__, 2) . '/oauth.php'));
         file_put_contents(
             $module . '/vendor/autoload.php',
             '<?php require ' . var_export(dirname(__DIR__, 2) . '/vendor/autoload.php', true) . ';'
@@ -386,7 +459,13 @@ final class McpEndpointHttpTest extends TestCase
     }
 
     /** @return array{status:int,headers:array<string,string>,body:string} */
-    private function request(array $server, string $method, array $headers = [], string $body = ''): array
+    private function request(
+        array $server,
+        string $method,
+        array $headers = [],
+        string $body = '',
+        string $script = 'mcp.php',
+    ): array
     {
         $client = stream_socket_client("tcp://127.0.0.1:{$server['port']}", $errno, $error, 3);
         $this->assertIsResource($client, "falha HTTP: {$errno} {$error}");
@@ -394,7 +473,7 @@ final class McpEndpointHttpTest extends TestCase
         if ($body !== '') {
             $headers['Content-Length'] = (string) strlen($body);
         }
-        $rawRequest = $method . " /modules/addons/nt_mcp/mcp.php HTTP/1.1\r\n";
+        $rawRequest = $method . " /modules/addons/nt_mcp/{$script} HTTP/1.1\r\n";
         foreach ($headers as $name => $value) {
             $rawRequest .= $name . ': ' . $value . "\r\n";
         }
