@@ -6,6 +6,7 @@ namespace NtMcp\Tests\Tools;
 
 use NtMcp\Tools\QuoteTools;
 use NtMcp\Whmcs\LocalApiClient;
+use NtMcp\Whmcs\PaymentGatewayDirectory;
 use PHPUnit\Framework\TestCase;
 
 class QuoteToolsTest extends TestCase
@@ -15,15 +16,27 @@ class QuoteToolsTest extends TestCase
      * exercita: WRITE para criar/atualizar/duplicar, FINANCIAL para a conversão
      * e DESTRUCTIVE para a exclusão.
      */
-    private function makeTools(?callable $callable = null, array $gates = ['write' => true]): QuoteTools
-    {
+    private function makeTools(
+        ?callable $callable = null,
+        array $gates = ['write' => true],
+        ?PaymentGatewayDirectory $gateways = null
+    ): QuoteTools {
         $api = new LocalApiClient('testadmin');
         $api->setGates($gates);
         $api->setCallable($callable ?? function (string $cmd, array $params) {
             return ['result' => 'success'];
         });
 
-        return new QuoteTools($api);
+        return new QuoteTools($api, $gateways ?? self::gatewayDirectory());
+    }
+
+    /** Diretório de gateways com os system names configurados no "WHMCS". */
+    private static function gatewayDirectory(array $names = ['banktransfer', 'paypal']): PaymentGatewayDirectory
+    {
+        $directory = new PaymentGatewayDirectory();
+        $directory->setResolver(static fn() => $names);
+
+        return $directory;
     }
 
     /** Resposta GetQuotes de uma cotação ainda não aceita. */
@@ -212,9 +225,9 @@ class QuoteToolsTest extends TestCase
     // convert_quote_to_invoice (FINANCIAL)
     // ---------------------------------------------------------------
 
-    private function makeConverter(callable $callable): QuoteTools
+    private function makeConverter(callable $callable, ?PaymentGatewayDirectory $gateways = null): QuoteTools
     {
-        return $this->makeTools($callable, ['financial' => true]);
+        return $this->makeTools($callable, ['financial' => true], $gateways);
     }
 
     public function test_convert_quote_to_invoice_accepts_quote(): void
@@ -313,7 +326,9 @@ class QuoteToolsTest extends TestCase
             return ['result' => 'error', 'message' => 'Invalid payment method'];
         });
 
-        $json = $tools->convertQuoteToInvoice(quoteid: 10, paymentmethod: 'missing');
+        // O gateway é válido (M4 rejeitaria um inválido antes do efeito); a
+        // falha vem do WHMCS no segundo passo, que é o cenário parcial legítimo.
+        $json = $tools->convertQuoteToInvoice(quoteid: 10, paymentmethod: 'banktransfer');
         $result = json_decode($json, true);
 
         $this->assertSame('error', $result['result']);
@@ -323,6 +338,178 @@ class QuoteToolsTest extends TestCase
         $this->assertStringContainsString('Quote converted, but invoice update failed', $result['message']);
         $this->assertStringContainsString('NÃO repetir', $result['warning']);
         $this->assertSame('Invalid payment method', $result['invoice_update']['message']);
+    }
+
+    // ---------------------------------------------------------------
+    // M2 — exceção/estado indeterminado depois do primeiro efeito
+    // ---------------------------------------------------------------
+
+    public function test_convert_reports_partial_when_update_invoice_throws(): void
+    {
+        $tools = $this->makeConverter(function (string $cmd) {
+            if ($cmd === 'GetQuotes') {
+                return self::quoteResponse();
+            }
+            if ($cmd === 'AcceptQuote') {
+                return ['result' => 'success', 'invoiceid' => 99];
+            }
+
+            throw new \RuntimeException('transport exploded');
+        });
+
+        $json = $tools->convertQuoteToInvoice(quoteid: 10, paymentmethod: 'banktransfer');
+        $result = json_decode($json, true);
+
+        $this->assertSame('error', $result['result']);
+        $this->assertTrue($result['partial']);
+        $this->assertSame(10, $result['quoteid']);
+        $this->assertSame(99, $result['invoiceid']);
+        $this->assertStringContainsString('transport exploded', $result['message']);
+        $this->assertStringContainsString('NÃO repetir', $result['warning']);
+    }
+
+    /** Exceção do PRIMEIRO efeito é indeterminada: pode ter persistido. */
+    public function test_convert_reports_partial_when_accept_quote_throws(): void
+    {
+        $tools = $this->makeConverter(function (string $cmd) {
+            if ($cmd === 'GetQuotes') {
+                return self::quoteResponse();
+            }
+
+            throw new \RuntimeException('gateway timeout');
+        });
+
+        $json = $tools->convertQuoteToInvoice(quoteid: 10);
+        $result = json_decode($json, true);
+
+        $this->assertSame('error', $result['result']);
+        $this->assertTrue($result['partial']);
+        $this->assertSame(10, $result['quoteid']);
+        $this->assertArrayNotHasKey('invoiceid', $result, 'invoice desconhecida não pode ser inventada');
+        $this->assertStringContainsString('indeterminate', $result['message']);
+        $this->assertStringContainsString('MAY have been accepted', $result['message']);
+        $this->assertStringContainsString('NÃO repetir', $result['warning']);
+    }
+
+    /** Retorno não-array do WHMCS vira RuntimeException — também é parcial. */
+    public function test_convert_reports_partial_when_accept_quote_returns_non_array(): void
+    {
+        $tools = $this->makeConverter(function (string $cmd) {
+            if ($cmd === 'GetQuotes') {
+                return self::quoteResponse();
+            }
+
+            return 'not an array';
+        });
+
+        $json = $tools->convertQuoteToInvoice(quoteid: 10);
+        $result = json_decode($json, true);
+
+        $this->assertSame('error', $result['result']);
+        $this->assertTrue($result['partial']);
+        $this->assertStringContainsString('NÃO repetir', $result['warning']);
+    }
+
+    /**
+     * A ÚNICA exceção ao contrato parcial: recusa de AUTORIZAÇÃO no primeiro
+     * efeito não produz efeito nenhum, então precisa subir como negação — não
+     * pode ser mascarada como conversão parcial.
+     */
+    public function test_convert_does_not_report_partial_when_first_effect_is_denied(): void
+    {
+        $tools = $this->makeTools(function (string $cmd) {
+            if ($cmd === 'GetQuotes') {
+                return self::quoteResponse();
+            }
+            return ['result' => 'success', 'invoiceid' => 99];
+        }, ['write' => true]); // FINANCIAL off ⇒ AcceptQuote negado
+
+        $this->expectException(\NtMcp\Whmcs\AuthorizationException::class);
+        $this->expectExceptionMessage('class FINANCIAL disabled');
+
+        $tools->convertQuoteToInvoice(quoteid: 10);
+    }
+
+    // ---------------------------------------------------------------
+    // M4 — paymentmethod validado ANTES do primeiro efeito
+    // ---------------------------------------------------------------
+
+    public function test_convert_rejects_unknown_payment_gateway_before_any_effect(): void
+    {
+        $calls = [];
+        $tools = $this->makeConverter(function (string $cmd) use (&$calls) {
+            $calls[] = $cmd;
+            return ['result' => 'success', 'invoiceid' => 99];
+        });
+
+        try {
+            $tools->convertQuoteToInvoice(quoteid: 10, paymentmethod: 'missing');
+            $this->fail('gateway inexistente deveria ser rejeitado');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertStringContainsString('not a configured WHMCS payment gateway', $e->getMessage());
+            $this->assertStringContainsString('banktransfer', $e->getMessage());
+        }
+
+        $this->assertSame([], $calls, 'nenhum efeito — nem o preflight GetQuotes — pode ter ocorrido');
+    }
+
+    public function test_convert_accepts_configured_gateway_case_insensitively(): void
+    {
+        $calls = [];
+        $tools = $this->makeConverter(function (string $cmd) use (&$calls) {
+            $calls[] = $cmd;
+            if ($cmd === 'GetQuotes') {
+                return self::quoteResponse();
+            }
+            return ['result' => 'success', 'invoiceid' => 99];
+        });
+
+        $tools->convertQuoteToInvoice(quoteid: 10, paymentmethod: 'BankTransfer');
+
+        $this->assertSame(['GetQuotes', 'AcceptQuote', 'UpdateInvoice'], $calls);
+    }
+
+    /** Introspecção indisponível é conservadora: recusa antes de converter. */
+    public function test_convert_fails_closed_when_gateway_introspection_unavailable(): void
+    {
+        $calls = [];
+        $broken = new PaymentGatewayDirectory();
+        $broken->setResolver(static function () {
+            throw new \RuntimeException('db down');
+        });
+
+        $tools = $this->makeConverter(function (string $cmd) use (&$calls) {
+            $calls[] = $cmd;
+            return ['result' => 'success', 'invoiceid' => 99];
+        }, $broken);
+
+        $this->expectException(\RuntimeException::class);
+
+        try {
+            $tools->convertQuoteToInvoice(quoteid: 10, paymentmethod: 'banktransfer');
+        } finally {
+            $this->assertSame([], $calls, 'nada pode ser convertido sem validar o gateway');
+        }
+    }
+
+    /** Sem paymentmethod a conversão não depende de introspecção alguma. */
+    public function test_convert_without_paymentmethod_does_not_need_gateway_introspection(): void
+    {
+        $broken = new PaymentGatewayDirectory();
+        $broken->setResolver(static function () {
+            throw new \RuntimeException('db down');
+        });
+
+        $tools = $this->makeConverter(function (string $cmd) {
+            if ($cmd === 'GetQuotes') {
+                return self::quoteResponse();
+            }
+            return ['result' => 'success', 'invoiceid' => 99];
+        }, $broken);
+
+        $result = json_decode($tools->convertQuoteToInvoice(quoteid: 10), true);
+
+        $this->assertSame('success', $result['result']);
     }
 
     public function test_convert_quote_to_invoice_reports_partial_when_invoiceid_missing(): void

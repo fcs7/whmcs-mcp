@@ -2,6 +2,7 @@
 // src/Tools/ProjectManagerTools.php
 namespace NtMcp\Tools;
 
+use NtMcp\Whmcs\DateNormalizer;
 use NtMcp\Whmcs\LocalApiClient;
 use PhpMcp\Server\Attributes\McpTool;
 
@@ -43,7 +44,7 @@ class ProjectManagerTools
         $params = ['title' => $title, 'adminid' => $adminid];
         if ($userid > 0) $params['userid'] = $userid;
         if ($status !== '') $params['status'] = $status;
-        if ($duedate !== '') $params['duedate'] = $duedate;
+        if ($duedate !== '') $params['duedate'] = DateNormalizer::toWhmcsDate($duedate, 'duedate');
         if ($notes !== '') $params['notes'] = $notes;
         if ($ticketids !== '') $params['ticketids'] = $ticketids;
         return json_encode($this->api->call('CreateProject', $params), JSON_PRETTY_PRINT);
@@ -60,7 +61,7 @@ class ProjectManagerTools
         $params = ['projectid' => $projectid];
         if ($title !== '') $params['title'] = $title;
         if ($status !== '') $params['status'] = $status;
-        if ($duedate !== '') $params['duedate'] = $duedate;
+        if ($duedate !== '') $params['duedate'] = DateNormalizer::toWhmcsDate($duedate, 'duedate');
         if ($completed !== null) $params['completed'] = $completed ? 1 : 0;
         return json_encode($this->api->call('UpdateProject', $params), JSON_PRETTY_PRINT);
     }
@@ -73,7 +74,8 @@ class ProjectManagerTools
         int $adminid,
         bool $completed = false
     ): string {
-        $params = compact('projectid', 'task', 'duedate', 'adminid');
+        $params = compact('projectid', 'task', 'adminid');
+        $params['duedate'] = DateNormalizer::toWhmcsDate($duedate, 'duedate');
         if ($completed) $params['completed'] = true;
         return json_encode($this->api->call('AddProjectTask', $params), JSON_PRETTY_PRINT);
     }
@@ -88,7 +90,7 @@ class ProjectManagerTools
     ): string {
         $params = ['projectid' => $projectid, 'taskid' => $taskid];
         if ($task !== '') $params['task'] = $task;
-        if ($duedate !== '') $params['duedate'] = $duedate;
+        if ($duedate !== '') $params['duedate'] = DateNormalizer::toWhmcsDate($duedate, 'duedate');
         if ($completed !== null) $params['completed'] = $completed ? 1 : 0;
         return json_encode($this->api->call('UpdateProjectTask', $params), JSON_PRETTY_PRINT);
     }

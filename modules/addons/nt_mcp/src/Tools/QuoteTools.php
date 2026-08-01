@@ -2,12 +2,26 @@
 // src/Tools/QuoteTools.php
 namespace NtMcp\Tools;
 
+use NtMcp\Whmcs\AuthorizationException;
+use NtMcp\Whmcs\DateNormalizer;
 use NtMcp\Whmcs\LocalApiClient;
+use NtMcp\Whmcs\PaymentGatewayDirectory;
 use PhpMcp\Server\Attributes\McpTool;
 
 class QuoteTools
 {
-    public function __construct(private readonly LocalApiClient $api) {}
+    private ?PaymentGatewayDirectory $gateways;
+
+    public function __construct(private readonly LocalApiClient $api, ?PaymentGatewayDirectory $gateways = null)
+    {
+        $this->gateways = $gateways;
+    }
+
+    /** Introspecção read-only de gateways; instanciada sob demanda. */
+    private function gateways(): PaymentGatewayDirectory
+    {
+        return $this->gateways ??= new PaymentGatewayDirectory();
+    }
 
     #[McpTool(name: 'whmcs_list_quotes', description: 'Lista orçamentos com filtros')]
     public function listQuotes(
@@ -25,7 +39,7 @@ class QuoteTools
         if ($quoteid > 0) $params['quoteid'] = $quoteid;
         if ($subject !== '') $params['subject'] = $subject;
         if ($stage !== '') $params['stage'] = $stage;
-        if ($datecreated !== '') $params['datecreated'] = $datecreated;
+        if ($datecreated !== '') $params['datecreated'] = DateNormalizer::toWhmcsDate($datecreated, 'datecreated');
         if ($lastmodified !== '') $params['lastmodified'] = $lastmodified;
         return json_encode($this->api->call('GetQuotes', $params), JSON_PRETTY_PRINT);
     }
@@ -53,7 +67,7 @@ class QuoteTools
         if ($userid > 0) $params['userid'] = $userid;
         if ($validuntil !== '') $params['validuntil'] = $validuntil;
         if ($currencyid > 0) $params['currency'] = $currencyid;
-        if ($datecreated !== '') $params['datecreated'] = $datecreated;
+        if ($datecreated !== '') $params['datecreated'] = DateNormalizer::toWhmcsDate($datecreated, 'datecreated');
         if ($customernotes !== '') $params['customernotes'] = $customernotes;
         if ($adminnotes !== '') $params['adminnotes'] = $adminnotes;
         $this->addSerializedLineItems($params, $lineitems);
@@ -77,7 +91,7 @@ class QuoteTools
         if ($stage !== '') $params['stage'] = $stage;
         if ($proposal !== '') $params['proposal'] = $proposal;
         if ($validuntil !== '') $params['validuntil'] = $validuntil;
-        if ($datecreated !== '') $params['datecreated'] = $datecreated;
+        if ($datecreated !== '') $params['datecreated'] = DateNormalizer::toWhmcsDate($datecreated, 'datecreated');
         if ($customernotes !== '') $params['customernotes'] = $customernotes;
         if ($adminnotes !== '') $params['adminnotes'] = $adminnotes;
         $this->addSerializedLineItems($params, $lineitems);
@@ -138,7 +152,9 @@ class QuoteTools
             $newQuote['validuntil'] = $validUntilValue;
         }
 
-        $dateCreatedValue = $datecreated !== '' ? $datecreated : (string)($source['datecreated'] ?? '');
+        $dateCreatedValue = $datecreated !== ''
+            ? DateNormalizer::toWhmcsDate($datecreated, 'datecreated')
+            : (string)($source['datecreated'] ?? '');
         if ($dateCreatedValue !== '') {
             $newQuote['datecreated'] = $dateCreatedValue;
         }
@@ -162,17 +178,21 @@ class QuoteTools
      * FINANCIAL. A operação NÃO é transacional: `AcceptQuote` gera a fatura e
      * `UpdateInvoice` aplica as opções de cobrança num segundo efeito. Por isso:
      *
-     *  - todos os argumentos são validados ANTES do primeiro efeito;
+     *  - TODOS os argumentos são validados antes do primeiro efeito, incluindo
+     *    o system name do gateway em `paymentmethod` (que só seria descoberto
+     *    inválido no segundo passo, já com a conversão persistida);
      *  - o estado atual da cotação é lido antes de converter, para reduzir
      *    repetição acidental (a operação NÃO é idempotente);
-     *  - se o segundo passo falhar, o retorno é `result: "error"` com
+     *  - a partir do primeiro efeito, QUALQUER desfecho ruim — erro em array,
+     *    exceção, retorno indeterminado — vira `result: "error"` com
      *    `partial: true`, os IDs conhecidos e um aviso explícito de que a tool
-     *    não deve ser repetida automaticamente.
+     *    não deve ser repetida automaticamente. Recusas de AUTORIZAÇÃO são a
+     *    única exceção: elas não produzem efeito, então sobem intactas.
      *
      * A conversão não produz efeito COMMS: não existe parâmetro `sendinvoice` e
      * `publishandsendemail` nunca é enviado.
      */
-    #[McpTool(name: 'whmcs_convert_quote_to_invoice', description: 'Converte uma cotação em fatura e aplica opções de cobrança quando fornecidas. Não envia e-mail. Operação não idempotente: não repetir automaticamente em caso de falha parcial.')]
+    #[McpTool(name: 'whmcs_convert_quote_to_invoice', description: 'Converte uma cotação em fatura e aplica opções de cobrança quando fornecidas. Não envia e-mail. Operação não idempotente: não repetir automaticamente em caso de falha parcial. Datas aceitam YYYY-MM-DD ou date-time ISO-8601.')]
     public function convertQuoteToInvoice(
         int $quoteid,
         string $paymentmethod = '',
@@ -183,11 +203,15 @@ class QuoteTools
         if ($quoteid <= 0) {
             throw new \InvalidArgumentException('quoteid must be a positive integer');
         }
-        if ($duedate !== '' && !$this->isIsoDate($duedate)) {
-            throw new \InvalidArgumentException('duedate must be an existing date in YYYY-MM-DD format');
-        }
+        $duedate = DateNormalizer::optional($duedate, 'duedate');
         if ($taxrate !== null && ($taxrate < 0 || $taxrate > 100)) {
             throw new \InvalidArgumentException('taxrate must be between 0 and 100');
+        }
+        if ($paymentmethod !== '') {
+            // Read-only e fail-closed: se a introspecção não estiver disponível,
+            // a RuntimeException sobe e NADA é convertido. `paymentmethod` é
+            // opcional, então recusar aqui nunca impede a conversão simples.
+            $this->gateways()->assertConfigured($paymentmethod, 'paymentmethod');
         }
 
         // --- Guarda de repetição: leitura do estado atual (READ) antes de mutar. ---
@@ -220,7 +244,23 @@ class QuoteTools
         }
 
         // --- Efeito 1: aceita a cotação e gera a fatura. ---
-        $convertResponse = $this->api->call('AcceptQuote', ['quoteid' => $quoteid]);
+        // Uma exceção aqui é INDETERMINADA: o WHMCS pode ter persistido a
+        // aceitação e falhado depois (transporte, timeout, retorno não-array).
+        // Tratar como parcial é a leitura conservadora — o cliente precisa
+        // conferir antes de repetir.
+        try {
+            $convertResponse = $this->api->call('AcceptQuote', ['quoteid' => $quoteid]);
+        } catch (AuthorizationException $e) {
+            throw $e; // negado antes de qualquer efeito: não é parcial
+        } catch (\Throwable $e) {
+            return self::partialFailure(
+                $quoteid,
+                null,
+                'Quote conversion failed in an indeterminate state: ' . $e->getMessage()
+                . '. The quote MAY have been accepted.'
+            );
+        }
+
         if (($convertResponse['result'] ?? '') === 'error') {
             if (!isset($convertResponse['quoteid'])) {
                 $convertResponse['quoteid'] = $quoteid;
@@ -233,13 +273,11 @@ class QuoteTools
 
         // A partir daqui a cotação JÁ foi aceita: qualquer falha é parcial.
         if ($hasInvoiceOptions && $invoiceId <= 0) {
-            return json_encode([
-                'result' => 'error',
-                'partial' => true,
-                'quoteid' => $quoteid,
-                'message' => 'Quote converted, but WHMCS did not return invoiceid; invoice options could not be applied',
-                'warning' => self::NO_RETRY_WARNING,
-            ], JSON_PRETTY_PRINT);
+            return self::partialFailure(
+                $quoteid,
+                null,
+                'Quote converted, but WHMCS did not return invoiceid; invoice options could not be applied'
+            );
         }
 
         if ($hasInvoiceOptions) {
@@ -255,17 +293,26 @@ class QuoteTools
                 $invoiceParams['taxrate'] = $taxrate;
             }
 
-            $invoiceResponse = $this->api->call('UpdateInvoice', $invoiceParams);
+            try {
+                $invoiceResponse = $this->api->call('UpdateInvoice', $invoiceParams);
+            } catch (\Throwable $e) {
+                // Inclui AuthorizationException: a conversão já ocorreu, então
+                // o contrato parcial vale mesmo que o segundo passo tenha sido
+                // NEGADO — o efeito financeiro existe e precisa ser reportado.
+                return self::partialFailure(
+                    $quoteid,
+                    $invoiceId,
+                    'Quote converted, but invoice update failed: ' . $e->getMessage()
+                );
+            }
+
             if (($invoiceResponse['result'] ?? '') === 'error') {
-                return json_encode([
-                    'result' => 'error',
-                    'partial' => true,
-                    'quoteid' => $quoteid,
-                    'invoiceid' => $invoiceId,
-                    'message' => 'Quote converted, but invoice update failed: ' . ($invoiceResponse['message'] ?? 'Unknown error'),
-                    'warning' => self::NO_RETRY_WARNING,
-                    'invoice_update' => $invoiceResponse,
-                ], JSON_PRETTY_PRINT);
+                return self::partialFailure(
+                    $quoteid,
+                    $invoiceId,
+                    'Quote converted, but invoice update failed: ' . ($invoiceResponse['message'] ?? 'Unknown error'),
+                    ['invoice_update' => $invoiceResponse]
+                );
             }
         }
 
@@ -281,6 +328,35 @@ class QuoteTools
     private const NO_RETRY_WARNING = 'NÃO repetir esta tool automaticamente: a cotação já foi aceita e o efeito financeiro já existe. Repetir criaria cobrança duplicada. Revise a fatura no WHMCS e ajuste-a manualmente.';
 
     /**
+     * Contrato ÚNICO de falha depois que um efeito financeiro pode ter ocorrido.
+     * Toda rota pós-efeito passa por aqui para que nenhuma delas perca
+     * `partial`, os IDs conhecidos ou o aviso de não-retry.
+     *
+     * @param int|null            $invoiceId null quando a fatura é desconhecida
+     * @param array<string,mixed> $extra
+     */
+    private static function partialFailure(int $quoteid, ?int $invoiceId, string $message, array $extra = []): string
+    {
+        $payload = [
+            'result' => 'error',
+            'partial' => true,
+            'quoteid' => $quoteid,
+        ];
+        if ($invoiceId !== null && $invoiceId > 0) {
+            $payload['invoiceid'] = $invoiceId;
+        }
+        $payload['message'] = $message;
+        $payload['warning'] = self::NO_RETRY_WARNING;
+
+        LocalApiClient::auditLog(
+            "MCP PARTIAL convert_quote_to_invoice: {$message}",
+            ['quoteid' => $quoteid, 'invoiceid' => $invoiceId]
+        );
+
+        return json_encode($payload + $extra, JSON_PRETTY_PRINT);
+    }
+
+    /**
      * DESTRUCTIVE. A exclusão é irreversível, portanto exige o gate DESTRUCTIVE
      * (desligado por padrão) E `confirm=true` como defesa adicional.
      */
@@ -288,6 +364,10 @@ class QuoteTools
     public function deleteQuote(int $quoteid, bool $confirm): string
     {
         if ($confirm !== true) {
+            // m1: esta recusa retorna ANTES do cliente central, então precisa
+            // auditar aqui — senão a tentativa não deixa rastro nenhum.
+            LocalApiClient::auditLog('MCP REFUSED whmcs_delete_quote (confirm=false)', ['quoteid' => $quoteid]);
+
             return json_encode([
                 'result' => 'error',
                 'quoteid' => $quoteid,
@@ -306,12 +386,6 @@ class QuoteTools
     // ---------------------------------------------------------------
     // Helpers (não invocáveis como tool — sem #[McpTool])
     // ---------------------------------------------------------------
-
-    private function isIsoDate(string $date): bool
-    {
-        $parsed = \DateTimeImmutable::createFromFormat('!Y-m-d', $date);
-        return $parsed !== false && $parsed->format('Y-m-d') === $date;
-    }
 
     private function addSerializedLineItems(array &$params, array $lineitems): void
     {

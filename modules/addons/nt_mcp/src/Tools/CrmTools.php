@@ -3,6 +3,7 @@
 namespace NtMcp\Tools;
 
 use NtMcp\Whmcs\CapsuleClient;
+use NtMcp\Whmcs\DateNormalizer;
 use PhpMcp\Server\Attributes\McpTool;
 use WHMCS\Database\Capsule;
 
@@ -108,7 +109,7 @@ class CrmTools
         $id = $this->capsule->insert(self::TABLE_FOLLOWUPS, [
             'contact_id' => $contactId,
             'note'       => $note,
-            'duedate'    => $duedate,
+            'duedate'    => DateNormalizer::toWhmcsDate($duedate, 'duedate'),
             'created'    => date('Y-m-d H:i:s'),
         ]);
         return json_encode(['result' => 'success', 'id' => $id], JSON_PRETTY_PRINT);

@@ -175,7 +175,7 @@ class LocalApiClient
     private function classOf(string $command): string
     {
         if (!array_key_exists($command, self::COMMAND_CLASS)) {
-            throw new \RuntimeException(
+            throw new AuthorizationException(
                 "LocalApiClient: command '{$command}' has no explicit security classification."
             );
         }
@@ -206,9 +206,11 @@ class LocalApiClient
     }
 
     /**
-     * readonly master switch — FAIL-CLOSED: qualquer falha de leitura de config
-     * é tratada como read-only (bloqueia escrita), consistente com
-     * CapsuleClient::isReadonly(). O override de teste tem precedência.
+     * readonly master switch — FAIL-CLOSED em três frentes: falha de leitura,
+     * valor ausente segue o default decidido, e valor PRESENTE porém não
+     * canônico (`'true'`, `'yes'`, `'garbage'`, `2`) bloqueia escrita e é
+     * auditado. Espelhado em CapsuleClient::isReadonly() pelo mesmo ConfigFlag.
+     * O override de teste tem precedência.
      */
     private function isReadonly(): bool
     {
@@ -222,27 +224,51 @@ class LocalApiClient
             return false;
         }
         try {
-            $v = \WHMCS\Config\Setting::getValue('nt_mcp_readonly');
-            return $v === '1' || $v === 1 || $v === true;
+            $raw = \WHMCS\Config\Setting::getValue('nt_mcp_readonly');
         } catch (\Throwable $e) {
-            error_log('NT MCP LocalApiClient: readonly config read failed — failing closed: ' . $e->getMessage());
+            self::auditConfig('NT MCP LocalApiClient: readonly config read failed — failing closed: ' . $e->getMessage());
             return true;
         }
+
+        return ConfigFlag::parse($raw)->resolve(
+            default: false,   // ausente: rollout define read-only explicitamente
+            failClosed: true, // presente e inválido: bloqueia mutação
+            key: 'nt_mcp_readonly',
+            auditor: self::auditConfig(...),
+        );
     }
 
-    /** Lê config booleana com override de teste e default seguro. */
+    /**
+     * Lê config booleana de gate com override de teste. Ausente usa o default;
+     * presente e inválido falha FECHADO (gate desligado) e é auditado.
+     */
     private function boolSetting(string $key, bool $default, string $overrideKey): bool
     {
         if ($this->gatesOverride !== null) {
             return (bool) ($this->gatesOverride[$overrideKey] ?? $default);
         }
         try {
-            $v = \WHMCS\Config\Setting::getValue($key);
-            if ($v === null || $v === '') return $default;
-            return $v === '1' || $v === 1 || $v === true;
+            $raw = \WHMCS\Config\Setting::getValue($key);
         } catch (\Throwable $e) {
             return $default;
         }
+
+        return ConfigFlag::parse($raw)->resolve(
+            default: $default,
+            failClosed: false, // gate inválido nunca libera efeito
+            key: $key,
+            auditor: self::auditConfig(...),
+        );
+    }
+
+    /**
+     * Config corrompida é evento de segurança: vai para o error_log E para o
+     * Activity Log, sem parâmetros (a mensagem não carrega dado de chamada).
+     */
+    private static function auditConfig(string $message): void
+    {
+        error_log($message);
+        self::auditLog($message, []);
     }
 
     private function assertModeAllows(string $command, array $params = []): void
@@ -250,7 +276,7 @@ class LocalApiClient
         $class = $this->classOf($command);
         if (!$this->gateEnabled($class)) {
             self::auditLog("MCP BLOCKED {$class} '{$command}' (gate disabled)", $params);
-            throw new \RuntimeException(
+            throw new AuthorizationException(
                 "LocalApiClient: command '{$command}' is blocked (class {$class} disabled by config)."
             );
         }
@@ -260,22 +286,51 @@ class LocalApiClient
         // uma chamada direta ao LocalApiClient que omita 'noemail'.
         if ($this->sendsNotification($command, $params) && !$this->gateEnabled('COMMS')) {
             self::auditLog("MCP BLOCKED COMMS '{$command}' (notification requested, comms gate disabled)", $params);
-            throw new \RuntimeException(
+            throw new AuthorizationException(
                 "LocalApiClient: command '{$command}' is blocked (client notification requires the COMMS gate)."
             );
         }
     }
 
-    /** true quando o comando enviará e-mail ao cliente com os params dados. */
+    /**
+     * true quando o comando enviará e-mail ao cliente com os params dados.
+     *
+     * Só as representações CANÔNICAS de `noemail` contam como supressão. A
+     * documentação do WHMCS define `noemail` como boolean e não garante coerção
+     * de strings como `'true'`; tratar `'true'` como supressão faria a decisão
+     * de segurança depender de comportamento não documentado. Qualquer coisa
+     * fora do canônico é lida como "vai notificar" ⇒ exige COMMS.
+     */
     private function sendsNotification(string $command, array $params): bool
     {
         if (!in_array($command, self::NOTIFYING_COMMANDS, true)) {
             return false;
         }
 
-        $noemail = $params['noemail'] ?? false;
+        return !self::suppressesEmail($params['noemail'] ?? null);
+    }
 
-        return !($noemail === true || $noemail === 1 || $noemail === '1' || $noemail === 'true');
+    /** Representações canônicas de "não envie e-mail". */
+    private static function suppressesEmail(mixed $noemail): bool
+    {
+        return $noemail === true || $noemail === 1 || $noemail === '1';
+    }
+
+    /**
+     * Normaliza `noemail` para boolean antes da LocalAPI, para que a supressão
+     * nunca dependa de coerção textual do WHMCS. Um valor não canônico presente
+     * já foi tratado como "notifica" por sendsNotification() (e portanto exigiu
+     * COMMS); aqui ele vira `false` explícito em vez de seguir como string.
+     */
+    private static function normalizeNoEmail(string $command, array $params): array
+    {
+        if (!in_array($command, self::NOTIFYING_COMMANDS, true) || !array_key_exists('noemail', $params)) {
+            return $params;
+        }
+
+        $params['noemail'] = self::suppressesEmail($params['noemail']);
+
+        return $params;
     }
 
     private function clampImpersonation(string $command, array $params): array
@@ -325,13 +380,14 @@ class LocalApiClient
             // SECURITY FIX (F8): Log blocked command attempts for forensics.
             // ---------------------------------------------------------------
             self::auditLog("MCP BLOCKED command '{$command}' (not in allowlist)", $params);
-            throw new \RuntimeException(
+            throw new AuthorizationException(
                 "LocalApiClient: WHMCS API command '{$command}' is not in the allowed list."
             );
         }
 
         $this->assertModeAllows($command, $params);              // A
         $params = $this->clampImpersonation($command, $params);  // B
+        $params = self::normalizeNoEmail($command, $params);     // B2 (m2)
 
         // ---------------------------------------------------------------
         // SECURITY FIX (F8 -- HIGH): Audit logging for every tool
@@ -363,11 +419,17 @@ class LocalApiClient
         // create/update tools unusable.  WHMCS API error messages are
         // user-facing by design and do not leak internal paths or SQL.
         // ---------------------------------------------------------------
+        // OUTCOME EXPLÍCITO (m1): o log de início sozinho não distingue
+        // "começou e concluiu" de "começou e morreu no meio". A linha de
+        // desfecho não repete os params — eles já foram registrados (redigidos)
+        // na linha de início, e repeti-los só inflaria o Activity Log.
         if (($result['result'] ?? '') === 'error') {
             self::auditLog(
                 "MCP API ERROR {$command}: " . ($result['message'] ?? 'Unknown error'),
                 $params
             );
+        } else {
+            self::auditLog("MCP API OK {$command}", []);
         }
 
         ResponseRedactor::scrubSensitive($result);  // D defense-in-depth

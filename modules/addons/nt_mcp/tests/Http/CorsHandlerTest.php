@@ -82,14 +82,30 @@ class CorsHandlerTest extends TestCase
 
     // --- getAllowedOriginsOrFail() fail-closed (WO-5 / item E) ---
 
+    /**
+     * O suite agora define um stub de \WHMCS\Config\Setting (necessário para
+     * exercitar o parser tri-state em M3), então a ausência da classe deixou de
+     * ser a forma de simular falha de leitura. Estes dois testes passam a
+     * provocar o erro explicitamente — o que é mais fiel ao cenário real (DB
+     * fora do ar) do que "a classe não existe".
+     */
+    private function withFailingConfigRead(callable $fn): mixed
+    {
+        \WHMCS\Config\Setting::$throwOnRead = true;
+        try {
+            return $fn();
+        } finally {
+            \WHMCS\Config\Setting::reset();
+        }
+    }
+
     public function test_get_allowed_origins_or_fail_returns_false_on_config_error(): void
     {
-        // No WHMCS bootstrap in tests → \WHMCS\Config\Setting doesn't exist → this is
-        // exactly the "real config-read error" path. It must return the `false`
-        // sentinel, NOT an empty array — an empty array would be indistinguishable
-        // from "no allowlist configured" and resolveOriginHeader() would then hand
-        // back a wildcard on what is actually an infra failure.
-        $result = CorsHandler::getAllowedOriginsOrFail();
+        // Erro real de leitura de config. Deve devolver o sentinela `false`, NÃO
+        // um array vazio — vazio seria indistinguível de "sem allowlist
+        // configurada" e resolveOriginHeader() devolveria wildcard para o que na
+        // verdade é uma falha de infraestrutura.
+        $result = $this->withFailingConfigRead(fn() => CorsHandler::getAllowedOriginsOrFail());
         $this->assertFalse($result);
     }
 
@@ -97,7 +113,7 @@ class CorsHandlerTest extends TestCase
     {
         // Demonstrates the bug WO-5 fixes: naively feeding a config-read error into
         // resolveOriginHeader() (by collapsing it to []) silently produces '*'.
-        $orFail = CorsHandler::getAllowedOriginsOrFail();
+        $orFail = $this->withFailingConfigRead(fn() => CorsHandler::getAllowedOriginsOrFail());
         $this->assertFalse($orFail, 'error must be reported as false, not []');
 
         // The buggy pre-fix behaviour (error treated as empty allowlist):

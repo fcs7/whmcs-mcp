@@ -2,6 +2,7 @@
 // src/Tools/SystemTools.php
 namespace NtMcp\Tools;
 
+use NtMcp\Whmcs\DateNormalizer;
 use NtMcp\Whmcs\LocalApiClient;
 use PhpMcp\Server\Attributes\McpTool;
 
@@ -21,7 +22,7 @@ class SystemTools
         $params = compact('limitnum', 'limitstart');
         if ($user !== '') $params['user'] = $user;
         if ($description !== '') $params['description'] = $description;
-        if ($date !== '') $params['date'] = $date;
+        if ($date !== '') $params['date'] = DateNormalizer::toWhmcsDate($date, 'date');
         return json_encode($this->api->call('GetActivityLog', $params), JSON_PRETTY_PRINT);
     }
 
@@ -46,7 +47,7 @@ class SystemTools
         if ($status !== '') $params['status'] = $status;
         if ($title !== '') $params['title'] = $title;
         if ($description !== '') $params['description'] = $description;
-        if ($duedate !== '') $params['duedate'] = $duedate;
+        if ($duedate !== '') $params['duedate'] = DateNormalizer::toWhmcsDate($duedate, 'duedate');
         if ($adminid > 0) $params['adminid'] = $adminid;
         return json_encode($this->api->call('UpdateToDoItem', $params), JSON_PRETTY_PRINT);
     }

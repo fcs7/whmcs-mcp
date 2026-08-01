@@ -73,11 +73,16 @@ class CapsuleClient
     private ?bool $writableOverride = null;
     public function setWritableForTests(bool $writable): void { $this->writableOverride = $writable; }
 
-    private function assertWritable(): void
+    /**
+     * Bloqueio de write no Capsule agora é AUDITADO (m1): antes, um write CRM
+     * negado não deixava rastro nenhum no Activity Log, porque esta rota nunca
+     * passa por LocalApiClient::call(). Reusa a mesma redação central.
+     */
+    private function assertWritable(string $operation, string $table, array $context = []): void
     {
         if ($this->writableOverride !== null) {
             if (!$this->writableOverride) {
-                throw new \InvalidArgumentException('CapsuleClient: writes disabled (read-only / write gate).');
+                $this->denyWrite($operation, $table, $context);
             }
             return;
         }
@@ -85,14 +90,22 @@ class CapsuleClient
         // DESLIGADO no rollout, e uma falha de leitura da config cai no mesmo
         // default (fail-closed).
         if ($this->isReadonly() || !$this->boolCfg('nt_mcp_enable_write', false)) {
-            throw new \InvalidArgumentException('CapsuleClient: writes disabled (read-only / write gate).');
+            $this->denyWrite($operation, $table, $context);
         }
     }
 
+    private function denyWrite(string $operation, string $table, array $context): never
+    {
+        LocalApiClient::auditLog("MCP BLOCKED DB {$operation}: {$table} (read-only / write gate)", $context);
+
+        throw new \InvalidArgumentException('CapsuleClient: writes disabled (read-only / write gate).');
+    }
+
     /**
-     * readonly master switch — FAIL-CLOSED: qualquer falha de leitura de config
-     * é tratada como read-only (bloqueia escrita), para não liberar writes num
-     * ambiente que deveria permanecer somente-leitura.
+     * readonly master switch — FAIL-CLOSED em três frentes, pelo mesmo
+     * ConfigFlag do LocalApiClient: falha de leitura bloqueia; ausência usa o
+     * default decidido; e valor PRESENTE porém não canônico (`'true'`, `'yes'`,
+     * `'garbage'`, `2`) bloqueia escrita e é auditado.
      */
     private function isReadonly(): bool
     {
@@ -102,21 +115,40 @@ class CapsuleClient
             return false;
         }
         try {
-            $v = \WHMCS\Config\Setting::getValue('nt_mcp_readonly');
-            return $v === '1' || $v === 1 || $v === true;
+            $raw = \WHMCS\Config\Setting::getValue('nt_mcp_readonly');
         } catch (\Throwable $e) {
-            error_log('NT MCP CapsuleClient: readonly config read failed — failing closed: ' . $e->getMessage());
+            self::auditConfig('NT MCP CapsuleClient: readonly config read failed — failing closed: ' . $e->getMessage());
             return true;
         }
+
+        return ConfigFlag::parse($raw)->resolve(
+            default: false,
+            failClosed: true,
+            key: 'nt_mcp_readonly',
+            auditor: self::auditConfig(...),
+        );
     }
 
     private function boolCfg(string $key, bool $default): bool
     {
         try {
-            $v = \WHMCS\Config\Setting::getValue($key);
-            if ($v === null || $v === '') return $default;
-            return $v === '1' || $v === 1 || $v === true;
-        } catch (\Throwable $e) { return $default; }
+            $raw = \WHMCS\Config\Setting::getValue($key);
+        } catch (\Throwable $e) {
+            return $default;
+        }
+
+        return ConfigFlag::parse($raw)->resolve(
+            default: $default,
+            failClosed: false,
+            key: $key,
+            auditor: self::auditConfig(...),
+        );
+    }
+
+    private static function auditConfig(string $message): void
+    {
+        error_log($message);
+        LocalApiClient::auditLog($message, []);
     }
 
     /**
@@ -181,7 +213,7 @@ class CapsuleClient
     public function insert(string $table, array $data): int
     {
         $this->assertTableAllowed($table);
-        $this->assertWritable();
+        $this->assertWritable('INSERT', $table, $data);
         $this->assertColumnsAllowed($table, $data, self::ALLOWED_COLUMNS[$table]);
 
         // SECURITY FIX (F8): Audit log for DB writes
@@ -193,7 +225,7 @@ class CapsuleClient
     public function update(string $table, array $where, array $data): int
     {
         $this->assertTableAllowed($table);
-        $this->assertWritable();
+        $this->assertWritable('UPDATE', $table, ['where' => $where, 'data' => $data]);
         $this->assertColumnsAllowed($table, $where, self::ALLOWED_WHERE_COLUMNS[$table]);
         $this->assertColumnsAllowed($table, $data, self::ALLOWED_COLUMNS[$table]);
 
@@ -213,7 +245,7 @@ class CapsuleClient
     public function delete(string $table, array $where): int
     {
         $this->assertTableAllowed($table);
-        $this->assertWritable();
+        $this->assertWritable('DELETE', $table, ['where' => $where]);
         $this->assertColumnsAllowed($table, $where, self::ALLOWED_WHERE_COLUMNS[$table]);
 
         if ($where === []) {

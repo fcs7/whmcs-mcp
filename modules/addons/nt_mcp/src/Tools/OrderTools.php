@@ -36,6 +36,10 @@ class OrderTools
     public function cancelOrder(int $orderid, bool $confirm): string
     {
         if ($confirm !== true) {
+            // m1: esta recusa retorna ANTES do cliente central, então precisa
+            // auditar aqui — senão a tentativa não deixa rastro nenhum.
+            LocalApiClient::auditLog('MCP REFUSED whmcs_cancel_order (confirm=false)', ['orderid' => $orderid]);
+
             return json_encode([
                 'result' => 'error',
                 'orderid' => $orderid,

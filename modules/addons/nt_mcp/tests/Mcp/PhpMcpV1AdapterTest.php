@@ -42,6 +42,51 @@ class PhpMcpV1AdapterTest extends TestCase
         return new PhpMcpV1Adapter($api, new CapsuleClient(), $this->baseDir, $this->cacheDir);
     }
 
+    /** Adapter com gates e callable controlados, para exercitar tools/call. */
+    private function makeCallableAdapter(array $gates, callable $cb): PhpMcpV1Adapter
+    {
+        $api = new LocalApiClient('testadmin');
+        $api->setGates($gates);
+        $api->setCallable($cb);
+
+        return new PhpMcpV1Adapter($api, new CapsuleClient(), $this->baseDir, $this->cacheDir);
+    }
+
+    private function toolsCallRequest(int $id, string $name, array $arguments): string
+    {
+        return json_encode([
+            'jsonrpc' => '2.0',
+            'id' => $id,
+            'method' => 'tools/call',
+            'params' => ['name' => $name, 'arguments' => $arguments],
+        ]);
+    }
+
+    /** Extrai o payload de uma resposta tools/call (erro JSON-RPC ou result). */
+    private function callOutcome(array $messages, int $id): array
+    {
+        foreach ($messages as $m) {
+            if (($m['id'] ?? null) !== $id) {
+                continue;
+            }
+            if (isset($m['error'])) {
+                return ['jsonrpc_error' => $m['error']];
+            }
+
+            return $m['result'] ?? [];
+        }
+
+        return [];
+    }
+
+    /** Texto devolvido por uma tool bem/mal sucedida. */
+    private function callText(array $messages, int $id): string
+    {
+        $outcome = $this->callOutcome($messages, $id);
+
+        return $outcome['content'][0]['text'] ?? json_encode($outcome);
+    }
+
     /** Extrai o array result.tools da resposta com o id dado. */
     private function toolsFrom(array $messages, int $id): ?array
     {
@@ -249,6 +294,208 @@ class PhpMcpV1AdapterTest extends TestCase
                 );
             }
         }
+    }
+
+    // ---------------------------------------------------------------
+    // M1 — datas pelo protocolo MCP REAL.
+    //
+    // O SchemaGenerator da v1.1 publica todo parâmetro cujo nome contenha
+    // "date" como format: date-time, e o opis/json-schema VALIDA isso antes de
+    // a tool ser chamada. Os testes diretos de classe não pegam esse degrau.
+    // ---------------------------------------------------------------
+
+    /** Contrato: o valor date-time publicado é aceito ponta a ponta. */
+    public function test_date_time_value_is_accepted_end_to_end_and_normalized_for_whmcs(): void
+    {
+        $captured = [];
+        $adapter = $this->makeCallableAdapter(['write' => true], function (string $cmd, array $params) use (&$captured) {
+            $captured[$cmd] = $params;
+            return ['result' => 'success'];
+        });
+
+        $messages = $adapter->handle(
+            $this->toolsCallRequest(1, 'whmcs_create_quote', [
+                'subject' => 'Q',
+                'stage' => 'Draft',
+                'proposal' => 'P',
+                'datecreated' => '2026-08-10T00:00:00Z',
+            ]),
+            'client-m1-date001',
+            'tools/call'
+        );
+
+        $outcome = $this->callOutcome($messages, 1);
+        $this->assertArrayNotHasKey('jsonrpc_error', $outcome, 'o schema publicado deve aceitar date-time');
+        $this->assertFalse($outcome['isError'] ?? true, $this->callText($messages, 1));
+        $this->assertSame('2026-08-10', $captured['CreateQuote']['datecreated'], 'WHMCS exige Y-m-d');
+    }
+
+    /** Mesmo contrato numa tool READ, sem depender de gate de escrita. */
+    public function test_date_time_value_is_accepted_end_to_end_on_a_read_tool(): void
+    {
+        $captured = [];
+        $adapter = $this->makeCallableAdapter([], function (string $cmd, array $params) use (&$captured) {
+            $captured[$cmd] = $params;
+            return ['result' => 'success'];
+        });
+
+        $messages = $adapter->handle(
+            $this->toolsCallRequest(1, 'whmcs_get_activity_log', ['date' => '2026-08-10T00:00:00Z']),
+            'client-m1-date002',
+            'tools/call'
+        );
+
+        $this->assertFalse($this->callOutcome($messages, 1)['isError'] ?? true, $this->callText($messages, 1));
+        $this->assertSame('2026-08-10', $captured['GetActivityLog']['date']);
+    }
+
+    /** Toda tool que publica format=date-time aceita o valor date-time. */
+    public function test_every_published_date_time_param_accepts_a_date_time_value(): void
+    {
+        $adapter = $this->makeAdapter();
+        $messages = $adapter->handle($this->toolsListRequest(1), 'client-m1-scan001', 'tools/list');
+        $tools = $this->toolsFrom($messages, 1) ?? [];
+
+        $dateParams = [];
+        foreach ($tools as $t) {
+            foreach (($t['inputSchema']['properties'] ?? []) as $prop => $def) {
+                if (($def['format'] ?? null) === 'date-time') {
+                    $dateParams[] = [$t['name'], $prop];
+                }
+            }
+        }
+
+        $this->assertNotEmpty($dateParams, 'o heurístico da SDK deve continuar publicando date-time');
+
+        foreach ($dateParams as $i => [$tool, $prop]) {
+            $normalized = \NtMcp\Whmcs\DateNormalizer::tryNormalize('2026-08-10T00:00:00Z');
+            $this->assertSame(
+                '2026-08-10',
+                $normalized,
+                "o valor exigido pelo schema de {$tool}.{$prop} precisa ser normalizável para o formato WHMCS"
+            );
+        }
+    }
+
+    /**
+     * Uma data impossível nunca chega ao WHMCS. Ela pode ser barrada em dois
+     * degraus — o validator do schema (date-time inexistente) ou o
+     * DateNormalizer — e o teste aceita ambos: o invariante é "rejeitada e sem
+     * efeito", não qual camada rejeitou.
+     */
+    public function test_impossible_date_never_reaches_whmcs(): void
+    {
+        foreach (['2026-02-31T00:00:00Z', '2026-02-31'] as $i => $badDate) {
+            $called = false;
+            $adapter = $this->makeCallableAdapter([], function () use (&$called) {
+                $called = true;
+                return ['result' => 'success'];
+            });
+
+            $messages = $adapter->handle(
+                $this->toolsCallRequest(1, 'whmcs_get_activity_log', ['date' => $badDate]),
+                'client-m1-bad' . str_pad((string) $i, 5, '0'),
+                'tools/call'
+            );
+
+            $outcome = $this->callOutcome($messages, 1);
+            $rejected = isset($outcome['jsonrpc_error']) || ($outcome['isError'] ?? false);
+
+            $this->assertTrue($rejected, "data impossível aceita: {$badDate}");
+            $this->assertFalse($called, "data impossível chegou ao WHMCS: {$badDate}");
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // M2 — contrato parcial sobrevive a exceção, pelo protocolo real.
+    // ---------------------------------------------------------------
+
+    public function test_exception_after_first_effect_still_returns_partial_contract(): void
+    {
+        $adapter = $this->makeCallableAdapter(['financial' => true], function (string $cmd) {
+            if ($cmd === 'GetQuotes') {
+                return ['result' => 'success', 'quotes' => ['quote' => [['id' => 10, 'stage' => 'Delivered']]]];
+            }
+            if ($cmd === 'AcceptQuote') {
+                return ['result' => 'success', 'invoiceid' => 99];
+            }
+
+            throw new \RuntimeException('transport died');
+        });
+
+        $messages = $adapter->handle(
+            $this->toolsCallRequest(1, 'whmcs_convert_quote_to_invoice', [
+                'quoteid' => 10,
+                'duedate' => '2026-08-10T00:00:00Z',
+            ]),
+            'client-m2-partial1',
+            'tools/call'
+        );
+
+        $text = $this->callText($messages, 1);
+        $this->assertStringNotContainsString('Tool execution failed', $text, 'não pode virar erro genérico');
+
+        $payload = json_decode($text, true);
+        $this->assertIsArray($payload, "resposta não é JSON do contrato: {$text}");
+        $this->assertSame('error', $payload['result']);
+        $this->assertTrue($payload['partial']);
+        $this->assertSame(10, $payload['quoteid']);
+        $this->assertSame(99, $payload['invoiceid']);
+        $this->assertStringContainsString('NÃO repetir', $payload['warning']);
+    }
+
+    public function test_exception_on_first_effect_returns_indeterminate_partial(): void
+    {
+        $adapter = $this->makeCallableAdapter(['financial' => true], function (string $cmd) {
+            if ($cmd === 'GetQuotes') {
+                return ['result' => 'success', 'quotes' => ['quote' => [['id' => 10, 'stage' => 'Delivered']]]];
+            }
+
+            throw new \RuntimeException('timeout');
+        });
+
+        $messages = $adapter->handle(
+            $this->toolsCallRequest(1, 'whmcs_convert_quote_to_invoice', ['quoteid' => 10]),
+            'client-m2-partial2',
+            'tools/call'
+        );
+
+        $payload = json_decode($this->callText($messages, 1), true);
+        $this->assertIsArray($payload);
+        $this->assertSame('error', $payload['result']);
+        $this->assertTrue($payload['partial']);
+        $this->assertStringContainsString('MAY have been accepted', $payload['message']);
+        $this->assertStringContainsString('NÃO repetir', $payload['warning']);
+    }
+
+    // ---------------------------------------------------------------
+    // M4 — gateway validado antes do primeiro efeito, pelo protocolo real.
+    // ---------------------------------------------------------------
+
+    public function test_unknown_payment_gateway_is_rejected_before_any_effect(): void
+    {
+        $calls = [];
+        $adapter = $this->makeCallableAdapter(['financial' => true], function (string $cmd) use (&$calls) {
+            $calls[] = $cmd;
+            if ($cmd === 'GetQuotes') {
+                return ['result' => 'success', 'quotes' => ['quote' => [['id' => 10, 'stage' => 'Delivered']]]];
+            }
+            return ['result' => 'success', 'invoiceid' => 99];
+        });
+
+        $messages = $adapter->handle(
+            $this->toolsCallRequest(1, 'whmcs_convert_quote_to_invoice', [
+                'quoteid' => 10,
+                'paymentmethod' => 'definitely-not-a-gateway',
+            ]),
+            'client-m4-gateway1',
+            'tools/call'
+        );
+
+        $this->assertTrue($this->callOutcome($messages, 1)['isError'] ?? false);
+        // Sem WHMCS bootstrapado a introspecção é indisponível ⇒ fail-closed.
+        $this->assertStringContainsString('payment gateway', $this->callText($messages, 1));
+        $this->assertSame([], $calls, 'nenhum efeito pode ocorrer sem validar o gateway');
     }
 
     // --- GC de clientes ociosos (raiz do storm queueMessageForAll) ---
