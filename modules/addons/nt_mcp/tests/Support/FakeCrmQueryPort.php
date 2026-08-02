@@ -32,6 +32,8 @@ final class FakeCrmQueryPort implements CrmQueryPort
 
     private ?\Throwable $failure = null;
 
+    private ?\Throwable $rawFailure = null;
+
     /** @param array<int, array<string, mixed>> $rows */
     public function seed(string $table, array $rows): self
     {
@@ -47,6 +49,20 @@ final class FakeCrmQueryPort implements CrmQueryPort
         return $this;
     }
 
+    /**
+     * Falha CRUA, sem passar pela conversão em `CrmException`.
+     *
+     * Simula o que o port real NÃO faz — deixar um `Throwable` escapar — para
+     * exercitar a fronteira de último recurso da tool. É esse caminho que a
+     * revisão fria usou para publicar SQLSTATE, senha, path e e-mail.
+     */
+    public function failWithRaw(\Throwable $failure): self
+    {
+        $this->rawFailure = $failure;
+
+        return $this;
+    }
+
     /** @var array<int, CrmCount> */
     public array $counts = [];
 
@@ -54,13 +70,22 @@ final class FakeCrmQueryPort implements CrmQueryPort
     {
         $this->selects[] = $select;
 
+        if ($this->rawFailure !== null) {
+            throw $this->rawFailure;
+        }
+
         if ($this->failure !== null) {
             throw CrmException::downstream(
                 Diagnostics::report(Diagnostics::CATEGORY_DB_EXCEPTION, 'crm_select', $this->failure)
             );
         }
 
-        $rows = $this->matching($select->table, $select->conditions, $select->nullColumns);
+        $rows = $this->matching(
+            $select->table,
+            $select->conditions,
+            $select->nullColumns,
+            $select->inConditions
+        );
 
         $rows = self::sortRows($rows, $select->order);
 
@@ -89,6 +114,10 @@ final class FakeCrmQueryPort implements CrmQueryPort
     {
         $this->counts[] = $count;
 
+        if ($this->rawFailure !== null) {
+            throw $this->rawFailure;
+        }
+
         if ($this->failure !== null) {
             throw CrmException::downstream(
                 Diagnostics::report(Diagnostics::CATEGORY_DB_EXCEPTION, 'crm_select', $this->failure)
@@ -98,6 +127,49 @@ final class FakeCrmQueryPort implements CrmQueryPort
         return count($this->matching($count->table, $count->conditions, $count->nullColumns));
     }
 
+    /**
+     * Comparação de inteiros SEM ponto flutuante.
+     *
+     * O dublê antes convertia os dois lados para `float`, e `float` não
+     * distingue inteiros acima de `2^53`: `9007199254740992` e
+     * `9007199254740993` viravam o mesmo número, então a ordenação saía errada
+     * — no fake. O MySQL ordena BIGINT sem essa perda, então a regressão
+     * passava aqui e quebraria em produção.
+     *
+     * A comparação é por sinal, depois comprimento, depois lexicografia — o que
+     * é exatamente a ordem numérica para inteiros normalizados, em qualquer
+     * magnitude.
+     */
+    private static function compareIntegerStrings(string $left, string $right): int
+    {
+        $leftNegative = str_starts_with($left, '-');
+        $rightNegative = str_starts_with($right, '-');
+
+        if ($leftNegative !== $rightNegative) {
+            return $leftNegative ? -1 : 1;
+        }
+
+        $leftDigits = ltrim(ltrim($left, '+-'), '0');
+        $rightDigits = ltrim(ltrim($right, '+-'), '0');
+        $leftDigits = $leftDigits === '' ? '0' : $leftDigits;
+        $rightDigits = $rightDigits === '' ? '0' : $rightDigits;
+
+        $comparison = strlen($leftDigits) <=> strlen($rightDigits);
+
+        if ($comparison === 0) {
+            $comparison = strcmp($leftDigits, $rightDigits);
+        }
+
+        return $leftNegative ? -$comparison : $comparison;
+    }
+
+    /** Inteiro PHP ou string de dígitos — o que o driver devolve para BIGINT. */
+    private static function isIntegerLike(mixed $value): bool
+    {
+        return is_int($value)
+            || (is_string($value) && preg_match('/^[+-]?\d+\z/', $value) === 1);
+    }
+
     /** @return array<int, string> */
     public function selectedTables(): array
     {
@@ -105,16 +177,28 @@ final class FakeCrmQueryPort implements CrmQueryPort
     }
 
     /**
-     * @param array<string, int|string> $conditions
-     * @param array<int, string>        $nullColumns
+     * @param array<string, int|string>      $conditions
+     * @param array<int, string>             $nullColumns
+     * @param array<string, array<int, int>> $inConditions
      * @return array<int, array<string, mixed>>
      */
-    private function matching(string $table, array $conditions, array $nullColumns): array
-    {
+    private function matching(
+        string $table,
+        array $conditions,
+        array $nullColumns,
+        array $inConditions = [],
+    ): array {
         $rows = $this->rows[$table] ?? [];
 
         foreach ($conditions as $column => $value) {
             $rows = array_filter($rows, static fn(array $row): bool => ($row[$column] ?? null) == $value);
+        }
+
+        foreach ($inConditions as $column => $values) {
+            $rows = array_filter(
+                $rows,
+                static fn(array $row): bool => in_array((int) ($row[$column] ?? 0), $values, true)
+            );
         }
 
         foreach ($nullColumns as $column) {
@@ -143,10 +227,11 @@ final class FakeCrmQueryPort implements CrmQueryPort
                 $left = $a[$column] ?? null;
                 $right = $b[$column] ?? null;
 
-                // Numérico quando ambos os lados são numéricos: o driver
-                // devolve id como string e '10' < '9' em comparação textual.
-                $comparison = (is_numeric($left) && is_numeric($right))
-                    ? ((float) $left <=> (float) $right)
+                // Inteiro (inclusive na forma string do driver) compara como
+                // inteiro — '10' < '9' em texto puro. BIGINT não passa por
+                // `float`, que perderia precisão acima de 2^53.
+                $comparison = (self::isIntegerLike($left) && self::isIntegerLike($right))
+                    ? self::compareIntegerStrings((string) $left, (string) $right)
                     : ((string) $left <=> (string) $right);
 
                 if ($comparison !== 0) {

@@ -150,6 +150,28 @@ final class CrmException extends \RuntimeException
     }
 
     /**
+     * INTEGRIDADE QUEBRADA no mgCRM2 (D13): uma linha que o dado referencia não
+     * existe ou está soft-deleted.
+     *
+     * Sai como `downstream` porque não é erro do chamador — nenhuma correção de
+     * input conserta um `field_id` órfão ou um `type_id` apagado — e não é
+     * ausência de schema, que tem códigos próprios. O desenho anterior
+     * descartava esses casos em silêncio (`custom_fields:[]`, `*_name:null`),
+     * tornando corrupção indistinguível de dado legítimo; foi o que a revisão
+     * fria reprovou.
+     *
+     * O `$context` é literal NOSSO e vai apenas para o diagnóstico fechado; o
+     * chamador recebe código, mensagem genérica e correlação.
+     */
+    public static function integrity(string $context): self
+    {
+        return self::downstream(Diagnostics::report(
+            Diagnostics::CATEGORY_RUNTIME,
+            'crm_integrity_' . $context
+        ));
+    }
+
+    /**
      * Forma pública mínima. A tool decide se e como serializa; aqui garantimos
      * que só o código fechado e a correlação atravessam.
      *

@@ -28,6 +28,7 @@ final class CrmSelect
      * @param array<string, int|string>          $conditions coluna => valor (igualdade)
      * @param array<int, string>                 $nullColumns colunas exigidas `IS NULL`
      * @param array<int, array{0:string,1:string}> $order
+     * @param array<string, array<int, int>>     $inConditions coluna => ids (`IN`)
      */
     public function __construct(
         public readonly string $table,
@@ -37,6 +38,7 @@ final class CrmSelect
         public readonly array $order = [],
         public readonly int $limit = CrmSchema::DEFAULT_LIMIT,
         public readonly int $offset = 0,
+        public readonly array $inConditions = [],
     ) {
         if (!CrmSchema::isKnownTable($table)) {
             throw new \LogicException('CrmSelect: unknown CRM table.');
@@ -79,6 +81,41 @@ final class CrmSelect
 
         if ($offset < 0 || $offset > CrmSchema::MAX_OFFSET) {
             throw new \LogicException('CrmSelect: offset outside the shared read bounds.');
+        }
+
+        self::assertInConditions($table, $inConditions, $known);
+    }
+
+    /**
+     * `IN` FECHADO — a única forma de resolver um lote de ids sem N+1.
+     *
+     * Continua sem operador escolhível: a coluna vem do catálogo fixo, os
+     * valores são exclusivamente ids inteiros positivos (nunca string, nunca
+     * expressão) e a lista tem teto. Uma lista VAZIA é recusada de propósito:
+     * `IN ()` é SQL inválido em MySQL e, pior, um chamador interno que montasse
+     * um lote vazio esperaria "nenhum filtro" e receberia a tabela inteira.
+     *
+     * @param array<string, array<int, int>> $inConditions
+     * @param array<int, string>             $known
+     */
+    private static function assertInConditions(string $table, array $inConditions, array $known): void
+    {
+        foreach ($inConditions as $column => $values) {
+            self::assertColumn((string) $column, $known);
+
+            if (!is_array($values) || $values === []) {
+                throw new \LogicException('CrmSelect: an IN condition requires a non-empty id list.');
+            }
+
+            if (count($values) > CrmSchema::MAX_IN_VALUES) {
+                throw new \LogicException('CrmSelect: IN condition exceeds the shared batch bound.');
+            }
+
+            foreach ($values as $value) {
+                if (!is_int($value) || $value < 1) {
+                    throw new \LogicException('CrmSelect: IN conditions accept positive integer ids only.');
+                }
+            }
         }
     }
 

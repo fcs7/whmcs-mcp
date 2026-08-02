@@ -234,9 +234,12 @@ class CrmReadAdapterTest extends TestCase
         $payload = $this->payload('whmcs_crm_get_kanban', []);
 
         $this->assertSame(
-            ['type_id', 'limit_per_status', 'catalogs', 'lanes', 'lanes_truncated'],
-            array_keys($payload)
+            ['type_id', 'limit_per_status', 'catalogs', 'lanes'],
+            array_keys($payload),
+            'metadata de eco no topo é shape estável; lanes_truncated não existe mais'
         );
+        $this->assertNull($payload['type_id']);
+        $this->assertSame(25, $payload['limit_per_status']);
         $this->assertSame(
             ['resource_types', 'resource_statuses', 'followup_types', 'followup_statuses'],
             array_keys($payload['catalogs'])
@@ -253,7 +256,6 @@ class CrmReadAdapterTest extends TestCase
         $this->assertSame(1, $payload['lanes'][0]['total'], 'o soft-deleted não entra no total');
         $this->assertSame([42], array_column($payload['lanes'][0]['items'], 'resource_id'));
         $this->assertFalse($payload['lanes'][0]['has_more']);
-        $this->assertFalse($payload['lanes_truncated']);
     }
 
     /** Duas chamadas idênticas produzem a MESMA saída, byte a byte. */
@@ -401,9 +403,6 @@ class CrmReadAdapterTest extends TestCase
             'recurso soft-deleted' => [
                 'whmcs_crm_get_contact', ['resource_id' => 44], 'crm_resource_not_found', null,
             ],
-            'id não positivo' => [
-                'whmcs_crm_get_contact', ['resource_id' => 0], 'validation', null,
-            ],
             'catálogo inativo no filtro' => [
                 'whmcs_crm_list_contacts', ['type_id' => 3], 'crm_catalog_invalid', null,
             ],
@@ -420,6 +419,218 @@ class CrmReadAdapterTest extends TestCase
                 'whmcs_crm_list_followups', ['resource_id' => 42], 'crm_unavailable', CrmSchema::TABLE_FOLLOWUPS,
             ],
         ];
+    }
+
+    // ---------------------------------------------------------------
+    // Boundary MCP — isError e Throwable envenenado
+    // ---------------------------------------------------------------
+
+    /**
+     * Falha de domínio é ERRO MCP, não sucesso com conteúdo de erro.
+     *
+     * A SDK só marca `isError` quando a tool lança; deixá-la lançar publicaria
+     * a mensagem crua pelo formatter. Por isso a marcação é feita na fronteira,
+     * a partir do envelope canônico.
+     *
+     * @param array<string, mixed> $arguments
+     */
+    #[DataProvider('canonicalErrorProvider')]
+    public function test_domain_failures_are_marked_as_mcp_errors(
+        string $tool,
+        array $arguments,
+        string $expectedCode,
+        ?string $dropTable,
+    ): void {
+        $probe = $dropTable === null
+            ? FakeCrmSchemaProbe::healthy()
+            : FakeCrmSchemaProbe::healthy()->dropTable($dropTable);
+
+        $outcome = $this->call($tool, $arguments, $probe);
+
+        $this->assertArrayNotHasKey('jsonrpc_error', $outcome);
+        $this->assertTrue($outcome['isError'] ?? false, 'falha de leitura não pode sair como sucesso');
+
+        $decoded = json_decode((string) ($outcome['content'][0]['text'] ?? ''), true);
+        $this->assertSame($expectedCode, $decoded['error_code'] ?? null);
+    }
+
+    /** Sucesso continua sucesso — a marcação é restrita ao envelope de erro. */
+    public function test_successful_reads_are_not_marked_as_errors(): void
+    {
+        foreach ([
+            ['whmcs_crm_list_contacts', []],
+            ['whmcs_crm_get_contact', ['resource_id' => 42]],
+            ['whmcs_crm_list_followups', ['resource_id' => 42]],
+            ['whmcs_crm_get_kanban', []],
+        ] as [$tool, $arguments]) {
+            $outcome = $this->call($tool, $arguments);
+
+            $this->assertFalse($outcome['isError'] ?? true, "{$tool} deveria ser sucesso");
+        }
+    }
+
+    /**
+     * `Throwable` inesperado com mensagem envenenada: vira `downstream`
+     * sanitizado, com `isError:true`, e NADA da causa chega ao payload.
+     *
+     * A reprodução da revisão fria publicou SQLSTATE, senha, path e e-mail por
+     * este caminho, via `'Tool execution failed: ' . $e->getMessage()`.
+     */
+    public function test_poisoned_throwable_never_reaches_the_payload(): void
+    {
+        $poison = 'SQLSTATE[HY000] password=hunter2 /srv/whmcs/configuration.php '
+            . 'user@example.test cpf=11144477735 SELECT * FROM crm_resources';
+
+        $this->port->failWithRaw(new \RuntimeException($poison));
+
+        $outcome = $this->call('whmcs_crm_get_contact', ['resource_id' => 42]);
+
+        $this->assertArrayNotHasKey('jsonrpc_error', $outcome);
+        $this->assertTrue($outcome['isError'] ?? false);
+
+        $text = (string) ($outcome['content'][0]['text'] ?? '');
+        $decoded = json_decode($text, true);
+
+        $this->assertSame('downstream', $decoded['error_code'] ?? null);
+        $this->assertNotEmpty($decoded['correlation_id'] ?? '');
+
+        foreach ([
+            'SQLSTATE', 'hunter2', '/srv/whmcs', 'user@example.test',
+            '11144477735', 'SELECT', 'crm_resources', 'RuntimeException',
+            'Tool execution failed',
+        ] as $forbidden) {
+            $this->assertStringNotContainsString($forbidden, $text, "vazou: {$forbidden}");
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Argumentos fechados
+    // ---------------------------------------------------------------
+
+    /**
+     * Nome legado SOZINHO e AO LADO do canônico: os dois são recusados antes da
+     * invocação. Antes, `{type:"lead"}` era ignorado e a leitura devolvia a
+     * base inteira; `{resource_id:42, id:999}` passava com a identidade ambígua.
+     *
+     * @param array<string, mixed> $arguments
+     */
+    #[DataProvider('unknownArgumentProvider')]
+    public function test_unknown_arguments_are_rejected(string $tool, array $arguments): void
+    {
+        $outcome = $this->call($tool, $arguments);
+
+        $this->assertArrayHasKey('jsonrpc_error', $outcome, json_encode($outcome));
+        $this->assertSame(-32602, $outcome['jsonrpc_error']['code'] ?? null);
+    }
+
+    /** @return array<string, array{0:string, 1:array<string, mixed>}> */
+    public static function unknownArgumentProvider(): array
+    {
+        return [
+            'list_contacts type sozinho' => ['whmcs_crm_list_contacts', ['type' => 'lead']],
+            'list_contacts type + type_id' => [
+                'whmcs_crm_list_contacts', ['type' => 'lead', 'type_id' => 1],
+            ],
+            'get_contact id + resource_id' => [
+                'whmcs_crm_get_contact', ['resource_id' => 42, 'id' => 999],
+            ],
+            'get_contact contactId + resource_id' => [
+                'whmcs_crm_get_contact', ['resource_id' => 42, 'contactId' => 999],
+            ],
+            'list_followups contactId + resource_id' => [
+                'whmcs_crm_list_followups', ['resource_id' => 42, 'contactId' => 999],
+            ],
+            'list_followups id + resource_id' => [
+                'whmcs_crm_list_followups', ['resource_id' => 42, 'id' => 999],
+            ],
+            'get_kanban stage desconhecido' => ['whmcs_crm_get_kanban', ['stage' => 'New']],
+            'get_kanban limit legado' => ['whmcs_crm_get_kanban', ['limit' => 10]],
+        ];
+    }
+
+    /**
+     * Somente ausência/`null` é "sem filtro": `0` e negativos são recusados
+     * pelo schema, em TODOS os filtros de id, e nunca ampliam a leitura.
+     *
+     * @param array<string, mixed> $arguments
+     */
+    #[DataProvider('nonPositiveIdProvider')]
+    public function test_zero_and_negative_ids_are_refused(string $tool, array $arguments): void
+    {
+        $outcome = $this->call($tool, $arguments);
+
+        $this->assertArrayHasKey('jsonrpc_error', $outcome, json_encode($outcome));
+        $this->assertSame(-32602, $outcome['jsonrpc_error']['code'] ?? null);
+    }
+
+    /** @return array<string, array{0:string, 1:array<string, mixed>}> */
+    public static function nonPositiveIdProvider(): array
+    {
+        return [
+            'list_contacts type_id 0' => ['whmcs_crm_list_contacts', ['type_id' => 0]],
+            'list_contacts type_id negativo' => ['whmcs_crm_list_contacts', ['type_id' => -1]],
+            'list_contacts status_id 0' => ['whmcs_crm_list_contacts', ['status_id' => 0]],
+            'get_contact resource_id 0' => ['whmcs_crm_get_contact', ['resource_id' => 0]],
+            'get_contact resource_id negativo' => ['whmcs_crm_get_contact', ['resource_id' => -5]],
+            'list_followups resource_id 0' => ['whmcs_crm_list_followups', ['resource_id' => 0]],
+            'list_followups type_id 0' => [
+                'whmcs_crm_list_followups', ['resource_id' => 42, 'type_id' => 0],
+            ],
+            'list_followups status_id negativo' => [
+                'whmcs_crm_list_followups', ['resource_id' => 42, 'status_id' => -2],
+            ],
+            'get_kanban type_id 0' => ['whmcs_crm_get_kanban', ['type_id' => 0]],
+            'get_kanban limit_per_status 0' => ['whmcs_crm_get_kanban', ['limit_per_status' => 0]],
+        ];
+    }
+
+    /** `null` explícito continua significando "sem filtro". */
+    public function test_explicit_null_is_still_no_filter(): void
+    {
+        $payload = $this->payload('whmcs_crm_list_contacts', ['type_id' => null, 'status_id' => null]);
+
+        $this->assertSame(2, $payload['count']);
+    }
+
+    /** O endurecimento é publicado no schema, e restrito às quatro READ. */
+    public function test_only_the_four_reads_are_closed(): void
+    {
+        foreach (\NtMcp\Mcp\CrmReadBoundary::READ_TOOLS as $tool) {
+            $this->assertFalse(
+                $this->publishedSchema($tool)['additionalProperties'] ?? null,
+                "{$tool} deveria recusar propriedades desconhecidas"
+            );
+        }
+
+        foreach ([
+            'whmcs_crm_create_lead', 'whmcs_crm_update_contact',
+            'whmcs_crm_add_followup', 'whmcs_crm_add_note',
+            'whmcs_list_clients', 'whmcs_get_invoice',
+        ] as $untouched) {
+            $this->assertArrayNotHasKey(
+                'additionalProperties',
+                $this->publishedSchema($untouched),
+                "{$untouched} não pode ter sido fechada por CRM-2.1"
+            );
+        }
+    }
+
+    /** Os limites positivos aparecem no schema publicado dos filtros de id. */
+    public function test_published_schemas_bound_the_id_filters(): void
+    {
+        $this->assertSame(
+            1,
+            $this->publishedSchema('whmcs_crm_get_contact')['properties']['resource_id']['minimum'] ?? null
+        );
+        $this->assertSame(
+            1,
+            $this->publishedSchema('whmcs_crm_list_contacts')['properties']['type_id']['minimum'] ?? null
+        );
+        $this->assertSame(
+            ['integer', 'null'],
+            $this->publishedSchema('whmcs_crm_list_contacts')['properties']['type_id']['type'] ?? null,
+            'null continua permitido — é o único "sem filtro"'
+        );
     }
 
     // ---------------------------------------------------------------

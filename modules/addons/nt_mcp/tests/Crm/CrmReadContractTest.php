@@ -371,22 +371,119 @@ class CrmReadContractTest extends TestCase
         );
     }
 
-    /** Definição soft-deleted não aparece, nem como campo sem nome. */
-    public function test_soft_deleted_field_definitions_are_dropped(): void
+    /**
+     * Valor vivo apontando para definição soft-deleted/ausente é INTEGRIDADE
+     * QUEBRADA, não um campo a descartar em silêncio.
+     *
+     * O descarte anterior era indistinguível de "o recurso não tem esse campo":
+     * a leitura apresentava um contato incompleto como completo.
+     */
+    #[DataProvider('orphanDefinitionProvider')]
+    public function test_orphan_field_definition_breaks_integrity(?string $deletedAt): void
     {
         $this->seedResources([self::resourceRow(42)]);
-        $this->port->seed(CrmSchema::TABLE_FIELDS, [
+        $this->port->seed(CrmSchema::TABLE_FIELDS, array_values(array_filter([
             ['id' => 5, 'name' => 'Visivel', 'deleted_at' => null],
-            ['id' => 7, 'name' => 'Removido', 'deleted_at' => '2026-01-01 00:00:00'],
-        ]);
+            $deletedAt === null ? null : ['id' => 7, 'name' => 'Removido', 'deleted_at' => $deletedAt],
+        ])));
         $this->port->seed(CrmSchema::TABLE_FIELD_VALUES, [
             ['id' => 100, 'field_id' => 5, 'resource_id' => 42, 'value' => 'ok'],
             ['id' => 101, 'field_id' => 7, 'resource_id' => 42, 'value' => 'segredo'],
         ]);
 
+        $failure = $this->capture(fn() => $this->repository()->getResource(42));
+
+        $this->assertSame(CrmErrorCode::Downstream, $failure->errorCode);
+        $this->assertStringNotContainsString('segredo', $failure->getMessage());
+    }
+
+    /** @return array<string, array{0:string|null}> */
+    public static function orphanDefinitionProvider(): array
+    {
+        return [
+            'definição soft-deleted' => ['2026-01-01 00:00:00'],
+            'definição ausente' => [null],
+        ];
+    }
+
+    /**
+     * Definição além da PRIMEIRA página do catálogo global continua resolvida:
+     * o lote é montado com os `field_id` do recurso, não varrendo `crm_fields`.
+     */
+    public function test_definition_beyond_the_first_page_is_still_resolved(): void
+    {
+        $this->seedResources([self::resourceRow(42)]);
+        $this->port->seed(CrmSchema::TABLE_FIELDS, array_map(
+            static fn(int $id): array => [
+                'id' => $id,
+                'name' => sprintf('F%04d', $id),
+                'deleted_at' => null,
+            ],
+            range(1, 250)
+        ));
+        $this->port->seed(CrmSchema::TABLE_FIELD_VALUES, [
+            ['id' => 100, 'field_id' => 231, 'resource_id' => 42, 'value' => 'longe'],
+        ]);
+
+        $this->assertSame(
+            [['field_id' => 231, 'name' => 'F0231', 'value' => 'longe']],
+            $this->repository()->getResource(42)['custom_fields']
+        );
+    }
+
+    /** Todos os values do recurso, mesmo acima de uma página. */
+    public function test_custom_field_values_beyond_one_chunk_are_complete(): void
+    {
+        $this->seedResources([self::resourceRow(42)]);
+        $this->port->seed(CrmSchema::TABLE_FIELDS, array_map(
+            static fn(int $id): array => [
+                'id' => $id,
+                'name' => sprintf('F%04d', $id),
+                'deleted_at' => null,
+            ],
+            range(1, 130)
+        ));
+        $this->port->seed(CrmSchema::TABLE_FIELD_VALUES, array_map(
+            static fn(int $id): array => [
+                'id' => $id,
+                'field_id' => $id,
+                'resource_id' => 42,
+                'value' => 'v' . $id,
+            ],
+            range(1, 130)
+        ));
+
         $fields = $this->repository()->getResource(42)['custom_fields'];
 
-        $this->assertSame([['field_id' => 5, 'name' => 'Visivel', 'value' => 'ok']], $fields);
+        $this->assertCount(130, $fields);
+        $this->assertSame(130, $fields[129]['field_id'], 'o 130º campo não pode sumir');
+    }
+
+    /** Vários values do mesmo campo são preservados, em ordem determinística. */
+    public function test_multiple_values_of_the_same_field_are_preserved(): void
+    {
+        $this->seedResources([self::resourceRow(42)]);
+        $this->port->seed(CrmSchema::TABLE_FIELDS, [
+            ['id' => 5, 'name' => 'Tag', 'deleted_at' => null],
+            ['id' => 6, 'name' => 'Budget', 'deleted_at' => null],
+        ]);
+        $this->port->seed(CrmSchema::TABLE_FIELD_VALUES, [
+            ['id' => 103, 'field_id' => 5, 'resource_id' => 42, 'value' => 'gamma'],
+            ['id' => 101, 'field_id' => 5, 'resource_id' => 42, 'value' => 'alpha'],
+            ['id' => 102, 'field_id' => 5, 'resource_id' => 42, 'value' => 'alpha'],
+            ['id' => 100, 'field_id' => 6, 'resource_id' => 42, 'value' => '1200'],
+        ]);
+
+        $this->assertSame(
+            [
+                ['field_id' => 6, 'name' => 'Budget', 'value' => '1200'],
+                ['field_id' => 5, 'name' => 'Tag', 'value' => 'alpha'],
+                ['field_id' => 5, 'name' => 'Tag', 'value' => 'alpha'],
+                ['field_id' => 5, 'name' => 'Tag', 'value' => 'gamma'],
+            ],
+            $this->repository()->getResource(42)['custom_fields'],
+            'duplicatas preservadas; ordem por nome, field_id e id do valor'
+        );
     }
 
     /**
@@ -426,9 +523,13 @@ class CrmReadContractTest extends TestCase
         $this->port->seed(CrmSchema::TABLE_FIELD_VALUES, []);
 
         $this->assertSame([], $this->repository()->getResource(42)['custom_fields']);
+
+        // A varredura conta antes de paginar: com total zero, nenhuma página é
+        // buscada e a resolução de definições nem começa.
+        $this->assertSame([CrmSchema::TABLE_RESOURCES], $this->port->selectedTables());
         $this->assertSame(
-            [CrmSchema::TABLE_RESOURCES, CrmSchema::TABLE_FIELD_VALUES],
-            $this->port->selectedTables()
+            [CrmSchema::TABLE_FIELD_VALUES],
+            array_map(static fn($count): string => $count->table, $this->port->counts)
         );
     }
 
@@ -520,19 +621,115 @@ class CrmReadContractTest extends TestCase
         $this->assertArrayNotHasKey('admin_id', $page['items'][0]);
     }
 
-    /** Follow-up histórico de catálogo desativado mantém o id e perde o label. */
-    public function test_unresolvable_label_is_null_and_never_invented(): void
+    /**
+     * D13 — tipo/status EXISTENTE, não soft-deleted, porém `active = 0`
+     * continua resolvendo o nome histórico.
+     *
+     * O follow-up antigo aponta legitimamente para um tipo que saiu de
+     * circulação; perder o rótulo apagaria informação histórica válida.
+     */
+    public function test_inactive_catalog_still_resolves_the_historical_label(): void
     {
         $this->seedCatalogs();
+        $this->port->seed(CrmSchema::TABLE_FOLLOWUP_TYPES, [
+            ['id' => 20, 'name' => 'Ligacao', 'active' => 1, 'deleted_at' => null],
+            ['id' => 21, 'name' => 'Telegrama', 'active' => 0, 'deleted_at' => null],
+        ]);
         $this->seedResources([self::resourceRow(42)]);
-        $this->seedFollowups([self::followupRow(1, typeId: 77, statusId: 88)]);
+        $this->seedFollowups([self::followupRow(1, typeId: 21)]);
 
         $item = $this->repository()->listFollowups(42, null, null, 25, 0)['items'][0];
 
-        $this->assertSame(77, $item['type_id']);
-        $this->assertNull($item['type_name']);
-        $this->assertSame(88, $item['status_id']);
-        $this->assertNull($item['status_name']);
+        $this->assertSame(21, $item['type_id']);
+        $this->assertSame('Telegrama', $item['type_name'], 'nome histórico preservado');
+    }
+
+    /** ...mas o catálogo PUBLICADO continua só com os ativos. */
+    public function test_inactive_catalog_entry_stays_out_of_the_published_catalog(): void
+    {
+        $this->seedCatalogs();
+        $this->port->seed(CrmSchema::TABLE_FOLLOWUP_TYPES, [
+            ['id' => 20, 'name' => 'Ligacao', 'active' => 1, 'deleted_at' => null],
+            ['id' => 21, 'name' => 'Telegrama', 'active' => 0, 'deleted_at' => null],
+        ]);
+        $this->seedResources([]);
+
+        $this->assertSame(
+            [['id' => 20, 'name' => 'Ligacao']],
+            $this->repository()->getKanban(null, 25)['catalogs']['followup_types']
+        );
+    }
+
+    /**
+     * D13 — referência soft-deleted, ausente ou com nome inutilizável é
+     * integridade quebrada. O `*_name: null` ambíguo não existe mais.
+     *
+     * @param array<int, array<string, mixed>> $types
+     */
+    #[DataProvider('brokenLabelReferenceProvider')]
+    public function test_broken_label_reference_fails_as_integrity(array $types, int $typeId): void
+    {
+        $this->seedCatalogs();
+        $this->port->seed(CrmSchema::TABLE_FOLLOWUP_TYPES, $types);
+        $this->seedResources([self::resourceRow(42)]);
+        $this->seedFollowups([self::followupRow(1, typeId: $typeId)]);
+
+        $this->assertSame(
+            CrmErrorCode::Downstream,
+            $this->capture(fn() => $this->repository()->listFollowups(42, null, null, 25, 0))->errorCode
+        );
+    }
+
+    /** @return array<string, array{0:array<int, array<string, mixed>>, 1:int}> */
+    public static function brokenLabelReferenceProvider(): array
+    {
+        return [
+            'referência soft-deleted' => [
+                [['id' => 22, 'name' => 'Apagado', 'active' => 1, 'deleted_at' => '2026-01-01 00:00:00']],
+                22,
+            ],
+            'referência ausente' => [
+                [['id' => 20, 'name' => 'Ligacao', 'active' => 1, 'deleted_at' => null]],
+                77,
+            ],
+            'nome vazio' => [
+                [['id' => 23, 'name' => '', 'active' => 1, 'deleted_at' => null]],
+                23,
+            ],
+        ];
+    }
+
+    /** Os labels são resolvidos em LOTE pelos ids da página, sem N+1. */
+    public function test_labels_are_resolved_in_one_batch_per_catalog(): void
+    {
+        $this->seedCatalogs();
+        $this->port->seed(CrmSchema::TABLE_FOLLOWUP_TYPES, array_map(
+            static fn(int $id): array => [
+                'id' => $id,
+                'name' => 'T' . $id,
+                'active' => 1,
+                'deleted_at' => null,
+            ],
+            range(20, 60)
+        ));
+        $this->seedResources([self::resourceRow(42)]);
+        $this->seedFollowups(array_map(
+            static fn(int $id): array => self::followupRow(
+                $id,
+                typeId: 19 + $id,
+                date: sprintf('2026-07-%02d 09:00:00', $id)
+            ),
+            range(1, 25)
+        ));
+
+        $this->repository()->listFollowups(42, null, null, 25, 0);
+
+        $labelSelects = array_filter(
+            $this->port->selects,
+            static fn($select): bool => $select->inConditions !== []
+        );
+
+        $this->assertCount(2, $labelSelects, 'um lote por catálogo, não um por follow-up');
     }
 
     public function test_followups_of_an_unknown_resource_are_not_found(): void
@@ -728,14 +925,13 @@ class CrmReadContractTest extends TestCase
         );
     }
 
-    /** Corte de raias é declarado, nunca silencioso. */
-    public function test_kanban_reports_when_lanes_are_truncated(): void
+    /**
+     * TODO status ativo vira raia. O desenho anterior parava em 25 e anunciava
+     * a omissão num campo — o recurso do 30º status simplesmente sumia.
+     */
+    public function test_every_active_status_gets_a_lane(): void
     {
         $this->seedCatalogs();
-        $this->seedResources([]);
-
-        $this->assertFalse($this->repository()->getKanban(null, 25)['lanes_truncated']);
-
         $this->port->seed(CrmSchema::TABLE_RESOURCE_STATUSES, array_map(
             static fn(int $id): array => [
                 'id' => $id,
@@ -743,14 +939,150 @@ class CrmReadContractTest extends TestCase
                 'active' => 1,
                 'deleted_at' => null,
             ],
-            range(1, CrmSchema::MAX_KANBAN_LANES + 5)
+            range(1, 30)
         ));
+        $this->seedResources([self::resourceRow(7, statusId: 30)]);
 
         $kanban = $this->repository()->getKanban(null, 25);
 
-        $this->assertCount(CrmSchema::MAX_KANBAN_LANES, $kanban['lanes']);
-        $this->assertCount(CrmSchema::MAX_KANBAN_LANES + 5, $kanban['catalogs']['resource_statuses']);
-        $this->assertTrue($kanban['lanes_truncated']);
+        $this->assertCount(30, $kanban['lanes']);
+        $this->assertArrayNotHasKey('lanes_truncated', $kanban);
+
+        $lane30 = $kanban['lanes'][29];
+        $this->assertSame(30, $lane30['status_id']);
+        $this->assertSame(1, $lane30['total'], 'o recurso do 30º status não pode desaparecer');
+        $this->assertSame([7], array_column($lane30['items'], 'resource_id'));
+    }
+
+    /** Raia vazia não paga a consulta de itens — o custo segue os statuses com dado. */
+    public function test_empty_lanes_do_not_query_items(): void
+    {
+        $this->seedCatalogs();
+        $this->port->seed(CrmSchema::TABLE_RESOURCE_STATUSES, array_map(
+            static fn(int $id): array => [
+                'id' => $id,
+                'name' => sprintf('S%03d', $id),
+                'active' => 1,
+                'deleted_at' => null,
+            ],
+            range(1, 30)
+        ));
+        $this->seedResources([self::resourceRow(7, statusId: 30)]);
+
+        $this->repository()->getKanban(null, 25);
+
+        $laneSelects = array_filter(
+            $this->port->selects,
+            static fn($select): bool => $select->table === CrmSchema::TABLE_RESOURCES
+        );
+
+        $this->assertCount(1, $laneSelects, 'só a raia com recurso consulta itens');
+    }
+
+    /** Catálogo completo acima de uma página — o 101º id continua publicável. */
+    public function test_catalogs_are_complete_beyond_one_chunk(): void
+    {
+        $this->seedCatalogs();
+        $this->port->seed(CrmSchema::TABLE_RESOURCE_TYPES, array_map(
+            static fn(int $id): array => [
+                'id' => $id,
+                'name' => sprintf('T%04d', $id),
+                'active' => 1,
+                'deleted_at' => null,
+            ],
+            range(1, 101)
+        ));
+        $this->seedResources([]);
+
+        $types = $this->repository()->getKanban(null, 25)['catalogs']['resource_types'];
+
+        $this->assertCount(101, $types);
+        $this->assertSame(101, $types[100]['id'], 'o 101º id não pode ser cortado');
+    }
+
+    /** Teto de segurança FALHA FECHADO; nunca devolve sucesso parcial. */
+    public function test_catalog_above_the_safety_ceiling_fails_closed(): void
+    {
+        $this->seedCatalogs();
+        $this->port->seed(CrmSchema::TABLE_RESOURCE_TYPES, array_map(
+            static fn(int $id): array => [
+                'id' => $id,
+                'name' => sprintf('T%06d', $id),
+                'active' => 1,
+                'deleted_at' => null,
+            ],
+            range(1, CrmSchema::MAX_CATALOG_TOTAL + 1)
+        ));
+        $this->seedResources([]);
+
+        $this->assertSame(
+            CrmErrorCode::Downstream,
+            $this->capture(fn() => $this->repository()->getKanban(null, 25))->errorCode
+        );
+    }
+
+    /** Idem para os valores de custom field. */
+    public function test_custom_field_values_above_the_safety_ceiling_fail_closed(): void
+    {
+        $this->seedResources([self::resourceRow(42)]);
+        $this->port->seed(CrmSchema::TABLE_FIELD_VALUES, array_map(
+            static fn(int $id): array => [
+                'id' => $id,
+                'field_id' => 1,
+                'resource_id' => 42,
+                'value' => 'v',
+            ],
+            range(1, CrmSchema::MAX_CUSTOM_FIELD_VALUES + 1)
+        ));
+
+        $this->assertSame(
+            CrmErrorCode::Downstream,
+            $this->capture(fn() => $this->repository()->getResource(42))->errorCode
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Fidelidade do dublê
+    // ---------------------------------------------------------------
+
+    /**
+     * BIGINT adjacente acima de `2^53` ordena corretamente.
+     *
+     * O dublê convertia os dois lados para `float`, e `float` não distingue
+     * `9007199254740992` de `9007199254740993`: a ordenação descendente saía
+     * invertida NO FAKE, enquanto o MySQL ordena BIGINT sem perda. Uma
+     * regressão de paginação passaria aqui e quebraria em produção.
+     */
+    public function test_fake_orders_bigint_ids_above_two_to_the_fifty_three(): void
+    {
+        $this->seedResources([
+            array_merge(self::resourceRow(1), ['id' => '9007199254740992']),
+            array_merge(self::resourceRow(2), ['id' => '9007199254740993']),
+            array_merge(self::resourceRow(3), ['id' => '9007199254740991']),
+        ]);
+
+        $page = $this->repository()->listResources(null, null, 25, 0);
+
+        $this->assertSame(
+            [9007199254740993, 9007199254740992, 9007199254740991],
+            array_column($page['items'], 'resource_id'),
+            'ordem descendente exata, sem perda de precisão'
+        );
+    }
+
+    /** Ordem numérica, não lexicográfica, para ids de comprimentos diferentes. */
+    public function test_fake_orders_numerically_not_lexicographically(): void
+    {
+        $this->seedResources([
+            self::resourceRow(9),
+            self::resourceRow(10),
+            self::resourceRow(100),
+        ]);
+
+        $this->assertSame(
+            [100, 10, 9],
+            array_column($this->repository()->listResources(null, null, 25, 0)['items'], 'resource_id')
+        );
     }
 
     // ---------------------------------------------------------------
@@ -815,17 +1147,39 @@ class CrmReadContractTest extends TestCase
         $this->assertNotEmpty($this->port->counts, 'as leituras paginadas contam pelo seam fechado');
     }
 
-    /** Todo COUNT executado nasce de um select — nunca de um filtro paralelo. */
-    public function test_every_count_matches_a_select_that_was_executed(): void
+    /**
+     * Todo SELECT paginado nasce do mesmo filtro de um COUNT — é isso que faz
+     * `count`/`has_more` descreverem o mesmo recorte dos `items`.
+     *
+     * A direção é select→count de propósito: um COUNT sem select é legítimo
+     * (raia vazia pula a consulta de itens, varredura de total zero não pagina),
+     * mas um select paginado SEM count seria um total inventado.
+     */
+    public function test_every_paginated_select_shares_its_filter_with_a_count(): void
     {
         $this->seedCatalogs();
         $this->seedResources([self::resourceRow(1, statusId: 10)]);
+        $this->port->seed(CrmSchema::TABLE_FIELD_VALUES, []);
 
-        $this->repository()->getKanban(null, 25);
+        $repository = $this->repository();
+        $repository->listResources(null, null, 25, 0);
+        $repository->getResource(1);
+        $repository->getKanban(null, 25);
 
-        foreach ($this->port->counts as $count) {
+        foreach ($this->port->selects as $select) {
+            // Selects de resolução por id (labels/definições) não paginam: eles
+            // pedem um conjunto conhecido de ids, não uma fatia de um total.
+            if ($select->inConditions !== []) {
+                continue;
+            }
+
+            // A busca de recurso único por id também não é paginada.
+            if ($select->limit === 1) {
+                continue;
+            }
+
             $matched = false;
-            foreach ($this->port->selects as $select) {
+            foreach ($this->port->counts as $count) {
                 if ($select->table === $count->table
                     && $select->conditions === $count->conditions
                     && $select->nullColumns === $count->nullColumns
@@ -835,7 +1189,7 @@ class CrmReadContractTest extends TestCase
                 }
             }
 
-            $this->assertTrue($matched, 'contagem sem select correspondente em ' . $count->table);
+            $this->assertTrue($matched, 'select paginado sem contagem correspondente em ' . $select->table);
         }
     }
 }

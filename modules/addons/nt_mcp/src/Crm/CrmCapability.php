@@ -58,11 +58,23 @@ enum CrmCapability: string
      */
     case FollowupsRead = 'followups_read';
 
-    /** `crm_followup_types`. */
+    /** `crm_followup_types` — catálogo ATIVO publicado e validado em filtros. */
     case FollowupTypes = 'followup_types';
 
-    /** `crm_followup_statuses`. */
+    /** `crm_followup_statuses` — catálogo ATIVO publicado e validado em filtros. */
     case FollowupStatuses = 'followup_statuses';
+
+    /**
+     * Resolução HISTÓRICA de nome de tipo/status de follow-up (D13).
+     *
+     * Separada dos catálogos ativos porque a query é outra: resolve por id,
+     * exige `deleted_at IS NULL` e NÃO olha `active` — um follow-up antigo
+     * apontando para um tipo desativado continua com o nome resolvido. Como a
+     * coluna `active` não participa, um drift nela não pode derrubar
+     * `list_followups`.
+     */
+    case FollowupTypeLabels = 'followup_type_labels';
+    case FollowupStatusLabels = 'followup_status_labels';
 
     /** `crm_notes`. */
     case Notes = 'notes';

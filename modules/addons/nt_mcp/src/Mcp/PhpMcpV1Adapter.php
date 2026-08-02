@@ -191,11 +191,25 @@ class PhpMcpV1Adapter implements ServerAdapterInterface
         }
         $this->trackActiveClientAndGc($cache, $clientId);
 
+        // Fronteira das quatro READ de CRM: fecha os argumentos (nomes legados
+        // deixam de ser silenciosamente ignorados) e limita os filtros de id a
+        // inteiros positivos, tudo pelo validador da própria SDK, antes da
+        // invocação. Restrito por nome às quatro; nada mais é tocado.
+        CrmReadBoundary::hardenSchemas($server->getRegistry());
+
         $transport = new HttpTransportHandler($server);
         $transport->handleInput($input, $clientId);
 
         $state = $transport->getTransportState();
-        return $state->getQueuedMessages($clientId);
+        $messages = $state->getQueuedMessages($clientId);
+
+        // As tools de CRM nunca lançam (deixá-las lançar faria o formatter da
+        // SDK publicar a mensagem crua da causa); elas devolvem o envelope
+        // canônico. Aqui o envelope de erro vira `isError: true`, para que uma
+        // leitura que falhou não seja confirmada como sucesso.
+        [$calledTool, $requestId] = CrmReadBoundary::calledTool($input);
+
+        return CrmReadBoundary::markErrorEnvelopes($messages, $calledTool, $requestId);
     }
 
     /**

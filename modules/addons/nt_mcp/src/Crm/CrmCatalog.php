@@ -44,6 +44,25 @@ enum CrmCatalog: string
         };
     }
 
+    /**
+     * Capacidade da resolução HISTÓRICA de nome (D13), sem `active`.
+     *
+     * Só os catálogos de follow-up resolvem label hoje — é `list_followups`
+     * que publica `type_name`/`status_name`. Pedir a capacidade de label de um
+     * catálogo de recurso seria erro de programação, não estado do banco, e
+     * por isso estoura em vez de devolver uma capacidade aproximada.
+     */
+    public function labelCapability(): CrmCapability
+    {
+        return match ($this) {
+            self::FollowupType => CrmCapability::FollowupTypeLabels,
+            self::FollowupStatus => CrmCapability::FollowupStatusLabels,
+            self::ResourceType, self::ResourceStatus => throw new \LogicException(
+                'CrmCatalog: resource catalogs do not resolve historical labels in this tranche.'
+            ),
+        };
+    }
+
     /** Coluna do recurso/follow-up que recebe o ID deste catálogo. */
     public function foreignKey(): string
     {

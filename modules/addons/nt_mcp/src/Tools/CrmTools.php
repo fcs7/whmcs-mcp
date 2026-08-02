@@ -6,6 +6,7 @@ use NtMcp\Crm\CrmException;
 use NtMcp\Crm\MgCrmRepository;
 use NtMcp\Whmcs\CapsuleClient;
 use NtMcp\Whmcs\DateNormalizer;
+use NtMcp\Whmcs\Diagnostics;
 use PhpMcp\Server\Attributes\McpTool;
 use WHMCS\Database\Capsule;
 
@@ -59,15 +60,26 @@ class CrmTools
     }
 
     /**
-     * Serialização única das leituras.
+     * Fronteira de erro das leituras — nada sai daqui sem ser canônico.
      *
      * A convenção do addon é NÃO usar try/catch nas tools, porque o framework
-     * já converte exceção em erro MCP. Aqui há uma exceção deliberada e
-     * estreita: `CrmException` JÁ É o contrato público fechado (D6/D12) e
-     * carrega `error_code` — deixá-la subir descartaria o código estável e
-     * devolveria só a mensagem, que é justamente o que impede automação sobre
-     * erros. Nenhum outro tipo é capturado, então um bug de programação
-     * continua subindo.
+     * converte exceção em erro MCP. Para as READ de CRM isso é exatamente o
+     * que NÃO pode acontecer: o formatter da SDK monta o texto com
+     * `'Tool execution failed: ' . $e->getMessage() . ' (Type: ...)'`, e a
+     * revisão fria reproduziu SQLSTATE, senha, path e e-mail chegando ao
+     * chamador por esse caminho.
+     *
+     * Então a captura é total e deliberada:
+     *
+     *  - `CrmException` já É o contrato público fechado (D6/D12) e vira o
+     *    envelope com `error_code` e correlação;
+     *  - qualquer outro `Throwable` é registrado no diagnóstico fechado
+     *    (categoria, classe e fingerprint, nunca a mensagem) e vira
+     *    `downstream` — o chamador recebe só a correlação.
+     *
+     * Um bug de programação, portanto, também não vaza texto: ele vira um
+     * incidente correlacionado no log do operador. Quem marca a resposta como
+     * `isError: true` é `CrmReadBoundary`, no adapter.
      */
     private function read(callable $operation): string
     {
@@ -75,13 +87,18 @@ class CrmTools
             return json_encode($operation(), JSON_PRETTY_PRINT);
         } catch (CrmException $e) {
             return json_encode($e->toPublicArray(), JSON_PRETTY_PRINT);
-        }
-    }
+        } catch (\Throwable $e) {
+            $correlationId = Diagnostics::report(Diagnostics::CATEGORY_UNHANDLED, 'crm_read', $e);
 
-    /** Filtro opcional: ausente e `0` significam "sem filtro". */
-    private static function optionalId(?int $value): ?int
-    {
-        return ($value === null || $value === 0) ? null : $value;
+            return json_encode(
+                CrmException::downstream(
+                    $correlationId,
+                    Diagnostics::fingerprint($e->getMessage()),
+                    get_class($e)
+                )->toPublicArray(),
+                JSON_PRETTY_PRINT
+            );
+        }
     }
 
     #[McpTool(
@@ -90,7 +107,8 @@ class CrmTools
             . 'Filtros opcionais type_id e status_id vem dos catalogos ativos publicados por '
             . 'whmcs_crm_get_kanban; um id inexistente ou inativo devolve crm_catalog_invalid. '
             . 'Retorna items (projecao core), count (total sob o mesmo filtro), limit, offset e has_more. '
-            . 'Registros removidos nao aparecem. limit maximo 100.'
+            . 'Registros removidos nao aparecem. Somente a ausencia do filtro (ou null) significa '
+            . 'sem filtro: 0 e negativos sao recusados. limit maximo 100.'
     )]
     public function listContacts(
         ?int $type_id = null,
@@ -98,12 +116,7 @@ class CrmTools
         int $limit = 25,
         int $offset = 0
     ): string {
-        return $this->read(fn(): array => $this->crm->listResources(
-            self::optionalId($type_id),
-            self::optionalId($status_id),
-            $limit,
-            $offset
-        ));
+        return $this->read(fn(): array => $this->crm->listResources($type_id, $status_id, $limit, $offset));
     }
 
     #[McpTool(
@@ -213,7 +226,8 @@ class CrmTools
         description: 'Lista follow-ups de um recurso do CRM mgCRM2, com paginacao. '
             . 'resource_id e obrigatorio; filtros opcionais type_id e status_id vem dos catalogos '
             . 'de follow-up publicados por whmcs_crm_get_kanban. Cada item traz type_name e '
-            . 'status_name resolvidos (null quando o catalogo foi desativado ou removido). '
+            . 'status_name sempre resolvidos: um tipo/status desativado mantem o nome historico, '
+            . 'e referencia removida ou ausente falha como downstream de integridade. '
             . 'Retorna items, count, limit, offset e has_more. limit maximo 100.'
     )]
     public function listFollowups(
@@ -225,8 +239,8 @@ class CrmTools
     ): string {
         return $this->read(fn(): array => $this->crm->listFollowups(
             $resource_id,
-            self::optionalId($type_id),
-            self::optionalId($status_id),
+            $type_id,
+            $status_id,
             $limit,
             $offset
         ));
@@ -237,15 +251,13 @@ class CrmTools
         description: 'Visao Kanban do CRM mgCRM2 e FONTE DOS CATALOGOS de id. '
             . 'Publica em catalogs os quatro catalogos ativos (resource_types, resource_statuses, '
             . 'followup_types, followup_statuses) mesmo quando nao ha nenhum recurso, e em lanes '
-            . 'uma raia por status de recurso com total exato, items limitados e has_more. '
+            . 'uma raia para CADA status de recurso ativo, com total exato, items limitados e '
+            . 'has_more. Os catalogos sao completos, sem corte. '
             . 'Filtro opcional type_id restringe as raias a um tipo de recurso. '
-            . 'limit_per_status maximo 25; lanes_truncated indica que ha mais status que raias.'
+            . 'limit_per_status maximo 25.'
     )]
     public function getKanban(?int $type_id = null, int $limit_per_status = 25): string
     {
-        return $this->read(fn(): array => $this->crm->getKanban(
-            self::optionalId($type_id),
-            $limit_per_status
-        ));
+        return $this->read(fn(): array => $this->crm->getKanban($type_id, $limit_per_status));
     }
 }

@@ -300,7 +300,55 @@ class CrmClosedSurfaceTest extends TestCase
             'offset negativo' => [
                 static fn() => new CrmSelect(CrmSchema::TABLE_RESOURCES, ['id'], offset: -1),
             ],
+            'IN em coluna inventada' => [
+                static fn() => new CrmSelect(
+                    CrmSchema::TABLE_RESOURCES,
+                    ['id'],
+                    inConditions: ['secret' => [1]]
+                ),
+            ],
+            'IN vazio' => [
+                static fn() => new CrmSelect(
+                    CrmSchema::TABLE_RESOURCES,
+                    ['id'],
+                    inConditions: [CrmSchema::COLUMN_ID => []]
+                ),
+            ],
+            'IN com string' => [
+                static fn() => new CrmSelect(
+                    CrmSchema::TABLE_RESOURCES,
+                    ['id'],
+                    inConditions: [CrmSchema::COLUMN_ID => ['1 OR 1=1']]
+                ),
+            ],
+            'IN com id não positivo' => [
+                static fn() => new CrmSelect(
+                    CrmSchema::TABLE_RESOURCES,
+                    ['id'],
+                    inConditions: [CrmSchema::COLUMN_ID => [0]]
+                ),
+            ],
+            'IN acima do lote' => [
+                static fn() => new CrmSelect(
+                    CrmSchema::TABLE_RESOURCES,
+                    ['id'],
+                    inConditions: [CrmSchema::COLUMN_ID => range(1, CrmSchema::MAX_IN_VALUES + 1)]
+                ),
+            ],
         ];
+    }
+
+    /** O `IN` fechado é aceito quando respeita o contrato. */
+    public function test_select_accepts_a_bounded_id_batch(): void
+    {
+        $select = new CrmSelect(
+            table: CrmSchema::TABLE_FIELDS,
+            columns: CrmSchema::catalogProjection(),
+            nullColumns: [CrmSchema::COLUMN_DELETED_AT],
+            inConditions: [CrmSchema::COLUMN_ID => [3, 9, 27]],
+        );
+
+        $this->assertSame([CrmSchema::COLUMN_ID => [3, 9, 27]], $select->inConditions);
     }
 
     public function test_select_accepts_the_declared_contract(): void

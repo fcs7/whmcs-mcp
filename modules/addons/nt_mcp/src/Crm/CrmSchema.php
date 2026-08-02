@@ -72,28 +72,35 @@ final class CrmSchema
     public const MAX_OFFSET = 100000;
 
     /**
-     * Teto de raias materializadas por `whmcs_crm_get_kanban`.
+     * Página das varreduras COMPLETAS (catálogos, valores de custom field).
      *
-     * Cada raia custa duas consultas (o total exato e a página de itens), então
-     * o número de raias é o multiplicador do custo da tool. O catálogo de
-     * status é publicado INTEIRO — o teto corta apenas as raias, e a resposta
-     * carrega `lanes_truncated` quando isso acontece. Um corte silencioso
-     * pareceria "não há mais status", que é exatamente o resultado vazio
-     * enganoso que o contrato proíbe.
+     * A revisão fria do CRM-2 reprovou o desenho anterior, em que este número
+     * era um TETO: com 101 entradas ativas, a de número 101 simplesmente
+     * sumia do catálogo publicado — e `get_kanban` é a fonte dos IDs que as
+     * escritas de CRM-3 vão exigir. Agora ele é só o tamanho do chunk; a
+     * varredura pagina até o total exato.
      */
-    public const MAX_KANBAN_LANES = 25;
+    public const CHUNK_SIZE = self::MAX_LIMIT;
 
     /**
-     * Teto de custom fields lidos por recurso em `whmcs_crm_get_contact`.
+     * Tamanho máximo de uma lista `IN`.
      *
-     * Vale para os dois lados do batch: os valores do recurso e as definições
-     * usadas para resolver o nome. Mantém a leitura em DUAS consultas fixas,
-     * em vez de uma por campo.
+     * Resolver definições/labels em lote precisa de `IN`, e uma lista sem teto
+     * viraria uma query gigante. As listas são quebradas neste tamanho; o
+     * número de lotes é limitado pelo total já contado.
      */
-    public const MAX_CUSTOM_FIELDS = self::MAX_LIMIT;
+    public const MAX_IN_VALUES = self::MAX_LIMIT;
 
-    /** Teto de entradas devolvidas por catálogo ativo. */
-    public const MAX_CATALOG_ENTRIES = self::MAX_LIMIT;
+    /**
+     * Tetos de SEGURANÇA das varreduras completas.
+     *
+     * Não truncam: excedê-los é falha FECHADA (`downstream` de integridade).
+     * O contrato exige completude comprovável, então "li só uma parte" não é um
+     * desfecho aceitável — ou a leitura é completa, ou ela falha dizendo que
+     * não conseguiu prová-la.
+     */
+    public const MAX_CATALOG_TOTAL = 5000;
+    public const MAX_CUSTOM_FIELD_VALUES = 5000;
 
     /**
      * Conjunto MÍNIMO exigido por capacidade — e cada capacidade corresponde ao
@@ -138,6 +145,12 @@ final class CrmSchema
         ],
         CrmCapability::FollowupStatuses->value => [
             self::TABLE_FOLLOWUP_STATUSES => ['id', 'name', 'active', 'deleted_at'],
+        ],
+        CrmCapability::FollowupTypeLabels->value => [
+            self::TABLE_FOLLOWUP_TYPES => ['id', 'name', 'deleted_at'],
+        ],
+        CrmCapability::FollowupStatusLabels->value => [
+            self::TABLE_FOLLOWUP_STATUSES => ['id', 'name', 'deleted_at'],
         ],
         CrmCapability::Notes->value => [
             self::TABLE_NOTES => [

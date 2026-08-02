@@ -232,11 +232,15 @@ final class MgCrmRepository
      * O recurso é provado primeiro: follow-ups de um `resource_id` inexistente
      * ou soft-deleted são `crm_resource_not_found`, não uma lista vazia.
      *
-     * Os labels vêm dos catálogos ATIVOS, lidos uma única vez por chamada e
-     * casados em PHP — dois SELECTs fixos, independentemente do tamanho da
-     * página. Um follow-up que aponta para um tipo/status desativado ou
-     * removido mantém o `*_id` e recebe `*_name: null`: o dado histórico não é
-     * escondido, e o label não é inventado.
+     * D13 — os labels são resolvidos POR ID, em lote, somente para os ids que
+     * aparecem NA PÁGINA: linha existente e não soft-deleted resolve o nome
+     * mesmo com `active = 0`, porque um follow-up antigo aponta legitimamente
+     * para um tipo que saiu de circulação. Essa entrada continua fora do
+     * catálogo ativo de `get_kanban` e inválida para escrita.
+     *
+     * Referência soft-deleted, ausente ou com nome inutilizável é INTEGRIDADE
+     * QUEBRADA e falha `downstream` — nunca `*_name: null`, que tornava
+     * corrupção indistinguível de label legítimo.
      *
      * @return array{items:array<int, array<string, mixed>>, count:int, limit:int, offset:int, has_more:bool}
      * @throws CrmException
@@ -260,10 +264,7 @@ final class MgCrmRepository
                 $this->requireCatalogEntry(CrmCatalog::FollowupStatus, $statusId);
         }
 
-        $types = self::labelIndex($this->activeCatalog(CrmCatalog::FollowupType));
-        $statuses = self::labelIndex($this->activeCatalog(CrmCatalog::FollowupStatus));
-
-        return $this->paginate(
+        $page = $this->paginate(
             new CrmSelect(
                 table: CrmSchema::TABLE_FOLLOWUPS,
                 columns: CrmSchema::followupReadProjection(),
@@ -273,8 +274,24 @@ final class MgCrmRepository
                 limit: $limit,
                 offset: $offset,
             ),
-            static fn(array $row): array => self::projectFollowup($row, $types, $statuses),
+            static fn(array $row): array => self::projectFollowup($row),
         );
+
+        $types = $this->resolveHistoricalLabels(
+            CrmCatalog::FollowupType,
+            self::distinctIds($page['items'], 'type_id')
+        );
+        $statuses = $this->resolveHistoricalLabels(
+            CrmCatalog::FollowupStatus,
+            self::distinctIds($page['items'], 'status_id')
+        );
+
+        foreach ($page['items'] as $index => $item) {
+            $page['items'][$index]['type_name'] = self::requireLabel($types, $item['type_id'], 'followup_type');
+            $page['items'][$index]['status_name'] = self::requireLabel($statuses, $item['status_id'], 'followup_status');
+        }
+
+        return $page;
     }
 
     /**
@@ -286,10 +303,17 @@ final class MgCrmRepository
      * SEMPRE, inclusive quando nenhuma raia tem recurso — um kanban vazio ainda
      * precisa dizer quais ids existem.
      *
-     * Cada raia carrega o total EXATO (COUNT sob o mesmo filtro) e uma página
-     * de itens limitada, nunca a raia inteira.
+     * Existe uma raia para CADA status de recurso ativo — sem teto e sem corte.
+     * A revisão fria reprovou o desenho anterior, que materializava 25 raias e
+     * anunciava a omissão num campo: um status válido com recursos dentro
+     * simplesmente desaparecia da visão, e o campo extra não substitui o dado
+     * contratado.
      *
-     * @return array{type_id:int|null, limit_per_status:int, catalogs:array<string, array<int, array<string, mixed>>>, lanes:array<int, array<string, mixed>>, lanes_truncated:bool}
+     * Cada raia carrega o total EXATO (COUNT sob o mesmo filtro) e uma página
+     * de itens limitada, nunca a raia inteira. Raia vazia não paga a consulta
+     * de itens, então o custo acompanha os statuses que realmente têm recurso.
+     *
+     * @return array{type_id:int|null, limit_per_status:int, catalogs:array<string, array<int, array<string, mixed>>>, lanes:array<int, array<string, mixed>>}
      * @throws CrmException
      */
     public function getKanban(?int $typeId, int $limitPerStatus): array
@@ -312,28 +336,36 @@ final class MgCrmRepository
         ];
 
         $lanes = [];
-        foreach (array_slice($catalogs['resource_statuses'], 0, CrmSchema::MAX_KANBAN_LANES) as $status) {
+        foreach ($catalogs['resource_statuses'] as $status) {
             $conditions = $filter;
             $conditions[CrmSchema::COLUMN_STATUS_ID] = $status['id'];
 
-            $page = $this->paginate(
-                new CrmSelect(
-                    table: CrmSchema::TABLE_RESOURCES,
-                    columns: CrmSchema::resourceProjection(),
-                    conditions: $conditions,
-                    nullColumns: [CrmSchema::COLUMN_DELETED_AT],
-                    order: CrmSchema::resourceOrder(),
-                    limit: $limitPerStatus,
-                ),
-                static fn(array $row): array => self::projectResource($row),
+            $select = new CrmSelect(
+                table: CrmSchema::TABLE_RESOURCES,
+                columns: CrmSchema::resourceProjection(),
+                conditions: $conditions,
+                nullColumns: [CrmSchema::COLUMN_DELETED_AT],
+                order: CrmSchema::resourceOrder(),
+                limit: $limitPerStatus,
             );
+
+            $total = $this->port->countRows(CrmCount::matching($select));
+
+            // Raia vazia é o caso comum num kanban largo: sem recurso, a
+            // consulta de itens não tem o que devolver e é pulada.
+            $items = $total === 0
+                ? []
+                : array_map(
+                    static fn(array $row): array => self::projectResource($row),
+                    $this->port->selectRows($select)
+                );
 
             $lanes[] = [
                 'status_id' => $status['id'],
                 'status_name' => $status['name'],
-                'total' => $page['count'],
-                'items' => $page['items'],
-                'has_more' => $page['has_more'],
+                'total' => $total,
+                'items' => $items,
+                'has_more' => count($items) < $total,
             ];
         }
 
@@ -342,7 +374,6 @@ final class MgCrmRepository
             'limit_per_status' => $limitPerStatus,
             'catalogs' => $catalogs,
             'lanes' => $lanes,
-            'lanes_truncated' => count($catalogs['resource_statuses']) > CrmSchema::MAX_KANBAN_LANES,
         ];
     }
 
@@ -420,11 +451,15 @@ final class MgCrmRepository
     }
 
     /**
-     * Entradas ATIVAS e não soft-deleted de um catálogo.
+     * Catálogo ATIVO COMPLETO — todas as entradas, sem teto silencioso.
      *
      * `active = 1` e `deleted_at IS NULL` estão na QUERY, não em PHP: um filtro
-     * aplicado depois da paginação devolveria menos linhas que o limite pedido
-     * e faria a página parecer o fim do catálogo.
+     * aplicado depois da paginação devolveria menos linhas que a página pedida
+     * e faria o chunk parecer o fim do catálogo.
+     *
+     * A completude importa porque `get_kanban` É a fonte dos IDs que as
+     * escritas de CRM-3 vão exigir: um id ativo que o cliente nunca vê é um id
+     * que ele nunca consegue usar, mesmo sendo válido.
      *
      * @return array<int, array{id:int, name:string|null}>
      * @throws CrmException
@@ -435,26 +470,180 @@ final class MgCrmRepository
 
         $entries = [];
 
-        foreach ($this->port->selectRows(new CrmSelect(
+        foreach ($this->scanAll(
             table: $catalog->table(),
             columns: CrmSchema::catalogProjection(),
             conditions: [CrmSchema::COLUMN_ACTIVE => 1],
             nullColumns: [CrmSchema::COLUMN_DELETED_AT],
             order: CrmSchema::catalogOrder(),
-            limit: CrmSchema::MAX_CATALOG_ENTRIES,
-        )) as $row) {
+            ceiling: CrmSchema::MAX_CATALOG_TOTAL,
+            context: 'catalog_' . $catalog->value,
+        ) as $row) {
             $id = self::toId($row[CrmSchema::COLUMN_ID] ?? null);
 
             if ($id === null) {
-                // Linha sem id utilizável não é publicável como catálogo: o
+                // Um catálogo com linha sem id utilizável está corrompido: o
                 // chamador escolheria um id que nenhuma escrita aceitaria.
-                continue;
+                throw CrmException::integrity('catalog_row_without_id');
             }
 
             $entries[] = ['id' => $id, 'name' => self::toText($row[CrmSchema::COLUMN_NAME] ?? null)];
         }
 
         return $entries;
+    }
+
+    /**
+     * Varredura COMPLETA em chunks fechados, provada contra o total exato.
+     *
+     * O contrato pede completude comprovável, e "li a primeira página" não é
+     * prova. Então: conta primeiro, pagina em chunks até a varredura terminar
+     * e, no fim, EXIGE que o volume lido seja o volume contado. Divergência é
+     * integridade/concorrência, não um resultado parcial aceitável.
+     *
+     * O teto é de SEGURANÇA e não trunca: excedê-lo falha fechado. Truncar
+     * silenciosamente foi exatamente o defeito reprovado na revisão fria.
+     *
+     * @param array<int, string>                   $columns
+     * @param array<string, int|string>            $conditions
+     * @param array<int, string>                   $nullColumns
+     * @param array<int, array{0:string,1:string}> $order
+     * @return array<int, array<string, mixed>>
+     * @throws CrmException
+     */
+    private function scanAll(
+        string $table,
+        array $columns,
+        array $conditions,
+        array $nullColumns,
+        array $order,
+        int $ceiling,
+        string $context,
+    ): array {
+        $total = $this->port->countRows(new CrmCount($table, $conditions, $nullColumns));
+
+        if ($total > $ceiling) {
+            throw CrmException::integrity($context . '_above_safety_ceiling');
+        }
+
+        $rows = [];
+        $offset = 0;
+
+        while (count($rows) < $total) {
+            $page = $this->port->selectRows(new CrmSelect(
+                table: $table,
+                columns: $columns,
+                conditions: $conditions,
+                nullColumns: $nullColumns,
+                order: $order,
+                limit: CrmSchema::CHUNK_SIZE,
+                offset: $offset,
+            ));
+
+            if ($page === []) {
+                break;
+            }
+
+            foreach ($page as $row) {
+                $rows[] = $row;
+            }
+
+            $offset += count($page);
+
+            if ($offset > CrmSchema::MAX_OFFSET) {
+                throw CrmException::integrity($context . '_above_safety_ceiling');
+            }
+        }
+
+        if (count($rows) !== $total) {
+            // A varredura acabou antes do total contado: o conjunto mudou no
+            // meio da leitura. Publicar o que veio seria apresentar um
+            // catálogo/recurso incompleto como completo.
+            throw CrmException::integrity($context . '_incomplete_scan');
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Resolução HISTÓRICA de labels por id, em lotes fechados (D13).
+     *
+     * Sem filtro de `active`: tipo/status desativado ainda resolve o nome, e é
+     * essa a diferença que o contrato pede — o catálogo publicado continua
+     * sendo só o ativo, mas o dado histórico não perde o rótulo.
+     *
+     * Toda referência pedida DEVE voltar com nome utilizável. Faltar (porque
+     * está soft-deleted ou porque a linha sumiu) é integridade quebrada.
+     *
+     * @param array<int, int> $ids
+     * @return array<int, string>
+     * @throws CrmException
+     */
+    private function resolveHistoricalLabels(CrmCatalog $catalog, array $ids): array
+    {
+        if ($ids === []) {
+            return [];
+        }
+
+        $this->assertCapabilities($catalog->labelCapability());
+
+        $labels = [];
+
+        foreach (array_chunk($ids, CrmSchema::MAX_IN_VALUES) as $batch) {
+            foreach ($this->port->selectRows(new CrmSelect(
+                table: $catalog->table(),
+                columns: CrmSchema::catalogProjection(),
+                nullColumns: [CrmSchema::COLUMN_DELETED_AT],
+                order: CrmSchema::catalogOrder(),
+                limit: CrmSchema::CHUNK_SIZE,
+                inConditions: [CrmSchema::COLUMN_ID => $batch],
+            )) as $row) {
+                $id = self::toId($row[CrmSchema::COLUMN_ID] ?? null);
+                $name = self::toText($row[CrmSchema::COLUMN_NAME] ?? null);
+
+                if ($id !== null && $name !== null && $name !== '') {
+                    $labels[$id] = $name;
+                }
+            }
+        }
+
+        return $labels;
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $items
+     * @return array<int, int>
+     */
+    private static function distinctIds(array $items, string $key): array
+    {
+        $ids = [];
+
+        foreach ($items as $item) {
+            $id = $item[$key] ?? null;
+            if (is_int($id) && $id > 0) {
+                $ids[$id] = true;
+            }
+        }
+
+        return array_keys($ids);
+    }
+
+    /**
+     * @param array<int, string> $labels
+     * @throws CrmException
+     */
+    private static function requireLabel(array $labels, ?int $id, string $context): string
+    {
+        if ($id === null) {
+            // A coluna é `NOT NULL` no contrato: sem id não há o que resolver.
+            throw CrmException::integrity($context . '_reference_missing');
+        }
+
+        if (!array_key_exists($id, $labels)) {
+            throw CrmException::integrity($context . '_reference_unresolved');
+        }
+
+        return $labels[$id];
     }
 
     /**
@@ -475,79 +664,122 @@ final class MgCrmRepository
     {
         $this->assertCapabilities(CrmCapability::CustomFields);
 
-        $values = $this->port->selectRows(new CrmSelect(
+        // TODOS os valores do recurso, em chunks — o teto anterior escondia o
+        // 101º valor e apresentava um contato incompleto como completo.
+        $values = $this->scanAll(
             table: CrmSchema::TABLE_FIELD_VALUES,
             columns: CrmSchema::fieldValueProjection(),
             conditions: [CrmSchema::COLUMN_RESOURCE_ID => $resourceId],
+            nullColumns: [],
             order: CrmSchema::fieldValueOrder(),
-            limit: CrmSchema::MAX_CUSTOM_FIELDS,
-        ));
+            ceiling: CrmSchema::MAX_CUSTOM_FIELD_VALUES,
+            context: 'custom_field_values',
+        );
 
         if ($values === []) {
-            // Sem valores não há definição a resolver: a segunda consulta seria
-            // trabalho puro.
+            // Sem valores não há definição a resolver: a consulta de definições
+            // seria trabalho puro.
             return [];
         }
 
-        $names = self::labelIndex($this->visibleFieldDefinitions());
+        $entries = [];
+        $fieldIds = [];
 
-        $fields = [];
         foreach ($values as $row) {
             $fieldId = self::toId($row[CrmSchema::COLUMN_FIELD_ID] ?? null);
 
-            if ($fieldId === null || !array_key_exists($fieldId, $names)) {
-                continue;
+            if ($fieldId === null) {
+                throw CrmException::integrity('custom_field_value_without_definition_reference');
             }
 
-            $fields[] = [
+            $fieldIds[$fieldId] = true;
+            $entries[] = [
                 'field_id' => $fieldId,
-                'name' => $names[$fieldId],
+                'value_id' => self::toId($row[CrmSchema::COLUMN_ID] ?? null) ?? 0,
                 'value' => self::toText($row['value'] ?? null),
             ];
         }
 
-        // Ordem determinística por nome e id, para que a resposta não dependa
-        // da ordem física das linhas de valor.
+        // Somente as definições REFERENCIADAS, em lotes fechados: nem N+1, nem
+        // varredura do catálogo global (que era o que fazia uma definição além
+        // da primeira página sumir com o valor junto).
+        $names = $this->resolveFieldDefinitionNames(array_keys($fieldIds));
+
+        $fields = [];
+        foreach ($entries as $entry) {
+            if (!array_key_exists($entry['field_id'], $names)) {
+                // Definição ausente ou soft-deleted com valor vivo apontando
+                // para ela: integridade quebrada, nunca descarte silencioso.
+                throw CrmException::integrity('custom_field_definition_unresolved');
+            }
+
+            $fields[] = [
+                'field_id' => $entry['field_id'],
+                'name' => $names[$entry['field_id']],
+                'value' => $entry['value'],
+                '_value_id' => $entry['value_id'],
+            ];
+        }
+
+        // Ordem determinística mesmo com VÁRIOS valores no mesmo campo: nome,
+        // depois id do campo, depois id do valor.
         usort(
             $fields,
             static fn(array $a, array $b): int
-                => [$a['name'] ?? '', $a['field_id']] <=> [$b['name'] ?? '', $b['field_id']]
+                => [$a['name'], $a['field_id'], $a['_value_id']]
+                <=> [$b['name'], $b['field_id'], $b['_value_id']]
         );
 
-        return $fields;
+        // `_value_id` é só chave de ordenação; não faz parte do contrato.
+        return array_map(
+            static fn(array $field): array => [
+                'field_id' => $field['field_id'],
+                'name' => $field['name'],
+                'value' => $field['value'],
+            ],
+            $fields
+        );
     }
 
     /**
-     * Definições de custom field visíveis (não soft-deleted).
+     * Nomes das definições de custom field REFERENCIADAS, em lotes fechados.
      *
      * `crm_fields` não tem coluna de atividade no contrato — só `deleted_at` —
-     * então este NÃO é um catálogo publicável e não passa por `activeCatalog()`,
-     * que exige `active = 1`. A distinção é proposital: os quatro catálogos de
-     * tipo/status alimentam escrita e precisam da prova de atividade; estas
-     * definições só resolvem um nome de leitura.
+     * então isto não passa por `activeCatalog()`, que exige `active = 1`. A
+     * distinção é proposital: os quatro catálogos de tipo/status alimentam
+     * escrita e precisam da prova de atividade; estas definições só resolvem um
+     * nome de leitura.
      *
-     * @return array<int, array{id:int, name:string|null}>
+     * A projeção continua `id`/`name`: validators, opções e visibilidade não
+     * têm caminho até a resposta porque não têm caminho até a query.
+     *
+     * @param array<int, int> $fieldIds
+     * @return array<int, string>
      * @throws CrmException
      */
-    private function visibleFieldDefinitions(): array
+    private function resolveFieldDefinitionNames(array $fieldIds): array
     {
-        $definitions = [];
+        $names = [];
 
-        foreach ($this->port->selectRows(new CrmSelect(
-            table: CrmSchema::TABLE_FIELDS,
-            columns: CrmSchema::catalogProjection(),
-            nullColumns: [CrmSchema::COLUMN_DELETED_AT],
-            order: CrmSchema::catalogOrder(),
-            limit: CrmSchema::MAX_CUSTOM_FIELDS,
-        )) as $row) {
-            $id = self::toId($row[CrmSchema::COLUMN_ID] ?? null);
+        foreach (array_chunk($fieldIds, CrmSchema::MAX_IN_VALUES) as $batch) {
+            foreach ($this->port->selectRows(new CrmSelect(
+                table: CrmSchema::TABLE_FIELDS,
+                columns: CrmSchema::catalogProjection(),
+                nullColumns: [CrmSchema::COLUMN_DELETED_AT],
+                order: CrmSchema::catalogOrder(),
+                limit: CrmSchema::CHUNK_SIZE,
+                inConditions: [CrmSchema::COLUMN_ID => $batch],
+            )) as $row) {
+                $id = self::toId($row[CrmSchema::COLUMN_ID] ?? null);
+                $name = self::toText($row[CrmSchema::COLUMN_NAME] ?? null);
 
-            if ($id !== null) {
-                $definitions[] = ['id' => $id, 'name' => self::toText($row[CrmSchema::COLUMN_NAME] ?? null)];
+                if ($id !== null && $name !== null) {
+                    $names[$id] = $name;
+                }
             }
         }
 
-        return $definitions;
+        return $names;
     }
 
     // ---------------------------------------------------------------
@@ -581,42 +813,28 @@ final class MgCrmRepository
     }
 
     /**
-     * @param array<string, mixed>       $row
-     * @param array<int, string|null>    $types
-     * @param array<int, string|null>    $statuses
+     * Projeção do follow-up SEM os labels: eles são resolvidos em lote depois
+     * da página, a partir dos ids que ela realmente contém, e preenchidos por
+     * `listFollowups()`. A ordem das chaves é fixa aqui para que o shape
+     * público não dependa da ordem de preenchimento.
+     *
+     * @param array<string, mixed> $row
      * @return array<string, mixed>
      */
-    private static function projectFollowup(array $row, array $types, array $statuses): array
+    private static function projectFollowup(array $row): array
     {
-        $typeId = self::toId($row[CrmSchema::COLUMN_TYPE_ID] ?? null);
-        $statusId = self::toId($row[CrmSchema::COLUMN_STATUS_ID] ?? null);
-
         return [
             'followup_id' => self::toId($row[CrmSchema::COLUMN_ID] ?? null),
             'resource_id' => self::toId($row[CrmSchema::COLUMN_RESOURCE_ID] ?? null),
-            'type_id' => $typeId,
-            'type_name' => $typeId === null ? null : ($types[$typeId] ?? null),
-            'status_id' => $statusId,
-            'status_name' => $statusId === null ? null : ($statuses[$statusId] ?? null),
+            'type_id' => self::toId($row[CrmSchema::COLUMN_TYPE_ID] ?? null),
+            'type_name' => null,
+            'status_id' => self::toId($row[CrmSchema::COLUMN_STATUS_ID] ?? null),
+            'status_name' => null,
             'description' => self::toText($row['description'] ?? null),
             'date' => self::toText($row['date'] ?? null),
             'created_at' => self::toText($row[CrmSchema::COLUMN_CREATED_AT] ?? null),
             'updated_at' => self::toText($row[CrmSchema::COLUMN_UPDATED_AT] ?? null),
         ];
-    }
-
-    /**
-     * @param array<int, array{id:int, name:string|null}> $entries
-     * @return array<int, string|null>
-     */
-    private static function labelIndex(array $entries): array
-    {
-        $index = [];
-        foreach ($entries as $entry) {
-            $index[$entry['id']] = $entry['name'];
-        }
-
-        return $index;
     }
 
     /** Id positivo, aceitando a forma string do driver. */

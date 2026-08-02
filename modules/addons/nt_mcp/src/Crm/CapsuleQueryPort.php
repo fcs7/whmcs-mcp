@@ -41,6 +41,10 @@ final class CapsuleQueryPort implements CrmQueryPort
                 $query->where($column, $value);
             }
 
+            foreach ($select->inConditions as $column => $values) {
+                $query->whereIn($column, $values);
+            }
+
             foreach ($select->nullColumns as $column) {
                 $query->whereNull($column);
             }
