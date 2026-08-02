@@ -330,11 +330,9 @@ final class MgCrmRepository
      * SEMPRE, inclusive quando nenhuma raia tem recurso — um kanban vazio ainda
      * precisa dizer quais ids existem.
      *
-     * Existe uma raia para CADA status de recurso ativo — sem teto e sem corte.
-     * A revisão fria reprovou o desenho anterior, que materializava 25 raias e
-     * anunciava a omissão num campo: um status válido com recursos dentro
-     * simplesmente desaparecia da visão, e o campo extra não substitui o dado
-     * contratado.
+     * A resposta traz uma PÁGINA de até 25 raias ativas. O catálogo de status
+     * continua completo e `status_offset`/`status_has_more` tornam todas as
+     * raias alcançáveis, sem custo linear ilimitado por request.
      *
      * Cada raia carrega o total EXATO (COUNT sob o mesmo filtro) e uma página
      * de itens limitada, nunca a raia inteira. Raia vazia não paga a consulta
@@ -588,6 +586,15 @@ final class MgCrmRepository
 
         if ($name === null || $name === '') {
             throw CrmException::integrity($context . '_name_blank');
+        }
+
+        // Aparar bordas não é a mesma coisa que provar conteúdo publicável.
+        // ZWNJ/ZWJ/WORD JOINER/SOFT HYPHEN podem aparecer DENTRO de um nome
+        // visível e são preservados; sozinhos (como qualquer controle/formato/
+        // separador) não formam um label acionável e falham fechado.
+        $visible = preg_replace('/[\\s\\p{Z}\\p{Cc}\\p{Cf}]+/u', '', $name);
+        if ($visible === null || $visible === '') {
+            throw CrmException::integrity($context . '_name_invisible');
         }
 
         return $name;

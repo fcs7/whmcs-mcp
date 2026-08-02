@@ -126,6 +126,17 @@ class CrmReadAdapterTest extends TestCase
         return new PhpMcpV1Adapter($api, new CapsuleClient(), $this->baseDir, $this->cacheDir, $repository);
     }
 
+    /** As quatro READ pelo adapter entram uma vez cada no snapshot da resposta. */
+    public function test_every_public_crm_read_enters_exactly_one_snapshot(): void
+    {
+        $this->payload('whmcs_crm_list_contacts', []);
+        $this->payload('whmcs_crm_get_contact', ['resource_id' => 42]);
+        $this->payload('whmcs_crm_list_followups', ['resource_id' => 42]);
+        $this->payload('whmcs_crm_get_kanban', []);
+
+        $this->assertSame(4, $this->port->snapshotCount);
+    }
+
     /** @param array<string, mixed> $arguments */
     private function call(string $tool, array $arguments, ?FakeCrmSchemaProbe $probe = null): array
     {
@@ -516,14 +527,16 @@ class CrmReadAdapterTest extends TestCase
     {
         $this->seedManyStatuses(30);
 
-        $payload = $this->payload('whmcs_crm_get_kanban', [
-            'status_limit' => 25,
-            'status_offset' => 100001,
-        ]);
+        foreach ([100001, PHP_INT_MAX] as $offset) {
+            $payload = $this->payload('whmcs_crm_get_kanban', [
+                'status_limit' => 25,
+                'status_offset' => $offset,
+            ]);
 
-        $this->assertSame(100001, $payload['status_offset']);
-        $this->assertSame([], $payload['lanes']);
-        $this->assertFalse($payload['status_has_more']);
+            $this->assertSame($offset, $payload['status_offset']);
+            $this->assertSame([], $payload['lanes']);
+            $this->assertFalse($payload['status_has_more']);
+        }
     }
 
     /** `status_limit` acima do teto é recusado pelo schema, não clampado mudo. */

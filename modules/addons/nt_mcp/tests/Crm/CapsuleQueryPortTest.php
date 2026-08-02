@@ -8,9 +8,14 @@ use NtMcp\Crm\CrmCount;
 use NtMcp\Crm\CrmErrorCode;
 use NtMcp\Crm\CrmException;
 use NtMcp\Crm\CapsuleQueryPort;
+use NtMcp\Crm\CapsuleSchemaProbe;
+use NtMcp\Crm\CrmCapability;
 use NtMcp\Crm\CrmSchema;
+use NtMcp\Crm\CrmSchemaGuard;
 use NtMcp\Crm\CrmSelect;
 use NtMcp\Tests\Support\FakeCapsule;
+use NtMcp\Tests\Support\CrmSchemaFixture;
+use NtMcp\Tests\Support\FakeSchemaBuilder;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -32,6 +37,7 @@ class CapsuleQueryPortTest extends TestCase
     protected function tearDown(): void
     {
         FakeCapsule::reset();
+        FakeSchemaBuilder::reset();
     }
 
     /** @param array<int, array<string, mixed>> $rows */
@@ -218,9 +224,85 @@ class CapsuleQueryPortTest extends TestCase
 
         $this->assertCount(1, $rows);
         $this->assertSame(
-            ['SET TRANSACTION ISOLATION LEVEL REPEATABLE READ', 'START TRANSACTION READ ONLY', 'commit'],
+            [
+                'write:SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY',
+                'write:begin',
+                'write:commit',
+            ],
             FakeCapsule::$snapshotCalls,
         );
+    }
+
+    /** O lifecycle Illuminate fixa Query Builder e Schema Builder no write PDO. */
+    public function test_snapshot_uses_one_illuminate_connection_and_never_the_read_pdo(): void
+    {
+        $this->seedFields(self::fieldRows());
+        FakeSchemaBuilder::install(CrmSchemaFixture::completeInstallation());
+        $port = new CapsuleQueryPort();
+        $probe = new CapsuleSchemaProbe($port);
+        $guard = new CrmSchemaGuard($probe);
+
+        $port->withinReadSnapshot(function () use ($port, $guard): void {
+            $this->assertSame(1, FakeCapsule::connection()->transactionLevel());
+            $guard->assert(CrmCapability::ResourceCore);
+            $port->selectRows(new CrmSelect(CrmSchema::TABLE_FIELDS, ['id'], limit: 1));
+            $port->countRows(new CrmCount(CrmSchema::TABLE_FIELDS));
+        });
+
+        $this->assertNotSame([], FakeCapsule::$pdoCalls);
+        $this->assertSame([], array_values(array_filter(
+            FakeCapsule::$pdoCalls,
+            static fn(string $call): bool => str_starts_with($call, 'read:')
+        )));
+        $this->assertContains('write:schema', FakeCapsule::$pdoCalls);
+        $this->assertContains('write:query crm_fields', FakeCapsule::$pdoCalls);
+        $this->assertSame(0, FakeCapsule::connection()->transactionLevel());
+        $this->assertFalse(FakeCapsule::connection()->getPdo()->inTransaction());
+    }
+
+    /** Os quatro probes da revisão: bool false e camadas ambiente incoerentes. */
+    public function test_snapshot_rejects_boolean_failures_and_ambient_illuminate_state(): void
+    {
+        foreach (['set', 'commit'] as $phase) {
+            FakeCapsule::reset();
+            $this->seedFields(self::fieldRows());
+            FakeCapsule::$snapshotFailures[$phase] = false;
+            $this->assertSame(CrmErrorCode::Downstream, $this->capture(
+                fn() => (new CapsuleQueryPort())->withinReadSnapshot(static fn(): string => 'accepted')
+            )->errorCode);
+        }
+
+        FakeCapsule::reset();
+        $this->seedFields(self::fieldRows());
+        FakeCapsule::$snapshotFailures['rollback'] = false;
+        $this->assertSame(CrmErrorCode::Downstream, $this->capture(
+            fn() => (new CapsuleQueryPort())->withinReadSnapshot(static function (): never {
+                throw new \RuntimeException('body');
+            })
+        )->errorCode);
+        $this->assertTrue(FakeCapsule::connection()->getPdo()->inTransaction(), 'cleanup impossível fica explícito');
+
+        foreach ([[true, 0], [false, 1], [true, 1]] as [$pdoOpen, $level]) {
+            FakeCapsule::reset();
+            $this->seedFields(self::fieldRows());
+            FakeCapsule::$ambientTransaction = $pdoOpen;
+            FakeCapsule::$ambientTransactionLevel = $level;
+            $this->assertSame(CrmErrorCode::Downstream, $this->capture(
+                fn() => (new CapsuleQueryPort())->withinReadSnapshot(static fn(): string => 'accepted')
+            )->errorCode);
+            $this->assertSame([], FakeCapsule::$snapshotCalls, 'estado ambiente não é adotado');
+        }
+    }
+
+    private function capture(callable $operation): CrmException
+    {
+        try {
+            $operation();
+        } catch (CrmException $e) {
+            return $e;
+        }
+
+        $this->fail('esperava CrmException');
     }
 
     /** VARCHAR numérico é textual; identificador BIGINT não passa por float. */

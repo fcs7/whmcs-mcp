@@ -14,6 +14,7 @@ use NtMcp\Crm\MgCrmRepository;
 use NtMcp\Tests\Support\FakeAdminIdentityResolver;
 use NtMcp\Tests\Support\FakeCrmQueryPort;
 use NtMcp\Tests\Support\FakeCrmSchemaProbe;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /** Reproduções da garantia D15 no seam MVCC em memória. */
@@ -144,6 +145,57 @@ class CrmSnapshotTransactionTest extends TestCase
     {
         $blank = "\u{00A0}\u{2003}\u{3000}";
 
+        $this->assertInvisibleNameRejectedEverywhere($blank);
+
+        $normalized = new FakeCrmQueryPort();
+        self::seedKanban($normalized);
+        $normalized->seed(CrmSchema::TABLE_RESOURCE_TYPES, [
+            ['id' => 1, 'name' => "\u{00A0} Lead \u{3000}", 'active' => 1, 'deleted_at' => null],
+        ]);
+        $normalized->seed(CrmSchema::TABLE_RESOURCE_STATUSES, []);
+        $this->assertSame(
+            'Lead',
+            $this->repository($normalized)->getKanban(null, 25)['catalogs']['resource_types'][0]['name']
+        );
+    }
+
+    /** ZWNJ/ZWJ/WORD JOINER/SOFT HYPHEN isolados também não são conteúdo visível. */
+    #[DataProvider('invisibleFormatCharacterProvider')]
+    public function test_invisible_format_characters_fail_in_all_name_routes(string $name): void
+    {
+        $this->assertInvisibleNameRejectedEverywhere($name);
+    }
+
+    /** @return array<string, array{0:string}> */
+    public static function invisibleFormatCharacterProvider(): array
+    {
+        return [
+            'ZWNJ' => ["\u{200C}"],
+            'ZWJ' => ["\u{200D}"],
+            'WORD JOINER' => ["\u{2060}"],
+            'SOFT HYPHEN' => ["\u{00AD}"],
+        ];
+    }
+
+    /** Caracteres de formato internos em nome visível são preservados, não apagados. */
+    public function test_visible_name_with_internal_format_character_is_preserved(): void
+    {
+        $port = new FakeCrmQueryPort();
+        self::seedKanban($port);
+        $port->seed(CrmSchema::TABLE_RESOURCE_TYPES, [
+            ['id' => 1, 'name' => "Lead\u{200C}North", 'active' => 1, 'deleted_at' => null],
+        ]);
+        $port->seed(CrmSchema::TABLE_RESOURCE_STATUSES, []);
+
+        $this->assertSame(
+            "Lead\u{200C}North",
+            $this->repository($port)->getKanban(null, 25)['catalogs']['resource_types'][0]['name']
+        );
+    }
+
+    private function assertInvisibleNameRejectedEverywhere(string $blank): void
+    {
+
         $catalog = new FakeCrmQueryPort();
         self::seedKanban($catalog);
         $catalog->seed(CrmSchema::TABLE_RESOURCE_TYPES, [
@@ -182,16 +234,6 @@ class CrmSnapshotTransactionTest extends TestCase
             fn() => $this->repository($fields)->getResource(1)
         )->errorCode);
 
-        $normalized = new FakeCrmQueryPort();
-        self::seedKanban($normalized);
-        $normalized->seed(CrmSchema::TABLE_RESOURCE_TYPES, [
-            ['id' => 1, 'name' => "\u{00A0} Lead \u{3000}", 'active' => 1, 'deleted_at' => null],
-        ]);
-        $normalized->seed(CrmSchema::TABLE_RESOURCE_STATUSES, []);
-        $this->assertSame(
-            'Lead',
-            $this->repository($normalized)->getKanban(null, 25)['catalogs']['resource_types'][0]['name']
-        );
     }
 
     /** O sort final de custom fields também é lexical para VARCHAR numérico. */

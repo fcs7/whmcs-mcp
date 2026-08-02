@@ -16,9 +16,9 @@ namespace NtMcp\Crm;
  *
  * A regra que importa para o contrato público é que a contagem enxergue
  * EXATAMENTE o mesmo recorte dos itens. Por isso o filtro aceito aqui é o mesmo
- * de `CrmSelect` — igualdade escalar em coluna conhecida e `IS NULL` em coluna
- * conhecida — e nada além: sem operador escolhível, sem nome vindo do chamador,
- * sem tabela fora do catálogo fixo de `CrmSchema`.
+ * de `CrmSelect` — igualdade escalar, `IS NULL` e `IN` fechado de ids em
+ * coluna conhecida — e nada além: sem operador escolhível, sem nome vindo do
+ * chamador, sem tabela fora do catálogo fixo de `CrmSchema`.
  */
 final class CrmCount
 {

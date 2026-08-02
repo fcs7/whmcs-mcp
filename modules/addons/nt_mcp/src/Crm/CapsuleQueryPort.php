@@ -30,35 +30,55 @@ use WHMCS\Database\Capsule;
  */
 final class CapsuleQueryPort implements CrmQueryPort
 {
+    private const SNAPSHOT_CONFIGURATION = 'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY';
+
     /** A conexão fixa enquanto uma resposta CRM está sendo materializada. */
     private mixed $snapshotConnection = null;
 
     public function withinReadSnapshot(callable $operation): mixed
     {
+        if ($this->snapshotConnection !== null) {
+            // A reentrância não pode "adotar" a transação externa nem fechar
+            // o snapshot que o chamador externo ainda está montando.
+            throw $this->downstream(new \RuntimeException('nested read snapshot'));
+        }
+
+        $connection = null;
+        $pdo = null;
+        $beginInvoked = false;
+
         try {
             $connection = Capsule::connection();
             $pdo = $connection->getPdo();
 
             // Não é seguro herdar isolamento, read-only ou ownership de uma
-            // transação que este boundary não abriu.
-            if ($pdo->inTransaction()) {
+            // transação que este boundary não abriu — nem no PDO nem no
+            // contador que faz o Illuminate escolher o write PDO em selects.
+            if ($pdo->inTransaction() || $connection->transactionLevel() !== 0) {
                 throw new \RuntimeException('ambient transaction');
             }
 
             // `SET TRANSACTION` vale somente para a próxima transação. Assim
-            // não contaminamos a conexão reaproveitada pelo WHMCS.
-            $pdo->exec('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
-            $pdo->exec('START TRANSACTION READ ONLY');
-
-            if (!$pdo->inTransaction()) {
-                throw new \RuntimeException('read snapshot did not start');
+            // não contaminamos a conexão reaproveitada pelo WHMCS. A abertura
+            // em si é pelo lifecycle do Illuminate: ele eleva transactionLevel
+            // para 1 e força Query/Schema Builder a permanecer no write PDO.
+            if ($pdo->exec(self::SNAPSHOT_CONFIGURATION) === false) {
+                throw new \RuntimeException('snapshot configuration failed');
             }
+
+            $beginInvoked = true;
+            if ($connection->beginTransaction() === false) {
+                throw new \RuntimeException('snapshot begin failed');
+            }
+
+            $this->assertOpen($connection, $pdo);
         } catch (\Throwable $e) {
-            // Um driver pode ter aberto a transação e falhado ao reportá-la.
-            // A tentativa de cleanup é obrigatória e a sua falha não some.
-            if (isset($pdo) && $this->isOpen($pdo)) {
+            // Um begin parcial pode ter alterado só uma das duas camadas. Só
+            // fazemos cleanup se esta chamada chegou a tentar abrir a visão;
+            // um ambiente pré-existente é recusado sem tomar sua ownership.
+            if ($beginInvoked && $connection !== null && $pdo !== null) {
                 try {
-                    $pdo->rollBack();
+                    $this->rollbackSnapshot($connection, $pdo);
                 } catch (\Throwable $cleanup) {
                     throw $this->downstream($cleanup);
                 }
@@ -73,8 +93,7 @@ final class CapsuleQueryPort implements CrmQueryPort
             $result = $operation();
         } catch (CrmException $e) {
             try {
-                $pdo->rollBack();
-                $this->assertClosed($pdo);
+                $this->rollbackSnapshot($connection, $pdo);
             } catch (\Throwable $cleanup) {
                 throw $this->downstream($cleanup);
             } finally {
@@ -86,8 +105,7 @@ final class CapsuleQueryPort implements CrmQueryPort
             throw $e;
         } catch (\Throwable $e) {
             try {
-                $pdo->rollBack();
-                $this->assertClosed($pdo);
+                $this->rollbackSnapshot($connection, $pdo);
             } catch (\Throwable $cleanup) {
                 throw $this->downstream($cleanup);
             } finally {
@@ -98,16 +116,16 @@ final class CapsuleQueryPort implements CrmQueryPort
         }
 
         try {
-            $pdo->commit();
-            $this->assertClosed($pdo);
+            if ($connection->commit() === false) {
+                throw new \RuntimeException('snapshot commit failed');
+            }
+            $this->assertClosed($connection, $pdo);
         } catch (\Throwable $e) {
-            // `commit()` que falha pode deixar a sessão aberta; faça rollback
-            // antes de devolver uma única falha downstream ao boundary MCP.
+            // `commit()` que falha pode deixar PDO e contador em estados
+            // distintos. Refaça o cleanup pelo lifecycle e, só se o framework
+            // já tiver perdido o nível, force o mesmo PDO capturado a fechar.
             try {
-                if ($this->isOpen($pdo)) {
-                    $pdo->rollBack();
-                    $this->assertClosed($pdo);
-                }
+                $this->rollbackSnapshot($connection, $pdo);
             } catch (\Throwable $cleanup) {
                 throw $this->downstream($cleanup);
             } finally {
@@ -165,6 +183,12 @@ final class CapsuleQueryPort implements CrmQueryPort
         } catch (\Throwable $e) {
             throw $this->downstream($e);
         }
+    }
+
+    /** Schema builder na MESMA Connection capturada pela READ, sem tocar DB no wiring. */
+    public function schemaBuilder(): mixed
+    {
+        return $this->connection()->getSchemaBuilder();
     }
 
     /**
@@ -235,10 +259,49 @@ final class CapsuleQueryPort implements CrmQueryPort
         }
     }
 
-    private function assertClosed(mixed $pdo): void
+    private function assertOpen(mixed $connection, mixed $pdo): void
     {
-        if ($this->isOpen($pdo)) {
+        if (!$this->isOpen($pdo) || $connection->transactionLevel() !== 1) {
+            throw new \RuntimeException('read snapshot begin state is inconsistent');
+        }
+    }
+
+    private function assertClosed(mixed $connection, mixed $pdo): void
+    {
+        if ($this->isOpen($pdo) || $connection->transactionLevel() !== 0) {
             throw new \RuntimeException('read snapshot cleanup left a transaction open');
+        }
+    }
+
+    private function rollbackSnapshot(mixed $connection, mixed $pdo): void
+    {
+        $frameworkFailure = null;
+
+        try {
+            if ($connection->transactionLevel() > 0 && $connection->rollBack() === false) {
+                $frameworkFailure = new \RuntimeException('snapshot rollback failed');
+            }
+        } catch (\Throwable $e) {
+            $frameworkFailure = $e;
+        }
+
+        // Illuminate pode diminuir o contador mesmo se o driver devolver
+        // `false` no commit/rollback. Nesse caso não há nível para o framework
+        // fechar, mas o PDO que esta chamada capturou ainda precisa ser limpo.
+        if ($this->isOpen($pdo)) {
+            try {
+                if ($pdo->rollBack() === false) {
+                    throw new \RuntimeException('snapshot PDO cleanup failed');
+                }
+            } catch (\Throwable $e) {
+                throw $e;
+            }
+        }
+
+        $this->assertClosed($connection, $pdo);
+
+        if ($frameworkFailure !== null) {
+            throw $frameworkFailure;
         }
     }
 }

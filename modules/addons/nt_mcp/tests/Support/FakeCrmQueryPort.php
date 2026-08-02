@@ -25,6 +25,8 @@ use NtMcp\Whmcs\Diagnostics;
  */
 final class FakeCrmQueryPort implements CrmQueryPort
 {
+    public int $snapshotCount = 0;
+
     /** @var array<int, CrmSelect> */
     public array $selects = [];
 
@@ -114,6 +116,8 @@ final class FakeCrmQueryPort implements CrmQueryPort
 
     public function withinReadSnapshot(callable $operation): mixed
     {
+        $this->snapshotCount++;
+
         if ($this->ambientTransaction || $this->snapshotRows !== null) {
             throw CrmException::downstream(Diagnostics::report(
                 Diagnostics::CATEGORY_DB_EXCEPTION,

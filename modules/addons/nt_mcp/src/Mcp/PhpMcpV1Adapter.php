@@ -99,8 +99,8 @@ class PhpMcpV1Adapter implements ServerAdapterInterface
      */
     private static function capsuleCrmRepository(): MgCrmRepository
     {
-        $guard = new CrmSchemaGuard(new CapsuleSchemaProbe());
         $port = new CapsuleQueryPort();
+        $guard = new CrmSchemaGuard(new CapsuleSchemaProbe($port));
 
         return new MgCrmRepository($guard, $port, new CapsuleAdminIdentityResolver($guard, $port));
     }

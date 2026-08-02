@@ -42,10 +42,17 @@ final class FakeCapsule
     /** @var array<int, string> transações read-only solicitadas pelo port real */
     public static array $snapshotCalls = [];
 
-    /** @var array{begin:?\Throwable,commit:?\Throwable,rollback:?\Throwable} */
-    public static array $snapshotFailures = ['begin' => null, 'commit' => null, 'rollback' => null];
+    /** @var array<int, string> operações preparadas por PDO (`read`/`write`). */
+    public static array $pdoCalls = [];
+
+    /** @var array{set:mixed,begin:mixed,commit:mixed,rollback:mixed} */
+    public static array $snapshotFailures = ['set' => null, 'begin' => null, 'commit' => null, 'rollback' => null];
 
     public static bool $ambientTransaction = false;
+
+    public static int $ambientTransactionLevel = 0;
+
+    private static ?FakeCapsuleConnection $connection = null;
 
     public static function reset(): void
     {
@@ -56,8 +63,11 @@ final class FakeCapsule
         self::$mutations = [];
         self::$nextInsertId = 1;
         self::$snapshotCalls = [];
-        self::$snapshotFailures = ['begin' => null, 'commit' => null, 'rollback' => null];
+        self::$pdoCalls = [];
+        self::$snapshotFailures = ['set' => null, 'begin' => null, 'commit' => null, 'rollback' => null];
         self::$ambientTransaction = false;
+        self::$ambientTransactionLevel = 0;
+        self::$connection = null;
     }
 
     /** Popula uma tabela com valores da coluna `gateway`. */
@@ -111,28 +121,80 @@ final class FakeCapsule
             throw new \RuntimeException('FakeCapsule disabled: no WHMCS database in this test');
         }
 
-        return new FakeCapsuleConnection();
+        return self::$connection ??= new FakeCapsuleConnection();
     }
 }
 
-/** Conexão/PDO mínimo para provar a transação do `CapsuleQueryPort` real. */
+/** Seam fiel ao lifecycle mínimo de `Illuminate\Database\Connection`. */
 final class FakeCapsuleConnection
 {
-    private FakeCapsulePdo $pdo;
+    private FakeCapsulePdo $writePdo;
+    private FakeCapsulePdo $readPdo;
+    private int $transactions;
 
     public function __construct()
     {
-        $this->pdo = new FakeCapsulePdo();
+        $this->writePdo = new FakeCapsulePdo('write', FakeCapsule::$ambientTransaction);
+        $this->readPdo = new FakeCapsulePdo('read');
+        $this->transactions = FakeCapsule::$ambientTransactionLevel;
     }
 
     public function getPdo(): FakeCapsulePdo
     {
-        return $this->pdo;
+        return $this->writePdo;
+    }
+
+    public function getReadPdo(): FakeCapsulePdo
+    {
+        return $this->transactions > 0 ? $this->writePdo : $this->readPdo;
+    }
+
+    public function transactionLevel(): int
+    {
+        return $this->transactions;
+    }
+
+    public function beginTransaction(): bool|null
+    {
+        $result = $this->writePdo->beginTransaction();
+        // O Illuminate incrementa o nível após chamar o PDO; mesmo um driver
+        // que devolve false precisa ser detectado pelo boundary pós-begin.
+        $this->transactions++;
+
+        return $result;
+    }
+
+    public function commit(): bool|null
+    {
+        $result = $this->writePdo->commit();
+        $this->transactions = max(0, $this->transactions - 1);
+
+        return $result;
+    }
+
+    public function rollBack(): bool|null
+    {
+        $result = $this->writePdo->rollBack();
+        $this->transactions = 0;
+
+        return $result;
     }
 
     public function table(string $table): FakeCapsuleQuery
     {
+        $this->getReadPdo()->prepare("query {$table}");
+
         return FakeCapsule::table($table);
+    }
+
+    public function getSchemaBuilder(): FakeCapsuleSchemaBuilder
+    {
+        return new FakeCapsuleSchemaBuilder($this);
+    }
+
+    public function markSchemaQuery(): void
+    {
+        $this->getReadPdo()->prepare('schema');
     }
 }
 
@@ -140,9 +202,9 @@ final class FakeCapsulePdo
 {
     private bool $inTransaction;
 
-    public function __construct()
+    public function __construct(private readonly string $role, bool $inTransaction = false)
     {
-        $this->inTransaction = FakeCapsule::$ambientTransaction;
+        $this->inTransaction = $inTransaction;
     }
 
     public function inTransaction(): bool
@@ -150,25 +212,44 @@ final class FakeCapsulePdo
         return $this->inTransaction;
     }
 
-    public function exec(string $statement): int
+    public function exec(string $statement): int|false
     {
-        FakeCapsule::$snapshotCalls[] = $statement;
-
-        if ($statement === 'START TRANSACTION READ ONLY') {
-            if (FakeCapsule::$snapshotFailures['begin'] !== null) {
-                throw FakeCapsule::$snapshotFailures['begin'];
-            }
-            $this->inTransaction = true;
+        FakeCapsule::$snapshotCalls[] = "{$this->role}:{$statement}";
+        $failure = FakeCapsule::$snapshotFailures['set'];
+        if ($failure instanceof \Throwable) {
+            throw $failure;
+        }
+        if ($failure === false) {
+            return false;
         }
 
         return 0;
     }
 
+    public function beginTransaction(): bool
+    {
+        FakeCapsule::$snapshotCalls[] = "{$this->role}:begin";
+        $failure = FakeCapsule::$snapshotFailures['begin'];
+        if ($failure instanceof \Throwable) {
+            throw $failure;
+        }
+        if ($failure === false) {
+            return false;
+        }
+        $this->inTransaction = true;
+
+        return true;
+    }
+
     public function commit(): bool
     {
-        FakeCapsule::$snapshotCalls[] = 'commit';
-        if (FakeCapsule::$snapshotFailures['commit'] !== null) {
-            throw FakeCapsule::$snapshotFailures['commit'];
+        FakeCapsule::$snapshotCalls[] = "{$this->role}:commit";
+        $failure = FakeCapsule::$snapshotFailures['commit'];
+        if ($failure instanceof \Throwable) {
+            throw $failure;
+        }
+        if ($failure === false) {
+            return false;
         }
         $this->inTransaction = false;
 
@@ -177,13 +258,45 @@ final class FakeCapsulePdo
 
     public function rollBack(): bool
     {
-        FakeCapsule::$snapshotCalls[] = 'rollback';
-        if (FakeCapsule::$snapshotFailures['rollback'] !== null) {
-            throw FakeCapsule::$snapshotFailures['rollback'];
+        FakeCapsule::$snapshotCalls[] = "{$this->role}:rollback";
+        $failure = FakeCapsule::$snapshotFailures['rollback'];
+        if ($failure instanceof \Throwable) {
+            throw $failure;
+        }
+        if ($failure === false) {
+            return false;
         }
         $this->inTransaction = false;
 
         return true;
+    }
+
+    public function prepare(string $statement): bool
+    {
+        FakeCapsule::$pdoCalls[] = "{$this->role}:{$statement}";
+
+        return true;
+    }
+}
+
+final class FakeCapsuleSchemaBuilder
+{
+    public function __construct(private readonly FakeCapsuleConnection $connection)
+    {
+    }
+
+    public function hasTable(string $table): bool
+    {
+        $this->connection->markSchemaQuery();
+
+        return FakeSchemaBuilder::builder()->hasTable($table);
+    }
+
+    public function hasColumn(string $table, string $column): bool
+    {
+        $this->connection->markSchemaQuery();
+
+        return FakeSchemaBuilder::builder()->hasColumn($table, $column);
     }
 }
 

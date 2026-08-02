@@ -25,11 +25,21 @@ final class CapsuleSchemaProbe implements CrmSchemaProbe
     /** @var array<string, CrmSchemaFact> apenas fatos conclusivos */
     private array $facts = [];
 
+    /**
+     * Quando o repositório CRM é composto pelo adapter, o probe recebe o mesmo
+     * port da READ. Durante um snapshot ele então usa a Connection já capturada
+     * (e seu transactionLevel=1), em vez de pedir uma nova rota ao Capsule.
+     * O construtor continua inerte: não abre conexão nem toca metadata.
+     */
+    public function __construct(private readonly ?CapsuleQueryPort $port = null)
+    {
+    }
+
     public function hasTable(string $table): CrmSchemaFact
     {
         return $this->remember(
             $table,
-            static fn(): bool => (bool) Capsule::schema()->hasTable($table)
+            fn(): bool => (bool) $this->schemaBuilder()->hasTable($table)
         );
     }
 
@@ -37,7 +47,7 @@ final class CapsuleSchemaProbe implements CrmSchemaProbe
     {
         return $this->remember(
             $table . '.' . $column,
-            static fn(): bool => (bool) Capsule::schema()->hasColumn($table, $column)
+            fn(): bool => (bool) $this->schemaBuilder()->hasColumn($table, $column)
         );
     }
 
@@ -58,5 +68,10 @@ final class CapsuleSchemaProbe implements CrmSchemaProbe
         }
 
         return $this->facts[$key] = $fact;
+    }
+
+    private function schemaBuilder(): mixed
+    {
+        return $this->port?->schemaBuilder() ?? Capsule::schema();
     }
 }
