@@ -9,6 +9,11 @@ use PhpMcp\Server\Transports\HttpTransportHandler;
 use PhpMcp\Server\Contracts\ConfigurationRepositoryInterface;
 use Psr\SimpleCache\CacheInterface;
 use Psr\Log\LoggerInterface;
+use NtMcp\Crm\CapsuleAdminIdentityResolver;
+use NtMcp\Crm\CapsuleQueryPort;
+use NtMcp\Crm\CapsuleSchemaProbe;
+use NtMcp\Crm\CrmSchemaGuard;
+use NtMcp\Crm\MgCrmRepository;
 use NtMcp\Whmcs\CompatContainer;
 use NtMcp\Whmcs\LocalApiClient;
 use NtMcp\Whmcs\CapsuleClient;
@@ -57,19 +62,47 @@ class PhpMcpV1Adapter implements ServerAdapterInterface
 
     private readonly string $cacheDir;
 
+    /** Fronteira de domínio das QUATRO leituras de CRM sobre o schema `crm_*`. */
+    private readonly MgCrmRepository $crm;
+
     /**
      * @param string      $baseDir  Diretório base para withBasePath()/scan de
      *                              Tools (o src/ do addon).
      * @param string|null $cacheDir Diretório do FileCache; default baseDir/../data/cache.
      *                              Parametrizável para testes não poluírem o cache real.
+     * @param MgCrmRepository|null $crm Fronteira do mgCRM2; default é a real,
+     *                              sobre o Capsule. Injetável para que os testes
+     *                              exercitem as leituras pelo adapter REAL sem
+     *                              um WHMCS bootstrapado.
      */
     public function __construct(
         private readonly LocalApiClient $localApi,
         private readonly CapsuleClient $capsule,
         private readonly string $baseDir,
         ?string $cacheDir = null,
+        ?MgCrmRepository $crm = null,
     ) {
         $this->cacheDir = $cacheDir ?? ($baseDir . '/../data/cache');
+        $this->crm = $crm ?? self::capsuleCrmRepository();
+    }
+
+    /**
+     * Composição real do repositório. Construir estes objetos NÃO toca o banco:
+     * o probe e o port só chamam `Capsule` dentro de cada operação, e o schema
+     * guard só pergunta quando uma capacidade é exigida. Logo uma instalação
+     * sem mgCRM2 não paga nada por este wiring — ela falha fechado na primeira
+     * leitura de CRM, que é o comportamento contratado.
+     *
+     * O guard é COMPARTILHADO entre o port de consulta e o resolver de
+     * identidade para que a memoização de schema valha por request inteira, e
+     * não por colaborador.
+     */
+    private static function capsuleCrmRepository(): MgCrmRepository
+    {
+        $guard = new CrmSchemaGuard(new CapsuleSchemaProbe());
+        $port = new CapsuleQueryPort();
+
+        return new MgCrmRepository($guard, $port, new CapsuleAdminIdentityResolver($guard, $port));
     }
 
     public function handle(string $input, string $clientId, ?string $mcpMethod): array
@@ -96,7 +129,8 @@ class PhpMcpV1Adapter implements ServerAdapterInterface
 
         // FASE 2b: pré-registrar as 11 Tools classes evita a reflexão do
         // CompatContainer a cada resolução. 10 injetam LocalApiClient; CrmTools
-        // injeta CapsuleClient.
+        // injeta CapsuleClient (as 4 escritas legadas) e MgCrmRepository (as 4
+        // leituras já migradas para `crm_*`).
         foreach ([
             BillingTools::class, ClientTools::class, DomainTools::class,
             OrderTools::class, ProjectManagerTools::class, QuoteTools::class,
@@ -105,7 +139,7 @@ class PhpMcpV1Adapter implements ServerAdapterInterface
         ] as $toolClass) {
             $container->set($toolClass, new $toolClass($this->localApi));
         }
-        $container->set(CrmTools::class, new CrmTools($this->capsule));
+        $container->set(CrmTools::class, new CrmTools($this->capsule, $this->crm));
 
         $container->set(CacheInterface::class, new FileCache($this->cacheDir . '/mcp_state.json'));
 

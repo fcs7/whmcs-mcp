@@ -72,6 +72,30 @@ final class CrmSchema
     public const MAX_OFFSET = 100000;
 
     /**
+     * Teto de raias materializadas por `whmcs_crm_get_kanban`.
+     *
+     * Cada raia custa duas consultas (o total exato e a página de itens), então
+     * o número de raias é o multiplicador do custo da tool. O catálogo de
+     * status é publicado INTEIRO — o teto corta apenas as raias, e a resposta
+     * carrega `lanes_truncated` quando isso acontece. Um corte silencioso
+     * pareceria "não há mais status", que é exatamente o resultado vazio
+     * enganoso que o contrato proíbe.
+     */
+    public const MAX_KANBAN_LANES = 25;
+
+    /**
+     * Teto de custom fields lidos por recurso em `whmcs_crm_get_contact`.
+     *
+     * Vale para os dois lados do batch: os valores do recurso e as definições
+     * usadas para resolver o nome. Mantém a leitura em DUAS consultas fixas,
+     * em vez de uma por campo.
+     */
+    public const MAX_CUSTOM_FIELDS = self::MAX_LIMIT;
+
+    /** Teto de entradas devolvidas por catálogo ativo. */
+    public const MAX_CATALOG_ENTRIES = self::MAX_LIMIT;
+
+    /**
      * Conjunto MÍNIMO exigido por capacidade — e cada capacidade corresponde ao
      * que UMA operação consulta, não ao que uma tabela oferece.
      *
@@ -100,6 +124,12 @@ final class CrmSchema
         CrmCapability::Followups->value => [
             self::TABLE_FOLLOWUPS => [
                 'id', 'resource_id', 'type_id', 'status_id', 'admin_id',
+                'description', 'date', 'created_at', 'updated_at', 'deleted_at',
+            ],
+        ],
+        CrmCapability::FollowupsRead->value => [
+            self::TABLE_FOLLOWUPS => [
+                'id', 'resource_id', 'type_id', 'status_id',
                 'description', 'date', 'created_at', 'updated_at', 'deleted_at',
             ],
         ],
@@ -182,6 +212,23 @@ final class CrmSchema
         ];
     }
 
+    /**
+     * Projeção PÚBLICA de follow-up: a de escrita menos `admin_id`.
+     *
+     * O id interno do staff não atravessa a superfície MCP. Ele não é dado do
+     * chamador, não é acionável por ele e é exatamente o tipo de identificador
+     * interno que o contrato de erros/sinks mantém fora do que é publicado.
+     *
+     * @return array<int, string>
+     */
+    public static function followupReadProjection(): array
+    {
+        return [
+            'id', 'resource_id', 'type_id', 'status_id',
+            'description', 'date', 'created_at', 'updated_at',
+        ];
+    }
+
     /** @return array<int, string> */
     public static function noteProjection(): array
     {
@@ -192,6 +239,22 @@ final class CrmSchema
     public static function catalogProjection(): array
     {
         return ['id', 'name'];
+    }
+
+    /**
+     * Valor de custom field: o vínculo e o conteúdo, nada da configuração.
+     *
+     * `crm_fields` guarda a DEFINIÇÃO (nome, e na instalação real também
+     * validators, opções e visibilidade). Só `id` e `name` são contratados, e
+     * só eles são projetados — o normalizado que chega ao chamador é
+     * `{field_id, name, value}`. Validator e configuração interna do mgCRM2 não
+     * têm caminho até a resposta porque não têm caminho até a query.
+     *
+     * @return array<int, string>
+     */
+    public static function fieldValueProjection(): array
+    {
+        return ['id', 'field_id', 'value'];
     }
 
     // ---------------------------------------------------------------
@@ -224,6 +287,12 @@ final class CrmSchema
     public static function catalogOrder(): array
     {
         return [['name', 'asc'], ['id', 'asc']];
+    }
+
+    /** @return array<int, array{0:string,1:string}> */
+    public static function fieldValueOrder(): array
+    {
+        return [['field_id', 'asc'], ['id', 'asc']];
     }
 
     // ---------------------------------------------------------------

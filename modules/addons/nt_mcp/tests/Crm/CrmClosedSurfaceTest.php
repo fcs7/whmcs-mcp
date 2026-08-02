@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace NtMcp\Tests\Crm;
 
+use NtMcp\Crm\CrmCount;
 use NtMcp\Crm\CrmQueryPort;
 use NtMcp\Crm\CrmSchema;
 use NtMcp\Crm\CrmSelect;
@@ -109,15 +110,74 @@ class CrmClosedSurfaceTest extends TestCase
         ];
     }
 
-    /** O seam de execução não declara operação de mutação. */
+    /**
+     * O seam de execução não declara operação de mutação.
+     *
+     * CRM-2 acrescentou `countRows`, que continua leitura: devolve um inteiro
+     * sob o mesmo filtro fechado do select. A lista permanece EXAUSTIVA de
+     * propósito — um método novo aqui precisa passar por esta asserção.
+     */
     public function test_the_query_port_declares_reads_only(): void
     {
         $methods = array_map(
             static fn(\ReflectionMethod $m): string => $m->getName(),
             (new \ReflectionClass(CrmQueryPort::class))->getMethods()
         );
+        sort($methods);
 
-        $this->assertSame(['selectRows'], $methods);
+        $this->assertSame(['countRows', 'selectRows'], $methods);
+    }
+
+    /**
+     * A contagem não pode virar a porta dos fundos do contrato: `CrmCount`
+     * recusa exatamente o que `CrmSelect` recusa.
+     */
+    #[DataProvider('rejectedCountProvider')]
+    public function test_count_refuses_anything_outside_the_contract(callable $build): void
+    {
+        $this->expectException(\LogicException::class);
+        $build();
+    }
+
+    /** @return array<string, array{0:callable}> */
+    public static function rejectedCountProvider(): array
+    {
+        return [
+            'tabela do WHMCS' => [static fn() => new CrmCount('tblclients')],
+            'tabela fictícia' => [static fn() => new CrmCount('mod_mgcrm_contacts')],
+            'condição inventada' => [
+                static fn() => new CrmCount(CrmSchema::TABLE_RESOURCES, ['secret' => 1]),
+            ],
+            'condição não escalar' => [
+                static fn() => new CrmCount(CrmSchema::TABLE_RESOURCES, ['id' => [1, 2]]),
+            ],
+            'null em coluna inventada' => [
+                static fn() => new CrmCount(CrmSchema::TABLE_RESOURCES, [], ['secret']),
+            ],
+        ];
+    }
+
+    /**
+     * A contagem derivada carrega o filtro do select INTEIRO — é isso que
+     * torna `count`/`has_more` verificavelmente coerentes com `items`.
+     */
+    public function test_count_derived_from_a_select_shares_its_exact_filter(): void
+    {
+        $select = new CrmSelect(
+            table: CrmSchema::TABLE_RESOURCES,
+            columns: CrmSchema::resourceProjection(),
+            conditions: [CrmSchema::COLUMN_TYPE_ID => 3, CrmSchema::COLUMN_STATUS_ID => 4],
+            nullColumns: [CrmSchema::COLUMN_DELETED_AT],
+            order: CrmSchema::resourceOrder(),
+            limit: 10,
+            offset: 20,
+        );
+
+        $count = CrmCount::matching($select);
+
+        $this->assertSame($select->table, $count->table);
+        $this->assertSame($select->conditions, $count->conditions);
+        $this->assertSame($select->nullColumns, $count->nullColumns);
     }
 
     /** As classes de mutação prematuras não existem mais. */
@@ -273,6 +333,7 @@ class CrmClosedSurfaceTest extends TestCase
             'followups' => [CrmSchema::followupOrder()],
             'notes' => [CrmSchema::noteOrder()],
             'catalogs' => [CrmSchema::catalogOrder()],
+            'field values' => [CrmSchema::fieldValueOrder()],
         ];
     }
 }

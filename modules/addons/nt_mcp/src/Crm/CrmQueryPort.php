@@ -28,4 +28,17 @@ interface CrmQueryPort
      * @throws CrmException
      */
     public function selectRows(CrmSelect $select): array;
+
+    /**
+     * Total EXATO de linhas sob o mesmo filtro de um select — o que sustenta
+     * `count`/`total`/`has_more` do contrato público de CRM-2.
+     *
+     * Continua sendo leitura: devolve um inteiro, nunca uma linha, e o filtro
+     * aceito é o mesmo conjunto fechado de `CrmSelect`. A alternativa —
+     * paginar até o fim para contar — seria justamente a "leitura ilimitada"
+     * que o contrato proíbe.
+     *
+     * @throws CrmException
+     */
+    public function countRows(CrmCount $count): int;
 }

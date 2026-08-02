@@ -58,14 +58,51 @@ final class CapsuleQueryPort implements CrmQueryPort
 
             return $result;
         } catch (\Throwable $e) {
-            $correlationId = LocalApiClient::auditLog(ActivityEvent::DB_EXCEPTION);
-            Diagnostics::log($correlationId, Diagnostics::CATEGORY_DB_EXCEPTION, 'crm_select', $e);
-
-            throw CrmException::downstream(
-                $correlationId,
-                Diagnostics::fingerprint($e->getMessage()),
-                get_class($e)
-            );
+            throw $this->downstream($e);
         }
+    }
+
+    /**
+     * `COUNT` sob o mesmo filtro do select correspondente. Nenhuma linha é
+     * materializada: o driver devolve um escalar, então não existe aqui o
+     * caminho de exfiltração que uma projeção teria.
+     */
+    public function countRows(CrmCount $count): int
+    {
+        LocalApiClient::auditLog(ActivityEvent::DB_SELECT, AuditMetadata::ids($count->auditIds()));
+
+        try {
+            $query = Capsule::table($count->table);
+
+            foreach ($count->conditions as $column => $value) {
+                $query->where($column, $value);
+            }
+
+            foreach ($count->nullColumns as $column) {
+                $query->whereNull($column);
+            }
+
+            return max(0, (int) $query->count());
+        } catch (\Throwable $e) {
+            throw $this->downstream($e);
+        }
+    }
+
+    /**
+     * Fronteira ÚNICA em que a mensagem da causa é tocada, e só para virar
+     * fingerprint. Centralizada para que um caminho novo não possa esquecer a
+     * higienização — a mensagem de um `PDOException` pode carregar credencial
+     * de conexão, fragmento de SQL e valores da linha.
+     */
+    private function downstream(\Throwable $e): CrmException
+    {
+        $correlationId = LocalApiClient::auditLog(ActivityEvent::DB_EXCEPTION);
+        Diagnostics::log($correlationId, Diagnostics::CATEGORY_DB_EXCEPTION, 'crm_select', $e);
+
+        return CrmException::downstream(
+            $correlationId,
+            Diagnostics::fingerprint($e->getMessage()),
+            get_class($e)
+        );
     }
 }

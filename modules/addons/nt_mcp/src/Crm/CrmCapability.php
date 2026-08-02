@@ -41,8 +41,22 @@ enum CrmCapability: string
     /** `crm_resources_statuses`. */
     case ResourceStatuses = 'resource_statuses';
 
-    /** `crm_followups`. */
+    /**
+     * `crm_followups` para ESCRITA — inclui `admin_id`, que é a coluna de
+     * autoria que CRM-3 preenche a partir do OAuth.
+     */
     case Followups = 'followups';
+
+    /**
+     * `crm_followups` para LEITURA — o mesmo recorte SEM `admin_id`.
+     *
+     * Separada pelo motivo que a revisão fria de CRM-1 fixou: cada operação
+     * prova somente as colunas que a sua query usa. A listagem pública de
+     * follow-ups não projeta nem filtra `admin_id` (o id interno do staff não
+     * atravessa a superfície MCP), então um drift nessa coluna não pode
+     * derrubar a leitura.
+     */
+    case FollowupsRead = 'followups_read';
 
     /** `crm_followup_types`. */
     case FollowupTypes = 'followup_types';

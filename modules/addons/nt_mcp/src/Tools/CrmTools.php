@@ -2,21 +2,47 @@
 // src/Tools/CrmTools.php
 namespace NtMcp\Tools;
 
+use NtMcp\Crm\CrmException;
+use NtMcp\Crm\MgCrmRepository;
 use NtMcp\Whmcs\CapsuleClient;
 use NtMcp\Whmcs\DateNormalizer;
 use PhpMcp\Server\Attributes\McpTool;
 use WHMCS\Database\Capsule;
 
+/**
+ * As oito tools de CRM, em MIGRAÇÃO.
+ *
+ * Estado desta tranche (CRM-2): as QUATRO leituras já operam sobre o schema
+ * real do mgCRM2 (`crm_*`), através de `MgCrmRepository`. As QUATRO escritas
+ * continuam byte a byte como estavam, sobre o `CapsuleClient` e as tabelas
+ * fictícias `mod_mgcrm_*` — elas seguem não-funcionais contra a instalação
+ * real, e a sua migração é CRM-3. A remoção do legado é CRM-4.
+ *
+ * As duas rotas convivem de propósito: migrar leitura e escrita no mesmo
+ * changeset misturaria uma mudança de contrato público (nomes de parâmetro,
+ * forma da resposta) com uma mudança de efeito colateral, e nenhuma das duas
+ * poderia ser revisada isoladamente.
+ */
 class CrmTools
 {
-    // Confirmar nomes das tabelas no banco de dados do WHMCS
+    // ---------------------------------------------------------------
+    // LEGADO — usado SOMENTE pelas quatro escritas, até CRM-3.
+    //
+    // Estes nomes não existem na instalação real (D3): o addon é o mgCRM2 e o
+    // schema é `crm_resources`/`crm_followups`/`crm_notes`. Nenhuma LEITURA
+    // desta classe os toca — a varredura mecânica da suíte prova isso método a
+    // método.
+    // ---------------------------------------------------------------
     private const TABLE_CONTACTS = 'mod_mgcrm_contacts';
     private const TABLE_FOLLOWUPS = 'mod_mgcrm_followups';
     private const TABLE_NOTES = 'mod_mgcrm_notes';
 
     private static ?bool $crmAvailable = null;
 
-    public function __construct(private readonly CapsuleClient $capsule) {}
+    public function __construct(
+        private readonly CapsuleClient $capsule,
+        private readonly MgCrmRepository $crm,
+    ) {}
 
     private function ensureCrmAvailable(): void
     {
@@ -32,20 +58,64 @@ class CrmTools
         }
     }
 
-    #[McpTool(name: 'whmcs_crm_list_contacts', description: 'Lista contatos/leads do CRM ModulesGarden')]
-    public function listContacts(string $type = '', int $limit = 25, int $offset = 0): string
+    /**
+     * Serialização única das leituras.
+     *
+     * A convenção do addon é NÃO usar try/catch nas tools, porque o framework
+     * já converte exceção em erro MCP. Aqui há uma exceção deliberada e
+     * estreita: `CrmException` JÁ É o contrato público fechado (D6/D12) e
+     * carrega `error_code` — deixá-la subir descartaria o código estável e
+     * devolveria só a mensagem, que é justamente o que impede automação sobre
+     * erros. Nenhum outro tipo é capturado, então um bug de programação
+     * continua subindo.
+     */
+    private function read(callable $operation): string
     {
-        $this->ensureCrmAvailable();
-        $where = $type !== '' ? ['type' => $type] : [];
-        return json_encode($this->capsule->select(self::TABLE_CONTACTS, $where, ['*'], $limit, $offset), JSON_PRETTY_PRINT);
+        try {
+            return json_encode($operation(), JSON_PRETTY_PRINT);
+        } catch (CrmException $e) {
+            return json_encode($e->toPublicArray(), JSON_PRETTY_PRINT);
+        }
     }
 
-    #[McpTool(name: 'whmcs_crm_get_contact', description: 'Obtém detalhes de um contato CRM')]
-    public function getContact(int $id): string
+    /** Filtro opcional: ausente e `0` significam "sem filtro". */
+    private static function optionalId(?int $value): ?int
     {
-        $this->ensureCrmAvailable();
-        $contacts = $this->capsule->select(self::TABLE_CONTACTS, ['id' => $id], ['*'], 1);
-        return json_encode($contacts[0] ?? null, JSON_PRETTY_PRINT);
+        return ($value === null || $value === 0) ? null : $value;
+    }
+
+    #[McpTool(
+        name: 'whmcs_crm_list_contacts',
+        description: 'Lista recursos (contatos/leads) do CRM mgCRM2, com paginacao. '
+            . 'Filtros opcionais type_id e status_id vem dos catalogos ativos publicados por '
+            . 'whmcs_crm_get_kanban; um id inexistente ou inativo devolve crm_catalog_invalid. '
+            . 'Retorna items (projecao core), count (total sob o mesmo filtro), limit, offset e has_more. '
+            . 'Registros removidos nao aparecem. limit maximo 100.'
+    )]
+    public function listContacts(
+        ?int $type_id = null,
+        ?int $status_id = null,
+        int $limit = 25,
+        int $offset = 0
+    ): string {
+        return $this->read(fn(): array => $this->crm->listResources(
+            self::optionalId($type_id),
+            self::optionalId($status_id),
+            $limit,
+            $offset
+        ));
+    }
+
+    #[McpTool(
+        name: 'whmcs_crm_get_contact',
+        description: 'Obtem um recurso (contato/lead) do CRM mgCRM2 por resource_id. '
+            . 'Retorna a projecao core em resource e os custom_fields normalizados '
+            . '({field_id, name, value}), somente leitura, no maximo 100 campos. '
+            . 'Recurso inexistente ou removido devolve crm_resource_not_found.'
+    )]
+    public function getContact(int $resource_id): string
+    {
+        return $this->read(fn(): array => $this->crm->getResource($resource_id));
     }
 
     #[McpTool(name: 'whmcs_crm_create_lead', description: 'Cria um novo lead no CRM ModulesGarden')]
@@ -138,23 +208,44 @@ class CrmTools
         return json_encode(['result' => 'success', 'id' => $id], JSON_PRETTY_PRINT);
     }
 
-    #[McpTool(name: 'whmcs_crm_list_followups', description: 'Lista follow-ups de um contato CRM')]
-    public function listFollowups(int $contactId, int $limit = 25): string
-    {
-        $this->ensureCrmAvailable();
-        return json_encode($this->capsule->select(self::TABLE_FOLLOWUPS, ['contact_id' => $contactId], ['*'], $limit), JSON_PRETTY_PRINT);
+    #[McpTool(
+        name: 'whmcs_crm_list_followups',
+        description: 'Lista follow-ups de um recurso do CRM mgCRM2, com paginacao. '
+            . 'resource_id e obrigatorio; filtros opcionais type_id e status_id vem dos catalogos '
+            . 'de follow-up publicados por whmcs_crm_get_kanban. Cada item traz type_name e '
+            . 'status_name resolvidos (null quando o catalogo foi desativado ou removido). '
+            . 'Retorna items, count, limit, offset e has_more. limit maximo 100.'
+    )]
+    public function listFollowups(
+        int $resource_id,
+        ?int $type_id = null,
+        ?int $status_id = null,
+        int $limit = 25,
+        int $offset = 0
+    ): string {
+        return $this->read(fn(): array => $this->crm->listFollowups(
+            $resource_id,
+            self::optionalId($type_id),
+            self::optionalId($status_id),
+            $limit,
+            $offset
+        ));
     }
 
-    #[McpTool(name: 'whmcs_crm_get_kanban', description: 'Retorna visão Kanban dos contatos agrupados por estágio')]
-    public function getKanban(): string
+    #[McpTool(
+        name: 'whmcs_crm_get_kanban',
+        description: 'Visao Kanban do CRM mgCRM2 e FONTE DOS CATALOGOS de id. '
+            . 'Publica em catalogs os quatro catalogos ativos (resource_types, resource_statuses, '
+            . 'followup_types, followup_statuses) mesmo quando nao ha nenhum recurso, e em lanes '
+            . 'uma raia por status de recurso com total exato, items limitados e has_more. '
+            . 'Filtro opcional type_id restringe as raias a um tipo de recurso. '
+            . 'limit_per_status maximo 25; lanes_truncated indica que ha mais status que raias.'
+    )]
+    public function getKanban(?int $type_id = null, int $limit_per_status = 25): string
     {
-        $this->ensureCrmAvailable();
-        $contacts = $this->capsule->select(self::TABLE_CONTACTS, [], ['*'], 500);
-        $kanban = [];
-        foreach ($contacts as $contact) {
-            $stage = $contact['status'] ?? $contact['stage'] ?? 'Unknown';
-            $kanban[$stage][] = $contact;
-        }
-        return json_encode($kanban, JSON_PRETTY_PRINT);
+        return $this->read(fn(): array => $this->crm->getKanban(
+            self::optionalId($type_id),
+            $limit_per_status
+        ));
     }
 }
