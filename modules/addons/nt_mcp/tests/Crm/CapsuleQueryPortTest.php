@@ -185,6 +185,74 @@ class CapsuleQueryPortTest extends TestCase
         );
     }
 
+    /** `CrmCount::matching()` mantém `IN` no executor concreto, como no select. */
+    public function test_count_and_select_match_when_the_filter_contains_in(): void
+    {
+        $this->seedFields(self::fieldRows());
+        $port = new CapsuleQueryPort();
+        $select = new CrmSelect(
+            table: CrmSchema::TABLE_FIELDS,
+            columns: CrmSchema::catalogProjection(),
+            nullColumns: [CrmSchema::COLUMN_DELETED_AT],
+            order: CrmSchema::catalogOrder(),
+            limit: CrmSchema::CHUNK_SIZE,
+            inConditions: [CrmSchema::COLUMN_ID => [1, 3, 4]],
+        );
+
+        $this->assertCount(2, $port->selectRows($select));
+        $this->assertSame(2, $port->countRows(CrmCount::matching($select)));
+        $this->assertContains('whereIn(id,3)', FakeCapsule::$calls);
+    }
+
+    /** O port real pede isolation/read-only explícitos e encerra a mesma conexão. */
+    public function test_read_snapshot_uses_an_explicit_read_only_repeatable_read_transaction(): void
+    {
+        $this->seedFields(self::fieldRows());
+        $port = new CapsuleQueryPort();
+
+        $rows = $port->withinReadSnapshot(fn(): array => $port->selectRows(new CrmSelect(
+            table: CrmSchema::TABLE_FIELDS,
+            columns: CrmSchema::catalogProjection(),
+            limit: 1,
+        )));
+
+        $this->assertCount(1, $rows);
+        $this->assertSame(
+            ['SET TRANSACTION ISOLATION LEVEL REPEATABLE READ', 'START TRANSACTION READ ONLY', 'commit'],
+            FakeCapsule::$snapshotCalls,
+        );
+    }
+
+    /** VARCHAR numérico é textual; identificador BIGINT não passa por float. */
+    public function test_fake_capsule_uses_schema_aware_varchar_and_bigint_ordering(): void
+    {
+        $this->seedFields([
+            ['id' => '9007199254740993', 'name' => '9', 'deleted_at' => null],
+            ['id' => '9007199254740992', 'name' => '10', 'deleted_at' => null],
+            ['id' => '9007199254740994', 'name' => '100', 'deleted_at' => null],
+        ]);
+
+        $port = new CapsuleQueryPort();
+        $byName = $port->selectRows(new CrmSelect(
+            table: CrmSchema::TABLE_FIELDS,
+            columns: CrmSchema::catalogProjection(),
+            order: CrmSchema::catalogOrder(),
+            limit: CrmSchema::CHUNK_SIZE,
+        ));
+        $byId = $port->selectRows(new CrmSelect(
+            table: CrmSchema::TABLE_FIELDS,
+            columns: CrmSchema::catalogProjection(),
+            order: [[CrmSchema::COLUMN_ID, 'asc']],
+            limit: CrmSchema::CHUNK_SIZE,
+        ));
+
+        $this->assertSame(['10', '100', '9'], array_column($byName, 'name'));
+        $this->assertSame(
+            ['9007199254740992', '9007199254740993', '9007199254740994'],
+            array_column($byId, 'id'),
+        );
+    }
+
     // ---------------------------------------------------------------
     // Projeção e higiene
     // ---------------------------------------------------------------

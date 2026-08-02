@@ -25,12 +25,14 @@ final class CrmCount
     /**
      * @param array<string, int|string> $conditions  coluna => valor (igualdade)
      * @param array<int, string>        $nullColumns colunas exigidas `IS NULL`
+     * @param array<string, array<int, int>> $inConditions coluna => ids (`IN`)
      */
     public function __construct(
         public readonly string $table,
         public readonly array $conditions = [],
         public readonly array $nullColumns = [],
         public readonly ?int $throughId = null,
+        public readonly array $inConditions = [],
     ) {
         if (!CrmSchema::isKnownTable($table)) {
             throw new \LogicException('CrmCount: unknown CRM table.');
@@ -56,6 +58,8 @@ final class CrmCount
         foreach ($nullColumns as $column) {
             self::assertColumn($column, $known);
         }
+
+        self::assertInConditions($table, $inConditions, $known);
     }
 
     /**
@@ -69,7 +73,8 @@ final class CrmCount
             $select->table,
             $select->conditions,
             $select->nullColumns,
-            $select->throughId
+            $select->throughId,
+            $select->inConditions,
         );
     }
 
@@ -92,6 +97,24 @@ final class CrmCount
             // uma coluna construída dinamicamente não vire veículo de texto
             // arbitrário num sink.
             throw new \LogicException('CrmCount: column is not part of the CRM contract.');
+        }
+    }
+
+    /** @param array<string, array<int, int>> $inConditions @param array<int, string> $known */
+    private static function assertInConditions(string $table, array $inConditions, array $known): void
+    {
+        foreach ($inConditions as $column => $values) {
+            self::assertColumn((string) $column, $known);
+
+            if (!is_array($values) || $values === [] || count($values) > CrmSchema::MAX_IN_VALUES) {
+                throw new \LogicException('CrmCount: IN condition is outside the shared batch bound.');
+            }
+
+            foreach ($values as $value) {
+                if (!is_int($value) || $value < 1) {
+                    throw new \LogicException('CrmCount: IN conditions accept positive integer ids only.');
+                }
+            }
         }
     }
 }

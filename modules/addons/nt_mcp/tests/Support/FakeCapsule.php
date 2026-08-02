@@ -39,6 +39,14 @@ final class FakeCapsule
     /** Próximo id devolvido por `insertGetId()`. */
     public static int $nextInsertId = 1;
 
+    /** @var array<int, string> transações read-only solicitadas pelo port real */
+    public static array $snapshotCalls = [];
+
+    /** @var array{begin:?\Throwable,commit:?\Throwable,rollback:?\Throwable} */
+    public static array $snapshotFailures = ['begin' => null, 'commit' => null, 'rollback' => null];
+
+    public static bool $ambientTransaction = false;
+
     public static function reset(): void
     {
         self::$enabled = false;
@@ -47,6 +55,9 @@ final class FakeCapsule
         self::$failure = null;
         self::$mutations = [];
         self::$nextInsertId = 1;
+        self::$snapshotCalls = [];
+        self::$snapshotFailures = ['begin' => null, 'commit' => null, 'rollback' => null];
+        self::$ambientTransaction = false;
     }
 
     /** Popula uma tabela com valores da coluna `gateway`. */
@@ -88,6 +99,91 @@ final class FakeCapsule
         self::$calls[] = "table({$table})";
 
         return new FakeCapsuleQuery($table);
+    }
+
+    public static function connection(): FakeCapsuleConnection
+    {
+        if (self::$failure !== null) {
+            throw self::$failure;
+        }
+
+        if (!self::$enabled) {
+            throw new \RuntimeException('FakeCapsule disabled: no WHMCS database in this test');
+        }
+
+        return new FakeCapsuleConnection();
+    }
+}
+
+/** Conexão/PDO mínimo para provar a transação do `CapsuleQueryPort` real. */
+final class FakeCapsuleConnection
+{
+    private FakeCapsulePdo $pdo;
+
+    public function __construct()
+    {
+        $this->pdo = new FakeCapsulePdo();
+    }
+
+    public function getPdo(): FakeCapsulePdo
+    {
+        return $this->pdo;
+    }
+
+    public function table(string $table): FakeCapsuleQuery
+    {
+        return FakeCapsule::table($table);
+    }
+}
+
+final class FakeCapsulePdo
+{
+    private bool $inTransaction;
+
+    public function __construct()
+    {
+        $this->inTransaction = FakeCapsule::$ambientTransaction;
+    }
+
+    public function inTransaction(): bool
+    {
+        return $this->inTransaction;
+    }
+
+    public function exec(string $statement): int
+    {
+        FakeCapsule::$snapshotCalls[] = $statement;
+
+        if ($statement === 'START TRANSACTION READ ONLY') {
+            if (FakeCapsule::$snapshotFailures['begin'] !== null) {
+                throw FakeCapsule::$snapshotFailures['begin'];
+            }
+            $this->inTransaction = true;
+        }
+
+        return 0;
+    }
+
+    public function commit(): bool
+    {
+        FakeCapsule::$snapshotCalls[] = 'commit';
+        if (FakeCapsule::$snapshotFailures['commit'] !== null) {
+            throw FakeCapsule::$snapshotFailures['commit'];
+        }
+        $this->inTransaction = false;
+
+        return true;
+    }
+
+    public function rollBack(): bool
+    {
+        FakeCapsule::$snapshotCalls[] = 'rollback';
+        if (FakeCapsule::$snapshotFailures['rollback'] !== null) {
+            throw FakeCapsule::$snapshotFailures['rollback'];
+        }
+        $this->inTransaction = false;
+
+        return true;
     }
 }
 
@@ -249,7 +345,11 @@ final class FakeCapsuleQuery
 
         foreach (array_reverse($this->orders) as [$column, $direction]) {
             usort($rows, static function (object $a, object $b) use ($column, $direction): int {
-                $comparison = ($a->{$column} ?? null) <=> ($b->{$column} ?? null);
+                $left = $a->{$column} ?? null;
+                $right = $b->{$column} ?? null;
+                $comparison = \NtMcp\Crm\CrmSchema::isIntegerColumn($column)
+                    ? self::compareIntegerStrings((string) $left, (string) $right)
+                    : strcmp((string) $left, (string) $right);
 
                 return $direction === 'desc' ? -$comparison : $comparison;
             });
@@ -320,5 +420,26 @@ final class FakeCapsuleQuery
         }
 
         return array_values($rows);
+    }
+
+    private static function compareIntegerStrings(string $left, string $right): int
+    {
+        $leftDigits = ltrim(ltrim(trim($left), '+-'), '0');
+        $rightDigits = ltrim(ltrim(trim($right), '+-'), '0');
+        $leftDigits = $leftDigits === '' ? '0' : $leftDigits;
+        $rightDigits = $rightDigits === '' ? '0' : $rightDigits;
+        $leftNegative = str_starts_with($left, '-') && $leftDigits !== '0';
+        $rightNegative = str_starts_with($right, '-') && $rightDigits !== '0';
+
+        if ($leftNegative !== $rightNegative) {
+            return $leftNegative ? -1 : 1;
+        }
+
+        $comparison = strlen($leftDigits) <=> strlen($rightDigits);
+        if ($comparison === 0) {
+            $comparison = strcmp($leftDigits, $rightDigits);
+        }
+
+        return $leftNegative ? -$comparison : $comparison;
     }
 }

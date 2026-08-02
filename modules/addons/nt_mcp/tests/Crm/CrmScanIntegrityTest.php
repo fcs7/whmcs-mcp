@@ -249,6 +249,11 @@ final class AdversarialScanPort implements CrmQueryPort
     ) {
     }
 
+    public function withinReadSnapshot(callable $operation): mixed
+    {
+        return $operation();
+    }
+
     public function selectRows(CrmSelect $select): array
     {
         // Só o catálogo de resource status é roteirizado; os outros três e a

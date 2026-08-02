@@ -35,6 +35,20 @@ final class FakeCrmQueryPort implements CrmQueryPort
 
     private ?\Throwable $rawFailure = null;
 
+    /** @var array<string, array<int, array<string, mixed>>>|null */
+    private ?array $snapshotRows = null;
+
+    private bool $ambientTransaction = false;
+
+    /** @var array{begin:?\Throwable,commit:?\Throwable,rollback:?\Throwable} */
+    private array $snapshotFailures = ['begin' => null, 'commit' => null, 'rollback' => null];
+
+    /** @var null|callable():void */
+    private $onSnapshotQuery = null;
+
+    /** @var array<string, int> tabela => teto falso reportado pelo executor */
+    private array $highestIdOverrides = [];
+
     /** @param array<int, array<string, mixed>> $rows */
     public function seed(string $table, array $rows): self
     {
@@ -64,12 +78,87 @@ final class FakeCrmQueryPort implements CrmQueryPort
         return $this;
     }
 
+    public function simulateAmbientTransaction(): self
+    {
+        $this->ambientTransaction = true;
+
+        return $this;
+    }
+
+    public function failSnapshot(string $phase, ?\Throwable $failure): self
+    {
+        if (!array_key_exists($phase, $this->snapshotFailures)) {
+            throw new \LogicException('unknown snapshot phase');
+        }
+
+        $this->snapshotFailures[$phase] = $failure;
+
+        return $this;
+    }
+
+    /** @param callable():void $mutation */
+    public function mutateAfterNextSnapshotQuery(callable $mutation): self
+    {
+        $this->onSnapshotQuery = $mutation;
+
+        return $this;
+    }
+
+    /** Simula um executor que informa um teto que não corresponde às páginas. */
+    public function reportHighestIdFor(string $table, int $id): self
+    {
+        $this->highestIdOverrides[$table] = $id;
+
+        return $this;
+    }
+
+    public function withinReadSnapshot(callable $operation): mixed
+    {
+        if ($this->ambientTransaction || $this->snapshotRows !== null) {
+            throw CrmException::downstream(Diagnostics::report(
+                Diagnostics::CATEGORY_DB_EXCEPTION,
+                'crm_snapshot',
+                new \RuntimeException('ambient transaction')
+            ));
+        }
+
+        if ($this->snapshotFailures['begin'] !== null) {
+            throw CrmException::downstream(Diagnostics::report(
+                Diagnostics::CATEGORY_DB_EXCEPTION,
+                'crm_snapshot',
+                $this->snapshotFailures['begin']
+            ));
+        }
+
+        $this->snapshotRows = $this->rows;
+
+        try {
+            $result = $operation();
+        } catch (CrmException $e) {
+            $this->closeSnapshot('rollback');
+            throw $e;
+        } catch (\Throwable $e) {
+            $this->closeSnapshot('rollback');
+            throw CrmException::downstream(Diagnostics::report(
+                Diagnostics::CATEGORY_DB_EXCEPTION,
+                'crm_snapshot',
+                $e
+            ));
+        }
+
+        $this->closeSnapshot('commit');
+
+        return $result;
+    }
+
     /** @var array<int, CrmCount> */
     public array $counts = [];
 
     public function selectRows(CrmSelect $select): array
     {
         $this->selects[] = $select;
+
+        $this->runScheduledMutation();
 
         if ($this->rawFailure !== null) {
             throw $this->rawFailure;
@@ -79,6 +168,14 @@ final class FakeCrmQueryPort implements CrmQueryPort
             throw CrmException::downstream(
                 Diagnostics::report(Diagnostics::CATEGORY_DB_EXCEPTION, 'crm_select', $this->failure)
             );
+        }
+
+        if (
+            isset($this->highestIdOverrides[$select->table])
+            && $select->limit === 1
+            && $select->order === [[CrmSchema::COLUMN_ID, 'desc']]
+        ) {
+            return [[CrmSchema::COLUMN_ID => $this->highestIdOverrides[$select->table]]];
         }
 
         $rows = $this->matching(
@@ -117,6 +214,8 @@ final class FakeCrmQueryPort implements CrmQueryPort
     {
         $this->counts[] = $count;
 
+        $this->runScheduledMutation();
+
         if ($this->rawFailure !== null) {
             throw $this->rawFailure;
         }
@@ -131,7 +230,7 @@ final class FakeCrmQueryPort implements CrmQueryPort
             $count->table,
             $count->conditions,
             $count->nullColumns,
-            [],
+            $count->inConditions,
             null,
             $count->throughId
         ));
@@ -201,7 +300,7 @@ final class FakeCrmQueryPort implements CrmQueryPort
         ?int $afterId = null,
         ?int $throughId = null,
     ): array {
-        $rows = $this->rows[$table] ?? [];
+        $rows = ($this->snapshotRows ?? $this->rows)[$table] ?? [];
 
         if ($afterId !== null) {
             $rows = array_filter(
@@ -275,5 +374,29 @@ final class FakeCrmQueryPort implements CrmQueryPort
         });
 
         return $rows;
+    }
+
+    private function runScheduledMutation(): void
+    {
+        if ($this->onSnapshotQuery === null) {
+            return;
+        }
+
+        $mutation = $this->onSnapshotQuery;
+        $this->onSnapshotQuery = null;
+        $mutation();
+    }
+
+    private function closeSnapshot(string $phase): void
+    {
+        $this->snapshotRows = null;
+
+        if ($this->snapshotFailures[$phase] !== null) {
+            throw CrmException::downstream(Diagnostics::report(
+                Diagnostics::CATEGORY_DB_EXCEPTION,
+                'crm_snapshot',
+                $this->snapshotFailures[$phase]
+            ));
+        }
     }
 }

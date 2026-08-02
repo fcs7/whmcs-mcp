@@ -30,12 +30,104 @@ use WHMCS\Database\Capsule;
  */
 final class CapsuleQueryPort implements CrmQueryPort
 {
+    /** A conexão fixa enquanto uma resposta CRM está sendo materializada. */
+    private mixed $snapshotConnection = null;
+
+    public function withinReadSnapshot(callable $operation): mixed
+    {
+        try {
+            $connection = Capsule::connection();
+            $pdo = $connection->getPdo();
+
+            // Não é seguro herdar isolamento, read-only ou ownership de uma
+            // transação que este boundary não abriu.
+            if ($pdo->inTransaction()) {
+                throw new \RuntimeException('ambient transaction');
+            }
+
+            // `SET TRANSACTION` vale somente para a próxima transação. Assim
+            // não contaminamos a conexão reaproveitada pelo WHMCS.
+            $pdo->exec('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+            $pdo->exec('START TRANSACTION READ ONLY');
+
+            if (!$pdo->inTransaction()) {
+                throw new \RuntimeException('read snapshot did not start');
+            }
+        } catch (\Throwable $e) {
+            // Um driver pode ter aberto a transação e falhado ao reportá-la.
+            // A tentativa de cleanup é obrigatória e a sua falha não some.
+            if (isset($pdo) && $this->isOpen($pdo)) {
+                try {
+                    $pdo->rollBack();
+                } catch (\Throwable $cleanup) {
+                    throw $this->downstream($cleanup);
+                }
+            }
+
+            throw $this->downstream($e);
+        }
+
+        $this->snapshotConnection = $connection;
+
+        try {
+            $result = $operation();
+        } catch (CrmException $e) {
+            try {
+                $pdo->rollBack();
+                $this->assertClosed($pdo);
+            } catch (\Throwable $cleanup) {
+                throw $this->downstream($cleanup);
+            } finally {
+                $this->snapshotConnection = null;
+            }
+
+            // O erro de domínio já é sanitizado e deve sobreviver quando o
+            // rollback funcionou.
+            throw $e;
+        } catch (\Throwable $e) {
+            try {
+                $pdo->rollBack();
+                $this->assertClosed($pdo);
+            } catch (\Throwable $cleanup) {
+                throw $this->downstream($cleanup);
+            } finally {
+                $this->snapshotConnection = null;
+            }
+
+            throw $this->downstream($e);
+        }
+
+        try {
+            $pdo->commit();
+            $this->assertClosed($pdo);
+        } catch (\Throwable $e) {
+            // `commit()` que falha pode deixar a sessão aberta; faça rollback
+            // antes de devolver uma única falha downstream ao boundary MCP.
+            try {
+                if ($this->isOpen($pdo)) {
+                    $pdo->rollBack();
+                    $this->assertClosed($pdo);
+                }
+            } catch (\Throwable $cleanup) {
+                throw $this->downstream($cleanup);
+            } finally {
+                $this->snapshotConnection = null;
+            }
+
+            throw $this->downstream($e);
+        }
+
+        $this->snapshotConnection = null;
+
+        return $result;
+    }
+
     public function selectRows(CrmSelect $select): array
     {
         LocalApiClient::auditLog(ActivityEvent::DB_SELECT, AuditMetadata::ids($select->auditIds()));
 
         try {
-            $query = Capsule::table($select->table)->select($select->columns);
+            $query = $this->connection()->table($select->table)->select($select->columns);
 
             foreach ($select->conditions as $column => $value) {
                 $query->where($column, $value);
@@ -85,10 +177,14 @@ final class CapsuleQueryPort implements CrmQueryPort
         LocalApiClient::auditLog(ActivityEvent::DB_SELECT, AuditMetadata::ids($count->auditIds()));
 
         try {
-            $query = Capsule::table($count->table);
+            $query = $this->connection()->table($count->table);
 
             foreach ($count->conditions as $column => $value) {
                 $query->where($column, $value);
+            }
+
+            foreach ($count->inConditions as $column => $values) {
+                $query->whereIn($column, $values);
             }
 
             if ($count->throughId !== null) {
@@ -121,5 +217,28 @@ final class CapsuleQueryPort implements CrmQueryPort
             Diagnostics::fingerprint($e->getMessage()),
             get_class($e)
         );
+    }
+
+    private function connection(): mixed
+    {
+        return $this->snapshotConnection ?? Capsule::connection();
+    }
+
+    private function isOpen(mixed $pdo): bool
+    {
+        try {
+            return (bool) $pdo->inTransaction();
+        } catch (\Throwable) {
+            // Não há como provar que a sessão fechou: o caller recebe falha
+            // sanitizada, nunca uma continuação sobre estado desconhecido.
+            return true;
+        }
+    }
+
+    private function assertClosed(mixed $pdo): void
+    {
+        if ($this->isOpen($pdo)) {
+            throw new \RuntimeException('read snapshot cleanup left a transaction open');
+        }
     }
 }

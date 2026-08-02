@@ -511,6 +511,21 @@ class CrmReadAdapterTest extends TestCase
         $this->assertCount(30, $payload['catalogs']['resource_statuses']);
     }
 
+    /** Offset aceito pelo schema não pode ser reescrito silenciosamente. */
+    public function test_very_large_legal_lane_offset_is_echoed_exactly_over_the_adapter(): void
+    {
+        $this->seedManyStatuses(30);
+
+        $payload = $this->payload('whmcs_crm_get_kanban', [
+            'status_limit' => 25,
+            'status_offset' => 100001,
+        ]);
+
+        $this->assertSame(100001, $payload['status_offset']);
+        $this->assertSame([], $payload['lanes']);
+        $this->assertFalse($payload['status_has_more']);
+    }
+
     /** `status_limit` acima do teto é recusado pelo schema, não clampado mudo. */
     public function test_status_limit_above_the_ceiling_is_refused(): void
     {

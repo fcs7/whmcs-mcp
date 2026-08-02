@@ -125,7 +125,7 @@ class CrmClosedSurfaceTest extends TestCase
         );
         sort($methods);
 
-        $this->assertSame(['countRows', 'selectRows'], $methods);
+        $this->assertSame(['countRows', 'selectRows', 'withinReadSnapshot'], $methods);
     }
 
     /**
@@ -171,6 +171,7 @@ class CrmClosedSurfaceTest extends TestCase
             order: CrmSchema::resourceOrder(),
             limit: 10,
             offset: 20,
+            inConditions: [CrmSchema::COLUMN_ID => [7, 9]],
         );
 
         $count = CrmCount::matching($select);
@@ -178,6 +179,7 @@ class CrmClosedSurfaceTest extends TestCase
         $this->assertSame($select->table, $count->table);
         $this->assertSame($select->conditions, $count->conditions);
         $this->assertSame($select->nullColumns, $count->nullColumns);
+        $this->assertSame($select->inConditions, $count->inConditions);
     }
 
     /** As classes de mutação prematuras não existem mais. */

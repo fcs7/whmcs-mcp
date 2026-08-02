@@ -24,6 +24,23 @@ namespace NtMcp\Crm;
 interface CrmQueryPort
 {
     /**
+     * Executa UMA resposta CRM inteira sob uma visão explícita, read-only e
+     * repeatable-read. É uma primitiva de leitura (não expõe INSERT/UPDATE/
+     * DELETE ao domínio): o callback só pode usar este próprio port para
+     * select/count.
+     *
+     * Implementações recusam uma transação ambiente, estabelecem a visão na
+     * mesma conexão que atende as queries e sempre fecham a transação. Falhas
+     * de begin, body ou cleanup são `CrmException::downstream()` sanitizadas.
+     *
+     * @template T
+     * @param callable():T $operation
+     * @return T
+     * @throws CrmException
+     */
+    public function withinReadSnapshot(callable $operation): mixed;
+
+    /**
      * @return array<int, array<string, mixed>> linhas já projetadas
      * @throws CrmException
      */

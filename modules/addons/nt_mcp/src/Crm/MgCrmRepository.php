@@ -158,6 +158,13 @@ final class MgCrmRepository
      */
     public function listResources(?int $typeId, ?int $statusId, int $limit, int $offset): array
     {
+        return $this->port->withinReadSnapshot(
+            fn(): array => $this->listResourcesInSnapshot($typeId, $statusId, $limit, $offset)
+        );
+    }
+
+    private function listResourcesInSnapshot(?int $typeId, ?int $statusId, int $limit, int $offset): array
+    {
         $limit = CrmSchema::clampLimit($limit);
         $offset = CrmSchema::clampOffset($offset);
 
@@ -205,6 +212,13 @@ final class MgCrmRepository
      */
     public function getResource(int $resourceId): array
     {
+        return $this->port->withinReadSnapshot(
+            fn(): array => $this->getResourceInSnapshot($resourceId)
+        );
+    }
+
+    private function getResourceInSnapshot(int $resourceId): array
+    {
         $this->assertPositiveId($resourceId, 'resource_id');
         $this->assertCapabilities(CrmCapability::ResourceCore);
 
@@ -246,6 +260,19 @@ final class MgCrmRepository
      * @throws CrmException
      */
     public function listFollowups(int $resourceId, ?int $typeId, ?int $statusId, int $limit, int $offset): array
+    {
+        return $this->port->withinReadSnapshot(
+            fn(): array => $this->listFollowupsInSnapshot($resourceId, $typeId, $statusId, $limit, $offset)
+        );
+    }
+
+    private function listFollowupsInSnapshot(
+        int $resourceId,
+        ?int $typeId,
+        ?int $statusId,
+        int $limit,
+        int $offset,
+    ): array
     {
         $limit = CrmSchema::clampLimit($limit);
         $offset = CrmSchema::clampOffset($offset);
@@ -322,9 +349,22 @@ final class MgCrmRepository
         int $statusLimit = CrmSchema::MAX_STATUS_LIMIT,
         int $statusOffset = 0,
     ): array {
+        return $this->port->withinReadSnapshot(
+            fn(): array => $this->getKanbanInSnapshot($typeId, $limitPerStatus, $statusLimit, $statusOffset)
+        );
+    }
+
+    private function getKanbanInSnapshot(
+        ?int $typeId,
+        int $limitPerStatus,
+        int $statusLimit = CrmSchema::MAX_STATUS_LIMIT,
+        int $statusOffset = 0,
+    ): array {
         $limitPerStatus = CrmSchema::clampLimit($limitPerStatus, CrmSchema::MAX_LIMIT_PER_STATUS);
         $statusLimit = CrmSchema::clampLimit($statusLimit, CrmSchema::MAX_STATUS_LIMIT);
-        $statusOffset = CrmSchema::clampOffset($statusOffset);
+        if ($statusOffset < 0) {
+            throw CrmException::validation('status_offset', 'expected a non-negative integer');
+        }
 
         $this->assertCapabilities(CrmCapability::ResourceCore);
 
@@ -534,9 +574,19 @@ final class MgCrmRepository
      */
     private static function requireName(mixed $raw, string $context): string
     {
-        $name = trim(self::toText($raw) ?? '');
+        $name = self::toText($raw);
 
-        if ($name === '') {
+        // `trim()` trata só ASCII por padrão. Para um nome que será publicado
+        // ao MCP isso é insuficiente: NBSP, EM SPACE e IDEOGRAPHIC SPACE são
+        // visualmente vazios, mas atravessavam como label acionável. PCRE em
+        // modo UTF-8 também nos dá a prova fail-closed do encoding.
+        if ($name === null || preg_match('//u', $name) !== 1) {
+            throw CrmException::integrity($context . '_name_invalid_utf8');
+        }
+
+        $name = preg_replace('/^[\\s\\p{Z}\\x{200B}\\x{FEFF}]+|[\\s\\p{Z}\\x{200B}\\x{FEFF}]+$/u', '', $name);
+
+        if ($name === null || $name === '') {
             throw CrmException::integrity($context . '_name_blank');
         }
 
@@ -570,9 +620,10 @@ final class MgCrmRepository
         int $ceiling,
         string $context,
     ): array {
-        // Snapshot lógico: o maior id existente AGORA. Tudo inserido depois
-        // recebe id maior e fica fora desta leitura, então a varredura tem um
-        // conjunto-alvo estável em vez de perseguir um alvo móvel.
+        // O maior id é o teto estrutural da varredura D14, capturado dentro do
+        // snapshot transacional que envolve a resposta pública inteira. Além
+        // de excluir inserções posteriores, ele prova que o scan alcançou a
+        // última identidade que a própria visão declarou visível.
         $throughId = $this->highestId($table, $conditions, $nullColumns, $columns, $context);
 
         if ($throughId === null) {
@@ -655,6 +706,13 @@ final class MgCrmRepository
             throw CrmException::integrity($context . '_incomplete_scan');
         }
 
+        // O teto foi capturado pelo maior id VISÍVEL do mesmo filtro. Chegar
+        // apenas à cardinalidade não prova que o port devolveu o último item:
+        // um port mentiroso pode omitir o id 150 e ainda entregar 100 linhas.
+        if ($afterId !== $throughId) {
+            throw CrmException::integrity($context . '_through_id_unreached');
+        }
+
         // Revalidação sob o MESMO snapshot: se o total mudou dentro do teto de
         // ids já fechado, houve escrita concorrente e a completude deixou de
         // ser demonstrável.
@@ -666,7 +724,7 @@ final class MgCrmRepository
     }
 
     /**
-     * Maior `id` visível sob o filtro — o teto do snapshot lógico.
+     * Maior `id` visível sob o filtro — o teto do snapshot transacional.
      *
      * @param array<string, int|string> $conditions
      * @param array<int, string>        $nullColumns
@@ -903,12 +961,16 @@ final class MgCrmRepository
 
         // Ordem determinística mesmo com VÁRIOS valores no mesmo campo: nome,
         // depois id do campo, depois id do valor.
-        usort(
-            $fields,
-            static fn(array $a, array $b): int
-                => [$a['name'], $a['field_id'], $a['_value_id']]
-                <=> [$b['name'], $b['field_id'], $b['_value_id']]
-        );
+        usort($fields, static function (array $a, array $b): int {
+            $comparison = strcmp($a['name'], $b['name']);
+            if ($comparison !== 0) {
+                return $comparison;
+            }
+
+            $comparison = $a['field_id'] <=> $b['field_id'];
+
+            return $comparison !== 0 ? $comparison : ($a['_value_id'] <=> $b['_value_id']);
+        });
 
         // `_value_id` é só chave de ordenação; não faz parte do contrato.
         return array_map(

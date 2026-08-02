@@ -48,6 +48,11 @@ if (!class_exists('\WHMCS\Database\Capsule')) {
                 return \NtMcp\Tests\Support\FakeCapsule::table($table);
             }
 
+            public static function connection(): mixed
+            {
+                return \NtMcp\Tests\Support\FakeCapsule::connection();
+            }
+
             public static function schema(): mixed
             {
                 return \NtMcp\Tests\Support\FakeSchemaBuilder::builder();
