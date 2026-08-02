@@ -30,9 +30,18 @@ final class CrmCount
         public readonly string $table,
         public readonly array $conditions = [],
         public readonly array $nullColumns = [],
+        public readonly ?int $throughId = null,
     ) {
         if (!CrmSchema::isKnownTable($table)) {
             throw new \LogicException('CrmCount: unknown CRM table.');
+        }
+
+        if ($throughId !== null) {
+            if ($throughId < 1) {
+                throw new \LogicException('CrmCount: the id upper bound must be a positive id.');
+            }
+
+            self::assertColumn(CrmSchema::COLUMN_ID, CrmSchema::columnsOf($table));
         }
 
         $known = CrmSchema::columnsOf($table);
@@ -56,7 +65,12 @@ final class CrmCount
      */
     public static function matching(CrmSelect $select): self
     {
-        return new self($select->table, $select->conditions, $select->nullColumns);
+        return new self(
+            $select->table,
+            $select->conditions,
+            $select->nullColumns,
+            $select->throughId
+        );
     }
 
     /**

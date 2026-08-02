@@ -7,6 +7,7 @@ namespace NtMcp\Tests\Support;
 use NtMcp\Crm\CrmCount;
 use NtMcp\Crm\CrmException;
 use NtMcp\Crm\CrmQueryPort;
+use NtMcp\Crm\CrmSchema;
 use NtMcp\Crm\CrmSelect;
 use NtMcp\Whmcs\Diagnostics;
 
@@ -84,7 +85,9 @@ final class FakeCrmQueryPort implements CrmQueryPort
             $select->table,
             $select->conditions,
             $select->nullColumns,
-            $select->inConditions
+            $select->inConditions,
+            $select->afterId,
+            $select->throughId
         );
 
         $rows = self::sortRows($rows, $select->order);
@@ -124,7 +127,14 @@ final class FakeCrmQueryPort implements CrmQueryPort
             );
         }
 
-        return count($this->matching($count->table, $count->conditions, $count->nullColumns));
+        return count($this->matching(
+            $count->table,
+            $count->conditions,
+            $count->nullColumns,
+            [],
+            null,
+            $count->throughId
+        ));
     }
 
     /**
@@ -142,17 +152,17 @@ final class FakeCrmQueryPort implements CrmQueryPort
      */
     private static function compareIntegerStrings(string $left, string $right): int
     {
-        $leftNegative = str_starts_with($left, '-');
-        $rightNegative = str_starts_with($right, '-');
+        $leftDigits = self::digitsOf($left);
+        $rightDigits = self::digitsOf($right);
+
+        // Zero é zero: `-0` e `0` são o MESMO número, então o sinal só conta
+        // depois de descartar o caso em que os dígitos são nulos.
+        $leftNegative = str_starts_with($left, '-') && $leftDigits !== '0';
+        $rightNegative = str_starts_with($right, '-') && $rightDigits !== '0';
 
         if ($leftNegative !== $rightNegative) {
             return $leftNegative ? -1 : 1;
         }
-
-        $leftDigits = ltrim(ltrim($left, '+-'), '0');
-        $rightDigits = ltrim(ltrim($right, '+-'), '0');
-        $leftDigits = $leftDigits === '' ? '0' : $leftDigits;
-        $rightDigits = $rightDigits === '' ? '0' : $rightDigits;
 
         $comparison = strlen($leftDigits) <=> strlen($rightDigits);
 
@@ -163,11 +173,12 @@ final class FakeCrmQueryPort implements CrmQueryPort
         return $leftNegative ? -$comparison : $comparison;
     }
 
-    /** Inteiro PHP ou string de dígitos — o que o driver devolve para BIGINT. */
-    private static function isIntegerLike(mixed $value): bool
+    /** Dígitos significativos, sem sinal e sem zeros à esquerda. */
+    private static function digitsOf(string $value): string
     {
-        return is_int($value)
-            || (is_string($value) && preg_match('/^[+-]?\d+\z/', $value) === 1);
+        $digits = ltrim(ltrim(trim($value), '+-'), '0');
+
+        return $digits === '' ? '0' : $digits;
     }
 
     /** @return array<int, string> */
@@ -187,8 +198,24 @@ final class FakeCrmQueryPort implements CrmQueryPort
         array $conditions,
         array $nullColumns,
         array $inConditions = [],
+        ?int $afterId = null,
+        ?int $throughId = null,
     ): array {
         $rows = $this->rows[$table] ?? [];
+
+        if ($afterId !== null) {
+            $rows = array_filter(
+                $rows,
+                static fn(array $row): bool => (int) ($row[CrmSchema::COLUMN_ID] ?? 0) > $afterId
+            );
+        }
+
+        if ($throughId !== null) {
+            $rows = array_filter(
+                $rows,
+                static fn(array $row): bool => (int) ($row[CrmSchema::COLUMN_ID] ?? 0) <= $throughId
+            );
+        }
 
         foreach ($conditions as $column => $value) {
             $rows = array_filter($rows, static fn(array $row): bool => ($row[$column] ?? null) == $value);
@@ -227,12 +254,17 @@ final class FakeCrmQueryPort implements CrmQueryPort
                 $left = $a[$column] ?? null;
                 $right = $b[$column] ?? null;
 
-                // Inteiro (inclusive na forma string do driver) compara como
-                // inteiro — '10' < '9' em texto puro. BIGINT não passa por
-                // `float`, que perderia precisão acima de 2^53.
-                $comparison = (self::isIntegerLike($left) && self::isIntegerLike($right))
+                // A decisão vem do SCHEMA, não do conteúdo. Um `name` VARCHAR
+                // valendo "9" e "10" ordena lexicalmente no MySQL; decidir pelo
+                // valor fazia o dublê ratificar uma ordem que produção não tem.
+                // Só id/FK/flag compara como inteiro — e aí sem `float`, que
+                // perderia precisão acima de 2^53.
+                // `strcmp()` e não `<=>`: em PHP 8 o spaceship compara DUAS
+                // strings numéricas como números, então `"9"` vs `"10"` num
+                // VARCHAR sairia numérico e divergiria do MySQL.
+                $comparison = CrmSchema::isIntegerColumn($column)
                     ? self::compareIntegerStrings((string) $left, (string) $right)
-                    : ((string) $left <=> (string) $right);
+                    : strcmp((string) $left, (string) $right);
 
                 if ($comparison !== 0) {
                     return $direction === 'desc' ? -$comparison : $comparison;

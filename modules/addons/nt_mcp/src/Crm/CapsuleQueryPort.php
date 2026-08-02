@@ -45,6 +45,15 @@ final class CapsuleQueryPort implements CrmQueryPort
                 $query->whereIn($column, $values);
             }
 
+            // Keyset: coluna e operadores são literais nossos, nunca do chamador.
+            if ($select->afterId !== null) {
+                $query->where(CrmSchema::COLUMN_ID, '>', $select->afterId);
+            }
+
+            if ($select->throughId !== null) {
+                $query->where(CrmSchema::COLUMN_ID, '<=', $select->throughId);
+            }
+
             foreach ($select->nullColumns as $column) {
                 $query->whereNull($column);
             }
@@ -80,6 +89,10 @@ final class CapsuleQueryPort implements CrmQueryPort
 
             foreach ($count->conditions as $column => $value) {
                 $query->where($column, $value);
+            }
+
+            if ($count->throughId !== null) {
+                $query->where(CrmSchema::COLUMN_ID, '<=', $count->throughId);
             }
 
             foreach ($count->nullColumns as $column) {

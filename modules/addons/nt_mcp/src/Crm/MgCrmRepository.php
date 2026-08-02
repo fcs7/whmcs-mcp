@@ -316,9 +316,15 @@ final class MgCrmRepository
      * @return array{type_id:int|null, limit_per_status:int, catalogs:array<string, array<int, array<string, mixed>>>, lanes:array<int, array<string, mixed>>}
      * @throws CrmException
      */
-    public function getKanban(?int $typeId, int $limitPerStatus): array
-    {
+    public function getKanban(
+        ?int $typeId,
+        int $limitPerStatus,
+        int $statusLimit = CrmSchema::MAX_STATUS_LIMIT,
+        int $statusOffset = 0,
+    ): array {
         $limitPerStatus = CrmSchema::clampLimit($limitPerStatus, CrmSchema::MAX_LIMIT_PER_STATUS);
+        $statusLimit = CrmSchema::clampLimit($statusLimit, CrmSchema::MAX_STATUS_LIMIT);
+        $statusOffset = CrmSchema::clampOffset($statusOffset);
 
         $this->assertCapabilities(CrmCapability::ResourceCore);
 
@@ -328,6 +334,9 @@ final class MgCrmRepository
                 $this->requireCatalogEntry(CrmCatalog::ResourceType, $typeId);
         }
 
+        // Os quatro catálogos continuam COMPLETOS em toda resposta: eles são a
+        // fonte dos ids que CRM-3 vai exigir, e paginá-los reabriria o defeito
+        // de "id ativo que o cliente nunca descobre". O que pagina são as raias.
         $catalogs = [
             'resource_types' => $this->activeCatalog(CrmCatalog::ResourceType),
             'resource_statuses' => $this->activeCatalog(CrmCatalog::ResourceStatus),
@@ -335,8 +344,14 @@ final class MgCrmRepository
             'followup_statuses' => $this->activeCatalog(CrmCatalog::FollowupStatus),
         ];
 
+        $statusCount = count($catalogs['resource_statuses']);
+
+        // A página sai do catálogo já materializado e ordenado: determinística,
+        // sem consulta extra, e toda raia é alcançável avançando o offset.
+        $page = array_slice($catalogs['resource_statuses'], $statusOffset, $statusLimit);
+
         $lanes = [];
-        foreach ($catalogs['resource_statuses'] as $status) {
+        foreach ($page as $status) {
             $conditions = $filter;
             $conditions[CrmSchema::COLUMN_STATUS_ID] = $status['id'];
 
@@ -372,6 +387,10 @@ final class MgCrmRepository
         return [
             'type_id' => $typeId,
             'limit_per_status' => $limitPerStatus,
+            'status_count' => $statusCount,
+            'status_limit' => $statusLimit,
+            'status_offset' => $statusOffset,
+            'status_has_more' => ($statusOffset + count($lanes)) < $statusCount,
             'catalogs' => $catalogs,
             'lanes' => $lanes,
         ];
@@ -487,10 +506,41 @@ final class MgCrmRepository
                 throw CrmException::integrity('catalog_row_without_id');
             }
 
-            $entries[] = ['id' => $id, 'name' => self::toText($row[CrmSchema::COLUMN_NAME] ?? null)];
+            $entries[] = [
+                'id' => $id,
+                'name' => self::requireName(
+                    $row[CrmSchema::COLUMN_NAME] ?? null,
+                    'catalog_' . $catalog->value
+                ),
+            ];
         }
 
         return $entries;
+    }
+
+    /**
+     * Nome PUBLICÁVEL de catálogo ou label — validação única das duas rotas.
+     *
+     * A revisão fria mostrou o buraco de ter duas validações diferentes: o
+     * catálogo ativo publicava `name: null` e o label histórico aceitava
+     * `"   "`, porque só a resolução histórica checava vazio e nenhuma das duas
+     * fazia `trim()`. Um rótulo em branco não é acionável pelo cliente e torna
+     * corrupção indistinguível de dado válido — os dois casos são integridade.
+     *
+     * Devolve o nome já normalizado, para que a resposta não carregue o
+     * whitespace de borda do banco.
+     *
+     * @throws CrmException
+     */
+    private static function requireName(mixed $raw, string $context): string
+    {
+        $name = trim(self::toText($raw) ?? '');
+
+        if ($name === '') {
+            throw CrmException::integrity($context . '_name_blank');
+        }
+
+        return $name;
     }
 
     /**
@@ -520,24 +570,44 @@ final class MgCrmRepository
         int $ceiling,
         string $context,
     ): array {
-        $total = $this->port->countRows(new CrmCount($table, $conditions, $nullColumns));
+        // Snapshot lógico: o maior id existente AGORA. Tudo inserido depois
+        // recebe id maior e fica fora desta leitura, então a varredura tem um
+        // conjunto-alvo estável em vez de perseguir um alvo móvel.
+        $throughId = $this->highestId($table, $conditions, $nullColumns, $columns, $context);
+
+        if ($throughId === null) {
+            // Sem nenhuma linha visível, o total precisa concordar.
+            if ($this->port->countRows(new CrmCount($table, $conditions, $nullColumns)) !== 0) {
+                throw CrmException::integrity($context . '_snapshot_divergence');
+            }
+
+            return [];
+        }
+
+        $total = $this->port->countRows(new CrmCount($table, $conditions, $nullColumns, $throughId));
 
         if ($total > $ceiling) {
             throw CrmException::integrity($context . '_above_safety_ceiling');
         }
 
         $rows = [];
-        $offset = 0;
+        $afterId = null;
+        $seen = [];
+        $maxIterations = intdiv($ceiling, CrmSchema::CHUNK_SIZE) + 2;
 
-        while (count($rows) < $total) {
+        for ($iteration = 0; $iteration < $maxIterations; $iteration++) {
             $page = $this->port->selectRows(new CrmSelect(
                 table: $table,
                 columns: $columns,
                 conditions: $conditions,
                 nullColumns: $nullColumns,
-                order: $order,
+                // A varredura ordena por IDENTIDADE, não pela ordem pública: só
+                // uma chave imutável e única torna o keyset livre de duplicata
+                // e omissão. A ordem pública é aplicada no fim, em memória.
+                order: [[CrmSchema::COLUMN_ID, 'asc']],
                 limit: CrmSchema::CHUNK_SIZE,
-                offset: $offset,
+                afterId: $afterId,
+                throughId: $throughId,
             ));
 
             if ($page === []) {
@@ -545,22 +615,126 @@ final class MgCrmRepository
             }
 
             foreach ($page as $row) {
+                $id = self::toId($row[CrmSchema::COLUMN_ID] ?? null);
+
+                if ($id === null) {
+                    throw CrmException::integrity($context . '_row_without_identity');
+                }
+
+                if (isset($seen[$id])) {
+                    throw CrmException::integrity($context . '_duplicate_row');
+                }
+
+                // Progresso ESTRITO: um id que não avança significa que a
+                // página repetiu ou retrocedeu, e continuar produziria um
+                // conjunto que parece completo sem ser.
+                if ($afterId !== null && $id <= $afterId) {
+                    throw CrmException::integrity($context . '_non_monotonic_scan');
+                }
+
+                $seen[$id] = true;
                 $rows[] = $row;
+                $afterId = $id;
+
+                if (count($rows) > $total) {
+                    throw CrmException::integrity($context . '_scan_exceeded_total');
+                }
             }
 
-            $offset += count($page);
-
-            if ($offset > CrmSchema::MAX_OFFSET) {
-                throw CrmException::integrity($context . '_above_safety_ceiling');
+            // Página curta sob um teto de id FIXO significa exaustão: não há
+            // mais nada entre o último id lido e `throughId`. Se a página
+            // encurtou por remoção concorrente, a conferência final contra o
+            // total pega — então economizar este round trip não enfraquece a
+            // prova de completude.
+            if (count($page) < CrmSchema::CHUNK_SIZE) {
+                break;
             }
         }
 
-        if (count($rows) !== $total) {
-            // A varredura acabou antes do total contado: o conjunto mudou no
-            // meio da leitura. Publicar o que veio seria apresentar um
-            // catálogo/recurso incompleto como completo.
+        if (count($rows) !== $total || count($seen) !== $total) {
             throw CrmException::integrity($context . '_incomplete_scan');
         }
+
+        // Revalidação sob o MESMO snapshot: se o total mudou dentro do teto de
+        // ids já fechado, houve escrita concorrente e a completude deixou de
+        // ser demonstrável.
+        if ($this->port->countRows(new CrmCount($table, $conditions, $nullColumns, $throughId)) !== $total) {
+            throw CrmException::integrity($context . '_concurrent_divergence');
+        }
+
+        return self::sortRows($rows, $order);
+    }
+
+    /**
+     * Maior `id` visível sob o filtro — o teto do snapshot lógico.
+     *
+     * @param array<string, int|string> $conditions
+     * @param array<int, string>        $nullColumns
+     * @param array<int, string>        $columns
+     * @throws CrmException
+     */
+    private function highestId(
+        string $table,
+        array $conditions,
+        array $nullColumns,
+        array $columns,
+        string $context,
+    ): ?int {
+        $rows = $this->port->selectRows(new CrmSelect(
+            table: $table,
+            columns: in_array(CrmSchema::COLUMN_ID, $columns, true) ? [CrmSchema::COLUMN_ID] : $columns,
+            conditions: $conditions,
+            nullColumns: $nullColumns,
+            order: [[CrmSchema::COLUMN_ID, 'desc']],
+            limit: 1,
+        ));
+
+        if ($rows === []) {
+            return null;
+        }
+
+        $id = self::toId($rows[0][CrmSchema::COLUMN_ID] ?? null);
+
+        if ($id === null) {
+            throw CrmException::integrity($context . '_row_without_identity');
+        }
+
+        return $id;
+    }
+
+    /**
+     * Ordem PÚBLICA aplicada em memória, depois de a completude estar provada.
+     *
+     * @param array<int, array<string, mixed>>     $rows
+     * @param array<int, array{0:string,1:string}> $order
+     * @return array<int, array<string, mixed>>
+     */
+    private static function sortRows(array $rows, array $order): array
+    {
+        if ($order === []) {
+            return $rows;
+        }
+
+        usort($rows, static function (array $a, array $b) use ($order): int {
+            foreach ($order as [$column, $direction]) {
+                $left = $a[$column] ?? null;
+                $right = $b[$column] ?? null;
+
+                // `strcmp()` e não `<=>`: em PHP 8 o spaceship compara DUAS
+                // strings numéricas como números, então um `name` VARCHAR
+                // valendo "9" e "10" sairia em ordem numérica — que não é a
+                // ordem que o MySQL devolve para uma coluna textual.
+                $comparison = CrmSchema::isIntegerColumn($column)
+                    ? (self::toId($left) ?? 0) <=> (self::toId($right) ?? 0)
+                    : strcmp((string) $left, (string) $right);
+
+                if ($comparison !== 0) {
+                    return $direction === 'desc' ? -$comparison : $comparison;
+                }
+            }
+
+            return 0;
+        });
 
         return $rows;
     }
@@ -599,11 +773,17 @@ final class MgCrmRepository
                 inConditions: [CrmSchema::COLUMN_ID => $batch],
             )) as $row) {
                 $id = self::toId($row[CrmSchema::COLUMN_ID] ?? null);
-                $name = self::toText($row[CrmSchema::COLUMN_NAME] ?? null);
 
-                if ($id !== null && $name !== null && $name !== '') {
-                    $labels[$id] = $name;
+                if ($id === null) {
+                    throw CrmException::integrity('label_' . $catalog->value . '_row_without_id');
                 }
+
+                // Nome em branco (null, vazio ou só whitespace) é integridade
+                // quebrada, não um label visualmente vazio aceitável — D13.
+                $labels[$id] = self::requireName(
+                    $row[CrmSchema::COLUMN_NAME] ?? null,
+                    'label_' . $catalog->value
+                );
             }
         }
 
@@ -771,11 +951,15 @@ final class MgCrmRepository
                 inConditions: [CrmSchema::COLUMN_ID => $batch],
             )) as $row) {
                 $id = self::toId($row[CrmSchema::COLUMN_ID] ?? null);
-                $name = self::toText($row[CrmSchema::COLUMN_NAME] ?? null);
 
-                if ($id !== null && $name !== null) {
-                    $names[$id] = $name;
+                if ($id === null) {
+                    throw CrmException::integrity('custom_field_definition_without_id');
                 }
+
+                $names[$id] = self::requireName(
+                    $row[CrmSchema::COLUMN_NAME] ?? null,
+                    'custom_field_definition'
+                );
             }
         }
 

@@ -29,6 +29,8 @@ final class CrmSelect
      * @param array<int, string>                 $nullColumns colunas exigidas `IS NULL`
      * @param array<int, array{0:string,1:string}> $order
      * @param array<string, array<int, int>>     $inConditions coluna => ids (`IN`)
+     * @param int|null                           $afterId   `id >` exclusivo (keyset)
+     * @param int|null                           $throughId `id <=` inclusivo (upper bound)
      */
     public function __construct(
         public readonly string $table,
@@ -39,6 +41,8 @@ final class CrmSelect
         public readonly int $limit = CrmSchema::DEFAULT_LIMIT,
         public readonly int $offset = 0,
         public readonly array $inConditions = [],
+        public readonly ?int $afterId = null,
+        public readonly ?int $throughId = null,
     ) {
         if (!CrmSchema::isKnownTable($table)) {
             throw new \LogicException('CrmSelect: unknown CRM table.');
@@ -84,6 +88,38 @@ final class CrmSelect
         }
 
         self::assertInConditions($table, $inConditions, $known);
+        self::assertIdRange($table, $afterId, $throughId, $known);
+    }
+
+    /**
+     * Faixa de `id` FECHADA — o keyset das varreduras completas.
+     *
+     * A coluna é FIXA (`id`) e os operadores são literais nossos (`>` e `<=`).
+     * O chamador do repositório nunca escolhe nenhum dos dois: `afterId` é o
+     * último id já lido pela própria varredura e `throughId` é o teto lógico
+     * capturado no início dela. Isto substitui a paginação por offset, que a
+     * revisão fria mostrou aceitar duplicata + omissão como conjunto completo
+     * quando as linhas se deslocam entre páginas.
+     *
+     * @param array<int, string> $known
+     */
+    private static function assertIdRange(string $table, ?int $afterId, ?int $throughId, array $known): void
+    {
+        if ($afterId === null && $throughId === null) {
+            return;
+        }
+
+        self::assertColumn(CrmSchema::COLUMN_ID, $known);
+
+        foreach ([$afterId, $throughId] as $bound) {
+            if ($bound !== null && $bound < 1) {
+                throw new \LogicException('CrmSelect: id bounds must be positive ids.');
+            }
+        }
+
+        if ($afterId !== null && $throughId !== null && $afterId > $throughId) {
+            throw new \LogicException('CrmSelect: the id range is inverted.');
+        }
     }
 
     /**

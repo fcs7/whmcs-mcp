@@ -103,6 +103,17 @@ final class CrmSchema
     public const MAX_CUSTOM_FIELD_VALUES = 5000;
 
     /**
+     * Teto de RAIAS materializadas por request (D14).
+     *
+     * O catálogo de status continua completo na resposta; o que é paginado são
+     * as raias. Sem isto, 5.000 statuses ativos produziam ~10.000 consultas e a
+     * mesma quantidade de gravações no Activity Log numa única READ — o teto de
+     * volume virava multiplicador de I/O. Com `status_limit` em 1..25, o custo
+     * de raias por request é no máximo 25 COUNTs e 25 SELECTs de itens.
+     */
+    public const MAX_STATUS_LIMIT = 25;
+
+    /**
      * Conjunto MÍNIMO exigido por capacidade — e cada capacidade corresponde ao
      * que UMA operação consulta, não ao que uma tabela oferece.
      *
@@ -195,6 +206,33 @@ final class CrmSchema
     public static function isKnownTable(string $table): bool
     {
         return self::columnsOf($table) !== [];
+    }
+
+    /**
+     * Colunas cujo tipo físico é INTEIRO — ids, chaves estrangeiras e flags.
+     *
+     * Existe porque ordenação depende do TIPO da coluna, não da aparência do
+     * valor. A revisão fria reprovou um comparador que decidia pelo conteúdo:
+     * um catálogo com `name` VARCHAR valendo `"9"` e `"10"` ordenava
+     * numericamente no dublê e lexicalmente no MySQL. Aqui a decisão vem do
+     * schema, então `name` é sempre texto mesmo quando parece número.
+     *
+     * @var array<int, string>
+     */
+    private const INTEGER_COLUMNS = [
+        self::COLUMN_ID,
+        self::COLUMN_RESOURCE_ID,
+        self::COLUMN_TYPE_ID,
+        self::COLUMN_STATUS_ID,
+        self::COLUMN_ADMIN_ID,
+        self::COLUMN_FIELD_ID,
+        self::COLUMN_ACTIVE,
+        'disabled',
+    ];
+
+    public static function isIntegerColumn(string $column): bool
+    {
+        return in_array($column, self::INTEGER_COLUMNS, true);
     }
 
     /** @return array<string, array<int, string>> tabela => colunas exigidas */

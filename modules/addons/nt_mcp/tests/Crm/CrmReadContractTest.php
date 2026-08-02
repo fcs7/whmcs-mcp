@@ -506,9 +506,10 @@ class CrmReadContractTest extends TestCase
 
         $this->assertCount(40, $result['custom_fields']);
         $this->assertCount(
-            3,
+            4,
             $this->port->selects,
-            'recurso + valores + definições = 3 consultas, para qualquer quantidade de campos'
+            'recurso + teto do snapshot + pagina de valores + definições = 4 consultas, '
+            . 'para qualquer quantidade de campos'
         );
 
         foreach ($this->port->selects as $select) {
@@ -524,9 +525,12 @@ class CrmReadContractTest extends TestCase
 
         $this->assertSame([], $this->repository()->getResource(42)['custom_fields']);
 
-        // A varredura conta antes de paginar: com total zero, nenhuma página é
-        // buscada e a resolução de definições nem começa.
-        $this->assertSame([CrmSchema::TABLE_RESOURCES], $this->port->selectedTables());
+        // A varredura procura o teto do snapshot antes de paginar: sem nenhuma
+        // linha, ela para ali e a resolução de definições nem começa.
+        $this->assertSame(
+            [CrmSchema::TABLE_RESOURCES, CrmSchema::TABLE_FIELD_VALUES],
+            $this->port->selectedTables()
+        );
         $this->assertSame(
             [CrmSchema::TABLE_FIELD_VALUES],
             array_map(static fn($count): string => $count->table, $this->port->counts)
@@ -696,7 +700,102 @@ class CrmReadContractTest extends TestCase
                 [['id' => 23, 'name' => '', 'active' => 1, 'deleted_at' => null]],
                 23,
             ],
+            'nome nulo' => [
+                [['id' => 24, 'name' => null, 'active' => 1, 'deleted_at' => null]],
+                24,
+            ],
+            // Só whitespace atravessava D13 e saía como `type_name: "   "`.
+            'nome so espacos' => [
+                [['id' => 25, 'name' => '   ', 'active' => 1, 'deleted_at' => null]],
+                25,
+            ],
+            'nome so tab e newline' => [
+                [['id' => 26, 'name' => "\t\n ", 'active' => 0, 'deleted_at' => null]],
+                26,
+            ],
         ];
+    }
+
+    /** Nome válido com whitespace de borda é NORMALIZADO, não recusado. */
+    public function test_label_name_is_trimmed(): void
+    {
+        $this->seedCatalogs();
+        $this->port->seed(CrmSchema::TABLE_FOLLOWUP_TYPES, [
+            ['id' => 20, 'name' => "  Ligacao \t", 'active' => 0, 'deleted_at' => null],
+        ]);
+        $this->seedResources([self::resourceRow(42)]);
+        $this->seedFollowups([self::followupRow(1, typeId: 20)]);
+
+        $this->assertSame(
+            'Ligacao',
+            $this->repository()->listFollowups(42, null, null, 25, 0)['items'][0]['type_name']
+        );
+    }
+
+    /**
+     * O catálogo ATIVO passa pela mesma validação de nome.
+     *
+     * Antes só a resolução histórica checava vazio, então um status ativo com
+     * `name = null` era publicado e virava lane com `status_name: null`.
+     *
+     * @param mixed $name
+     */
+    #[DataProvider('blankCatalogNameProvider')]
+    public function test_active_catalog_with_blank_name_fails_closed(mixed $name): void
+    {
+        $this->seedCatalogs();
+        $this->port->seed(CrmSchema::TABLE_RESOURCE_STATUSES, [
+            ['id' => 10, 'name' => $name, 'active' => 1, 'deleted_at' => null],
+        ]);
+        $this->seedResources([]);
+
+        $this->assertSame(
+            CrmErrorCode::Downstream,
+            $this->capture(fn() => $this->repository()->getKanban(null, 25))->errorCode
+        );
+    }
+
+    /** @return array<string, array{0:mixed}> */
+    public static function blankCatalogNameProvider(): array
+    {
+        return [
+            'nulo' => [null],
+            'vazio' => [''],
+            'so espacos' => ['   '],
+            'so whitespace misto' => ["\t \n"],
+        ];
+    }
+
+    /** Nome de catálogo publicado sai normalizado. */
+    public function test_active_catalog_name_is_trimmed(): void
+    {
+        $this->seedCatalogs();
+        $this->port->seed(CrmSchema::TABLE_RESOURCE_STATUSES, [
+            ['id' => 10, 'name' => '  Aberto  ', 'active' => 1, 'deleted_at' => null],
+        ]);
+        $this->seedResources([]);
+
+        $kanban = $this->repository()->getKanban(null, 25);
+
+        $this->assertSame([['id' => 10, 'name' => 'Aberto']], $kanban['catalogs']['resource_statuses']);
+        $this->assertSame('Aberto', $kanban['lanes'][0]['status_name']);
+    }
+
+    /** Definição de custom field em branco também é integridade quebrada. */
+    public function test_blank_custom_field_definition_name_fails_closed(): void
+    {
+        $this->seedResources([self::resourceRow(42)]);
+        $this->port->seed(CrmSchema::TABLE_FIELDS, [
+            ['id' => 5, 'name' => '   ', 'deleted_at' => null],
+        ]);
+        $this->port->seed(CrmSchema::TABLE_FIELD_VALUES, [
+            ['id' => 100, 'field_id' => 5, 'resource_id' => 42, 'value' => 'x'],
+        ]);
+
+        $this->assertSame(
+            CrmErrorCode::Downstream,
+            $this->capture(fn() => $this->repository()->getResource(42))->errorCode
+        );
     }
 
     /** Os labels são resolvidos em LOTE pelos ids da página, sem N+1. */
@@ -925,51 +1024,120 @@ class CrmReadContractTest extends TestCase
         );
     }
 
-    /**
-     * TODO status ativo vira raia. O desenho anterior parava em 25 e anunciava
-     * a omissão num campo — o recurso do 30º status simplesmente sumia.
-     */
-    public function test_every_active_status_gets_a_lane(): void
+    /** @param int $count quantos resource statuses ativos semear */
+    private function seedStatusCatalog(int $count): void
     {
-        $this->seedCatalogs();
         $this->port->seed(CrmSchema::TABLE_RESOURCE_STATUSES, array_map(
             static fn(int $id): array => [
                 'id' => $id,
-                'name' => sprintf('S%03d', $id),
+                'name' => sprintf('S%05d', $id),
                 'active' => 1,
                 'deleted_at' => null,
             ],
-            range(1, 30)
+            range(1, $count)
         ));
+    }
+
+    /**
+     * D14 — todas as raias continuam ALCANÇÁVEIS, agora por paginação.
+     *
+     * O desenho anterior materializava todas numa resposta só; com 5.000
+     * statuses isso virava ~10.000 consultas e outras tantas gravações de
+     * auditoria numa única READ. Agora cada request traz uma página
+     * determinística, e avançar `status_offset` chega em qualquer raia.
+     */
+    public function test_lane_pages_reach_every_active_status(): void
+    {
+        $this->seedCatalogs();
+        $this->seedStatusCatalog(30);
         $this->seedResources([self::resourceRow(7, statusId: 30)]);
 
-        $kanban = $this->repository()->getKanban(null, 25);
+        $first = $this->repository()->getKanban(null, 25, 25, 0);
 
-        $this->assertCount(30, $kanban['lanes']);
-        $this->assertArrayNotHasKey('lanes_truncated', $kanban);
+        $this->assertSame(30, $first['status_count']);
+        $this->assertSame(25, $first['status_limit']);
+        $this->assertSame(0, $first['status_offset']);
+        $this->assertTrue($first['status_has_more']);
+        $this->assertCount(25, $first['lanes']);
+        $this->assertArrayNotHasKey('lanes_truncated', $first);
+        $this->assertCount(30, $first['catalogs']['resource_statuses'], 'catálogo continua completo');
 
-        $lane30 = $kanban['lanes'][29];
+        $second = $this->repository()->getKanban(null, 25, 25, 25);
+
+        $this->assertCount(5, $second['lanes']);
+        $this->assertFalse($second['status_has_more']);
+
+        $lane30 = $second['lanes'][4];
         $this->assertSame(30, $lane30['status_id']);
         $this->assertSame(1, $lane30['total'], 'o recurso do 30º status não pode desaparecer');
         $this->assertSame([7], array_column($lane30['items'], 'resource_id'));
+
+        // Páginas consecutivas não repetem nem pulam status.
+        $seen = array_merge(
+            array_column($first['lanes'], 'status_id'),
+            array_column($second['lanes'], 'status_id')
+        );
+        $this->assertSame(range(1, 30), $seen);
     }
 
-    /** Raia vazia não paga a consulta de itens — o custo segue os statuses com dado. */
+    /** Página além do fim é vazia e honesta, não erro nem repetição. */
+    public function test_lane_page_past_the_end_is_empty(): void
+    {
+        $this->seedCatalogs();
+        $this->seedStatusCatalog(30);
+        $this->seedResources([]);
+
+        $kanban = $this->repository()->getKanban(null, 25, 25, 30);
+
+        $this->assertSame([], $kanban['lanes']);
+        $this->assertSame(30, $kanban['status_count']);
+        $this->assertSame(30, $kanban['status_offset']);
+        $this->assertFalse($kanban['status_has_more']);
+        $this->assertCount(30, $kanban['catalogs']['resource_statuses']);
+    }
+
+    /**
+     * O CUSTO de raias por request é fechado, mesmo com 5.000 statuses ativos.
+     *
+     * Este é o finding de disponibilidade: no máximo 25 COUNTs e 25 SELECTs de
+     * raia, independentemente do tamanho do catálogo.
+     */
+    public function test_lane_cost_is_globally_bounded_with_five_thousand_statuses(): void
+    {
+        $this->seedCatalogs();
+        $this->seedStatusCatalog(5000);
+        $this->seedResources(array_map(
+            static fn(int $id): array => self::resourceRow($id, statusId: $id),
+            range(1, 100)
+        ));
+
+        $kanban = $this->repository()->getKanban(null, 25, 25, 0);
+
+        $this->assertSame(5000, $kanban['status_count']);
+        $this->assertCount(25, $kanban['lanes']);
+        $this->assertCount(5000, $kanban['catalogs']['resource_statuses']);
+
+        $laneCounts = array_filter(
+            $this->port->counts,
+            static fn($count): bool => $count->table === CrmSchema::TABLE_RESOURCES
+        );
+        $laneSelects = array_filter(
+            $this->port->selects,
+            static fn($select): bool => $select->table === CrmSchema::TABLE_RESOURCES
+        );
+
+        $this->assertLessThanOrEqual(25, count($laneCounts), 'no máximo 25 COUNTs de raia');
+        $this->assertLessThanOrEqual(25, count($laneSelects), 'no máximo 25 SELECTs de raia');
+    }
+
+    /** Raia vazia não paga a consulta de itens. */
     public function test_empty_lanes_do_not_query_items(): void
     {
         $this->seedCatalogs();
-        $this->port->seed(CrmSchema::TABLE_RESOURCE_STATUSES, array_map(
-            static fn(int $id): array => [
-                'id' => $id,
-                'name' => sprintf('S%03d', $id),
-                'active' => 1,
-                'deleted_at' => null,
-            ],
-            range(1, 30)
-        ));
-        $this->seedResources([self::resourceRow(7, statusId: 30)]);
+        $this->seedStatusCatalog(30);
+        $this->seedResources([self::resourceRow(7, statusId: 3)]);
 
-        $this->repository()->getKanban(null, 25);
+        $this->repository()->getKanban(null, 25, 25, 0);
 
         $laneSelects = array_filter(
             $this->port->selects,
@@ -977,6 +1145,19 @@ class CrmReadContractTest extends TestCase
         );
 
         $this->assertCount(1, $laneSelects, 'só a raia com recurso consulta itens');
+    }
+
+    /** `status_limit` é clampado ao teto de D14. */
+    public function test_status_limit_is_clamped(): void
+    {
+        $this->seedCatalogs();
+        $this->seedStatusCatalog(60);
+        $this->seedResources([]);
+
+        $this->assertSame(
+            CrmSchema::MAX_STATUS_LIMIT,
+            $this->repository()->getKanban(null, 25, 999, 0)['status_limit']
+        );
     }
 
     /** Catálogo completo acima de uma página — o 101º id continua publicável. */
@@ -1081,6 +1262,48 @@ class CrmReadContractTest extends TestCase
 
         $this->assertSame(
             [100, 10, 9],
+            array_column($this->repository()->listResources(null, null, 25, 0)['items'], 'resource_id')
+        );
+    }
+
+    /**
+     * `name` é VARCHAR: ordena LEXICALMENTE, mesmo quando o valor parece
+     * número.
+     *
+     * O comparador anterior decidia pelo conteúdo, então um catálogo com nomes
+     * `"9"` e `"10"` saía como `["9","10"]` no dublê e `["10","9"]` no MySQL —
+     * o teste ratificava uma ordem que produção não tem.
+     */
+    public function test_fake_orders_varchar_names_lexically_even_when_numeric(): void
+    {
+        $this->seedCatalogs();
+        $this->port->seed(CrmSchema::TABLE_RESOURCE_STATUSES, [
+            ['id' => 1, 'name' => '9', 'active' => 1, 'deleted_at' => null],
+            ['id' => 2, 'name' => '10', 'active' => 1, 'deleted_at' => null],
+            ['id' => 3, 'name' => '100', 'active' => 1, 'deleted_at' => null],
+        ]);
+        $this->seedResources([]);
+
+        $names = array_column(
+            $this->repository()->getKanban(null, 25)['catalogs']['resource_statuses'],
+            'name'
+        );
+
+        $this->assertSame(['10', '100', '9'], $names, 'lexical, como o VARCHAR do MySQL');
+    }
+
+    /** Ordenação descendente de id também é numérica e segura. */
+    public function test_fake_orders_ids_descending_across_magnitudes(): void
+    {
+        $this->seedResources([
+            array_merge(self::resourceRow(1), ['id' => '9007199254740993']),
+            self::resourceRow(2),
+            array_merge(self::resourceRow(3), ['id' => '9007199254740992']),
+            self::resourceRow(1000),
+        ]);
+
+        $this->assertSame(
+            [9007199254740993, 9007199254740992, 1000, 2],
             array_column($this->repository()->listResources(null, null, 25, 0)['items'], 'resource_id')
         );
     }

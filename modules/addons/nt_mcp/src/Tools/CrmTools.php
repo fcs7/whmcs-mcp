@@ -123,7 +123,9 @@ class CrmTools
         name: 'whmcs_crm_get_contact',
         description: 'Obtem um recurso (contato/lead) do CRM mgCRM2 por resource_id. '
             . 'Retorna a projecao core em resource e os custom_fields normalizados '
-            . '({field_id, name, value}), somente leitura, no maximo 100 campos. '
+            . '({field_id, name, value}), somente leitura e completos: todos os valores do '
+            . 'recurso sao devolvidos, e acima de 5000 valores a leitura falha fechado em vez '
+            . 'de truncar. '
             . 'Recurso inexistente ou removido devolve crm_resource_not_found.'
     )]
     public function getContact(int $resource_id): string
@@ -251,13 +253,25 @@ class CrmTools
         description: 'Visao Kanban do CRM mgCRM2 e FONTE DOS CATALOGOS de id. '
             . 'Publica em catalogs os quatro catalogos ativos (resource_types, resource_statuses, '
             . 'followup_types, followup_statuses) mesmo quando nao ha nenhum recurso, e em lanes '
-            . 'uma raia para CADA status de recurso ativo, com total exato, items limitados e '
-            . 'has_more. Os catalogos sao completos, sem corte. '
+            . 'a PAGINA de raias pedida, cada uma com total exato, items limitados e has_more. '
+            . 'Os quatro catalogos sao sempre completos; somente lanes e paginado, por '
+            . 'status_limit (1..25, default 25) e status_offset (default 0). A resposta traz '
+            . 'status_count, status_limit, status_offset e status_has_more, entao todas as raias '
+            . 'sao alcancaveis avancando o offset. '
             . 'Filtro opcional type_id restringe as raias a um tipo de recurso. '
-            . 'limit_per_status maximo 25.'
+            . 'limit_per_status controla apenas os items dentro de cada raia; maximo 25.'
     )]
-    public function getKanban(?int $type_id = null, int $limit_per_status = 25): string
-    {
-        return $this->read(fn(): array => $this->crm->getKanban($type_id, $limit_per_status));
+    public function getKanban(
+        ?int $type_id = null,
+        int $limit_per_status = 25,
+        int $status_limit = 25,
+        int $status_offset = 0
+    ): string {
+        return $this->read(fn(): array => $this->crm->getKanban(
+            $type_id,
+            $limit_per_status,
+            $status_limit,
+            $status_offset
+        ));
     }
 }

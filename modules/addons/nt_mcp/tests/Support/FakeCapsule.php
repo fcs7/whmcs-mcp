@@ -98,8 +98,17 @@ final class FakeCapsuleQuery
     private array $columns = [];
     private bool $distinct = false;
 
+    /** Sentinela para distinguir `where($c,$v)` de `where($c,$op,$v)`. */
+    private const NO_VALUE = "\0__fake_capsule_no_value__\0";
+
     /** @var array<string, mixed> */
     private array $wheres = [];
+
+    /** @var array<string, array<int, int|string>> */
+    private array $inWheres = [];
+
+    /** @var array<int, array{0:string,1:string,2:mixed}> */
+    private array $comparisons = [];
 
     /** @var array<int, string> */
     private array $nullWheres = [];
@@ -136,10 +145,33 @@ final class FakeCapsuleQuery
         return $this;
     }
 
-    public function where(string $column, mixed $value): self
+    /**
+     * Aceita `where($col, $value)` e `where($col, $operator, $value)`, como o
+     * builder real — o keyset das varreduras usa a forma de três argumentos.
+     */
+    public function where(string $column, mixed $operatorOrValue, mixed $value = self::NO_VALUE): self
     {
-        FakeCapsule::$calls[] = "where({$column})";
-        $this->wheres[$column] = $value;
+        if ($value === self::NO_VALUE) {
+            FakeCapsule::$calls[] = "where({$column})";
+            $this->wheres[$column] = $operatorOrValue;
+
+            return $this;
+        }
+
+        $operator = (string) $operatorOrValue;
+        FakeCapsule::$calls[] = "where({$column},{$operator})";
+        $this->comparisons[] = [$column, $operator, $value];
+
+        return $this;
+    }
+
+    /**
+     * @param array<int, int|string> $values
+     */
+    public function whereIn(string $column, array $values): self
+    {
+        FakeCapsule::$calls[] = "whereIn({$column}," . count($values) . ')';
+        $this->inWheres[$column] = $values;
 
         return $this;
     }
@@ -150,6 +182,13 @@ final class FakeCapsuleQuery
         $this->nullWheres[] = $column;
 
         return $this;
+    }
+
+    public function count(): int
+    {
+        FakeCapsule::$calls[] = 'count()';
+
+        return count($this->matchingRows());
     }
 
     public function orderBy(string $column, string $direction = 'asc'): self
@@ -248,6 +287,29 @@ final class FakeCapsuleQuery
                 $rows,
                 static fn(object $row): bool => ($row->{$column} ?? null) == $value
             );
+        }
+
+        foreach ($this->inWheres as $column => $values) {
+            $rows = array_filter(
+                $rows,
+                static fn(object $row): bool => in_array($row->{$column} ?? null, $values, false)
+            );
+        }
+
+        foreach ($this->comparisons as [$column, $operator, $value]) {
+            $rows = array_filter($rows, static function (object $row) use ($column, $operator, $value): bool {
+                $actual = $row->{$column} ?? null;
+
+                return match ($operator) {
+                    '>' => $actual > $value,
+                    '>=' => $actual >= $value,
+                    '<' => $actual < $value,
+                    '<=' => $actual <= $value,
+                    '=' => $actual == $value,
+                    '!=', '<>' => $actual != $value,
+                    default => throw new \RuntimeException("FakeCapsule: unsupported operator {$operator}"),
+                };
+            });
         }
 
         foreach ($this->nullWheres as $column) {

@@ -74,6 +74,11 @@ final class CrmReadBoundary
         'whmcs_crm_get_kanban' => [
             'type_id' => ['minimum' => 1],
             'limit_per_status' => ['minimum' => 1],
+            // D14: a paginação de raias é o que mantém o custo por request
+            // fechado, então o teto é parte do contrato publicado, não um
+            // clamp silencioso.
+            'status_limit' => ['minimum' => 1, 'maximum' => 25],
+            'status_offset' => ['minimum' => 0],
         ],
     ];
 

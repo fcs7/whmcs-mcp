@@ -234,12 +234,20 @@ class CrmReadAdapterTest extends TestCase
         $payload = $this->payload('whmcs_crm_get_kanban', []);
 
         $this->assertSame(
-            ['type_id', 'limit_per_status', 'catalogs', 'lanes'],
+            [
+                'type_id', 'limit_per_status',
+                'status_count', 'status_limit', 'status_offset', 'status_has_more',
+                'catalogs', 'lanes',
+            ],
             array_keys($payload),
-            'metadata de eco no topo é shape estável; lanes_truncated não existe mais'
+            'shape D14 estável; lanes_truncated não existe mais'
         );
         $this->assertNull($payload['type_id']);
         $this->assertSame(25, $payload['limit_per_status']);
+        $this->assertSame(2, $payload['status_count']);
+        $this->assertSame(25, $payload['status_limit'], 'default D14');
+        $this->assertSame(0, $payload['status_offset'], 'default D14');
+        $this->assertFalse($payload['status_has_more']);
         $this->assertSame(
             ['resource_types', 'resource_statuses', 'followup_types', 'followup_statuses'],
             array_keys($payload['catalogs'])
@@ -333,8 +341,18 @@ class CrmReadAdapterTest extends TestCase
         $this->assertSame(['resource_id'], $followups['required']);
 
         $kanban = $this->publishedSchema('whmcs_crm_get_kanban');
-        $this->assertSame(['type_id', 'limit_per_status'], array_keys($kanban['properties']));
+        $this->assertSame(
+            ['type_id', 'limit_per_status', 'status_limit', 'status_offset'],
+            array_keys($kanban['properties'])
+        );
         $this->assertArrayNotHasKey('required', $kanban, 'kanban não exige nada do chamador');
+
+        // D14: a faixa de status_limit é contrato publicado, não clamp mudo.
+        $this->assertSame(1, $kanban['properties']['status_limit']['minimum'] ?? null);
+        $this->assertSame(25, $kanban['properties']['status_limit']['maximum'] ?? null);
+        $this->assertSame(25, $kanban['properties']['status_limit']['default'] ?? null);
+        $this->assertSame(0, $kanban['properties']['status_offset']['minimum'] ?? null);
+        $this->assertSame(0, $kanban['properties']['status_offset']['default'] ?? null);
     }
 
     /**
@@ -419,6 +437,86 @@ class CrmReadAdapterTest extends TestCase
                 'whmcs_crm_list_followups', ['resource_id' => 42], 'crm_unavailable', CrmSchema::TABLE_FOLLOWUPS,
             ],
         ];
+    }
+
+    // ---------------------------------------------------------------
+    // D14 — paginação de raias pelo protocolo real
+    // ---------------------------------------------------------------
+
+    /** Semeia N resource statuses ativos, substituindo os do fixture. */
+    private function seedManyStatuses(int $count): void
+    {
+        $this->port->seed(CrmSchema::TABLE_RESOURCE_STATUSES, array_map(
+            static fn(int $id): array => [
+                'id' => $id,
+                'name' => sprintf('S%05d', $id),
+                'active' => 1,
+                'deleted_at' => null,
+            ],
+            range(1, $count)
+        ));
+    }
+
+    /** Defaults de D14 aparecem sem o chamador pedir nada. */
+    public function test_kanban_defaults_follow_d14(): void
+    {
+        $this->seedManyStatuses(40);
+
+        $payload = $this->payload('whmcs_crm_get_kanban', []);
+
+        $this->assertSame(40, $payload['status_count']);
+        $this->assertSame(25, $payload['status_limit']);
+        $this->assertSame(0, $payload['status_offset']);
+        $this->assertTrue($payload['status_has_more']);
+        $this->assertCount(25, $payload['lanes']);
+        $this->assertCount(40, $payload['catalogs']['resource_statuses'], 'catálogo completo');
+    }
+
+    /** Páginas consecutivas cobrem todo o catálogo sem repetir nem pular. */
+    public function test_consecutive_lane_pages_cover_every_status(): void
+    {
+        $this->seedManyStatuses(60);
+
+        $seen = [];
+        for ($offset = 0; $offset < 75; $offset += 25) {
+            $page = $this->payload('whmcs_crm_get_kanban', [
+                'status_limit' => 25,
+                'status_offset' => $offset,
+            ]);
+
+            $this->assertSame($offset, $page['status_offset']);
+            $this->assertSame(60, $page['status_count']);
+
+            foreach ($page['lanes'] as $lane) {
+                $seen[] = $lane['status_id'];
+            }
+        }
+
+        $this->assertSame(range(1, 60), $seen, 'sem duplicata e sem omissão');
+        $this->assertCount(60, array_unique($seen));
+    }
+
+    /** Página além do fim: vazia, sem erro, sem `status_has_more`. */
+    public function test_lane_page_past_the_end_is_empty_over_the_protocol(): void
+    {
+        $this->seedManyStatuses(30);
+
+        $payload = $this->payload('whmcs_crm_get_kanban', [
+            'status_limit' => 25,
+            'status_offset' => 30,
+        ]);
+
+        $this->assertSame([], $payload['lanes']);
+        $this->assertFalse($payload['status_has_more']);
+        $this->assertCount(30, $payload['catalogs']['resource_statuses']);
+    }
+
+    /** `status_limit` acima do teto é recusado pelo schema, não clampado mudo. */
+    public function test_status_limit_above_the_ceiling_is_refused(): void
+    {
+        $outcome = $this->call('whmcs_crm_get_kanban', ['status_limit' => 26]);
+
+        $this->assertSame(-32602, $outcome['jsonrpc_error']['code'] ?? null);
     }
 
     // ---------------------------------------------------------------
@@ -545,6 +643,10 @@ class CrmReadAdapterTest extends TestCase
             ],
             'get_kanban stage desconhecido' => ['whmcs_crm_get_kanban', ['stage' => 'New']],
             'get_kanban limit legado' => ['whmcs_crm_get_kanban', ['limit' => 10]],
+            'get_kanban offset legado' => ['whmcs_crm_get_kanban', ['offset' => 25]],
+            'get_kanban lanes_truncated' => [
+                'whmcs_crm_get_kanban', ['status_limit' => 25, 'lanes_truncated' => false],
+            ],
         ];
     }
 
@@ -581,6 +683,9 @@ class CrmReadAdapterTest extends TestCase
             ],
             'get_kanban type_id 0' => ['whmcs_crm_get_kanban', ['type_id' => 0]],
             'get_kanban limit_per_status 0' => ['whmcs_crm_get_kanban', ['limit_per_status' => 0]],
+            'get_kanban status_limit 0' => ['whmcs_crm_get_kanban', ['status_limit' => 0]],
+            'get_kanban status_limit negativo' => ['whmcs_crm_get_kanban', ['status_limit' => -1]],
+            'get_kanban status_offset negativo' => ['whmcs_crm_get_kanban', ['status_offset' => -1]],
         ];
     }
 
