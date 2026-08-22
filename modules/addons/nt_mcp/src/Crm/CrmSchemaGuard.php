@@ -71,7 +71,7 @@ final class CrmSchemaGuard
      * @return true|CrmException conclusão memorizável
      * @throws CrmException `downstream` quando a metadata é indisponível
      */
-    private function decide(CrmCapability $capability): true|CrmException
+    private function decide(CrmCapability $capability): bool|CrmException // PHP 8.1: sem tipo `true` standalone; só devolve true
     {
         $requirements = CrmSchema::requirementsFor($capability);
 

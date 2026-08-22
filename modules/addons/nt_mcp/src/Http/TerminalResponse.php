@@ -11,13 +11,14 @@ namespace NtMcp\Http;
  * endpoint MCP pode então selar status, headers e body atomicamente; o endpoint
  * OAuth ainda pode emiti-lo diretamente sem aceitar conteúdo arbitrário.
  */
-final readonly class TerminalResponse
+/* PHP 8.1 compat: readonly por propriedade (desenv/prod rodam 8.1) */
+final class TerminalResponse
 {
     /** @param array<string, string> $headers */
     private function __construct(
-        private int $status,
-        private string $body,
-        private array $headers,
+        private readonly int $status,
+        private readonly string $body,
+        private readonly array $headers,
     ) {}
 
     public static function tlsRequired(): self

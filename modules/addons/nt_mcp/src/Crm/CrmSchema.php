@@ -119,61 +119,63 @@ final class CrmSchema
      *
      * @var array<string, array<string, array<int, string>>>
      */
+    // PHP 8.1 compat: `Enum->value` em expressão constante só existe a partir do 8.2;
+    // as chaves são os valores literais dos cases (verificados por CrmSchemaGuardTest).
     private const REQUIREMENTS = [
-        CrmCapability::ResourceIdentity->value => [
+        'resource_identity' /* CrmCapability::ResourceIdentity */ => [
             self::TABLE_RESOURCES => ['id', 'deleted_at'],
         ],
-        CrmCapability::ResourceCore->value => [
+        'resource_core' /* CrmCapability::ResourceCore */ => [
             self::TABLE_RESOURCES => [
                 'id', 'type_id', 'status_id', 'name', 'lastname', 'email', 'phone',
                 'country', 'short_description', 'description',
                 'created_at', 'updated_at', 'deleted_at',
             ],
         ],
-        CrmCapability::ResourceAssignment->value => [
+        'resource_assignment' /* CrmCapability::ResourceAssignment */ => [
             self::TABLE_RESOURCES => ['id', 'admin_id'],
         ],
-        CrmCapability::ResourceTypes->value => [
+        'resource_types' /* CrmCapability::ResourceTypes */ => [
             self::TABLE_RESOURCE_TYPES => ['id', 'name', 'active', 'deleted_at'],
         ],
-        CrmCapability::ResourceStatuses->value => [
+        'resource_statuses' /* CrmCapability::ResourceStatuses */ => [
             self::TABLE_RESOURCE_STATUSES => ['id', 'name', 'active', 'deleted_at'],
         ],
-        CrmCapability::Followups->value => [
+        'followups' /* CrmCapability::Followups */ => [
             self::TABLE_FOLLOWUPS => [
                 'id', 'resource_id', 'type_id', 'status_id', 'admin_id',
                 'description', 'date', 'created_at', 'updated_at', 'deleted_at',
             ],
         ],
-        CrmCapability::FollowupsRead->value => [
+        'followups_read' /* CrmCapability::FollowupsRead */ => [
             self::TABLE_FOLLOWUPS => [
                 'id', 'resource_id', 'type_id', 'status_id',
                 'description', 'date', 'created_at', 'updated_at', 'deleted_at',
             ],
         ],
-        CrmCapability::FollowupTypes->value => [
+        'followup_types' /* CrmCapability::FollowupTypes */ => [
             self::TABLE_FOLLOWUP_TYPES => ['id', 'name', 'active', 'deleted_at'],
         ],
-        CrmCapability::FollowupStatuses->value => [
+        'followup_statuses' /* CrmCapability::FollowupStatuses */ => [
             self::TABLE_FOLLOWUP_STATUSES => ['id', 'name', 'active', 'deleted_at'],
         ],
-        CrmCapability::FollowupTypeLabels->value => [
+        'followup_type_labels' /* CrmCapability::FollowupTypeLabels */ => [
             self::TABLE_FOLLOWUP_TYPES => ['id', 'name', 'deleted_at'],
         ],
-        CrmCapability::FollowupStatusLabels->value => [
+        'followup_status_labels' /* CrmCapability::FollowupStatusLabels */ => [
             self::TABLE_FOLLOWUP_STATUSES => ['id', 'name', 'deleted_at'],
         ],
-        CrmCapability::Notes->value => [
+        'notes' /* CrmCapability::Notes */ => [
             self::TABLE_NOTES => [
                 'id', 'resource_id', 'admin_id', 'content',
                 'created_at', 'updated_at', 'deleted_at',
             ],
         ],
-        CrmCapability::CustomFields->value => [
+        'custom_fields' /* CrmCapability::CustomFields */ => [
             self::TABLE_FIELDS => ['id', 'name', 'deleted_at'],
             self::TABLE_FIELD_VALUES => ['id', 'field_id', 'resource_id', 'value'],
         ],
-        CrmCapability::AdminIdentity->value => [
+        'admin_identity' /* CrmCapability::AdminIdentity */ => [
             self::TABLE_ADMINS => ['id', 'username', 'disabled'],
         ],
     ];

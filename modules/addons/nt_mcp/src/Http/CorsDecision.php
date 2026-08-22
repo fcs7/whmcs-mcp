@@ -5,12 +5,13 @@ declare(strict_types=1);
 namespace NtMcp\Http;
 
 /** Headers CORS validados e eventual envelope terminal, sem side effects. */
-final readonly class CorsDecision
+/* PHP 8.1 compat: readonly por propriedade (desenv/prod rodam 8.1) */
+final class CorsDecision
 {
     /** @param array<string, string> $headers */
     private function __construct(
-        private array $headers,
-        private ?TerminalResponse $terminal,
+        private readonly array $headers,
+        private readonly ?TerminalResponse $terminal,
     ) {}
 
     /** @param string[] $exposeHeaders */
