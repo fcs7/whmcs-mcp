@@ -43,10 +43,10 @@ function nt_mcp_config(): array
 function nt_mcp_activate(): array
 {
     // FASE 4b (6A): guarda de ordem de autoload. Se vendor/autoload.php não
-    // carregou antes do init.php do WHMCS, as classes da lib php-mcp/server
+    // carregou antes do init.php do WHMCS, as classes do SDK mcp/sdk
     // (psr/log v3) não resolvem e o runtime falha silenciosamente. Detecta na
     // ativação, onde o erro é visível ao operador.
-    if (!class_exists(\PhpMcp\Server\Server::class)) {
+    if (!class_exists(\Mcp\Server::class)) {
         return [
             'status'      => 'error',
             'description' => 'NT MCP: autoloader nao inicializado corretamente '
@@ -54,12 +54,17 @@ function nt_mcp_activate(): array
         ];
     }
 
-    // FASE 4c (9.3): o servidor grava lock global + cache em data/. Se o
+    // FASE 4c (9.3): o servidor grava sessoes + cache de discovery em data/. Se o
     // diretorio nao for gravavel, o addon fica inoperante em runtime (HTTP 500
     // sem contexto). Valida agora, na ativacao, em vez de por request.
     $dataDir = __DIR__ . '/data';
     if (!is_dir($dataDir)) {
         @mkdir($dataDir, 0700, true);
+    }
+    foreach (['cache', 'sessions'] as $sub) {
+        if (!is_dir($dataDir . '/' . $sub)) {
+            @mkdir($dataDir . '/' . $sub, 0700, true);
+        }
     }
     if (!is_dir($dataDir) || !is_writable($dataDir)) {
         return [
@@ -142,9 +147,11 @@ function nt_mcp_upgrade(array $vars): array
     // servindo o registro antigo. Deletar o arquivo também zera o estado de
     // sessão (compartilha o mesmo arquivo); aceitável no upgrade — clientes
     // reinicializam e o próximo request re-descobre e regrava.
-    $registryCache = __DIR__ . '/data/cache/mcp_state.json';
-    if (is_file($registryCache)) {
-        @unlink($registryCache);
+    foreach (['mcp_elements.json', 'mcp_state.json' /* legado php-mcp/server */] as $cacheFile) {
+        $registryCache = __DIR__ . '/data/cache/' . $cacheFile;
+        if (is_file($registryCache)) {
+            @unlink($registryCache);
+        }
     }
 
     // D10: instalações que já existiam antes desta versão não têm a chave;

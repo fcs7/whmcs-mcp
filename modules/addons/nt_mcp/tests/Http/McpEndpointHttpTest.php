@@ -344,7 +344,7 @@ final class McpEndpointHttpTest extends TestCase
 
         $method = $this->request($server, 'GET', $headers);
         $this->assertSame(405, $method['status']);
-        $this->assertSame('POST', $method['headers']['allow'] ?? null);
+        $this->assertSame('POST, DELETE', $method['headers']['allow'] ?? null);
         $this->assertSame('{"error":"SSE not supported; use POST"}', $method['body']);
         $this->assertSame((string) strlen($method['body']), $method['headers']['content-length'] ?? null);
 
@@ -354,30 +354,27 @@ final class McpEndpointHttpTest extends TestCase
         $this->assertSame((string) strlen($oversized['body']), $oversized['headers']['content-length'] ?? null);
     }
 
-    public function test_real_server_lock_contention_remains_503_with_retry_after(): void
+    /**
+     * Batch JSON-RPC (array no topo) e recusado ANTES do SDK: cada request
+     * conta uma vez no rate limiter, entao 100 chamadas num corpo so nao
+     * podem passar por uma.
+     */
+    public function test_real_server_rejects_jsonrpc_batch_before_sdk(): void
     {
-        $lockPath = dirname(__DIR__, 2) . '/data/nt_mcp_global.lock';
-        $lock = fopen($lockPath, 'c');
-        $this->assertIsResource($lock);
-        $this->assertTrue(flock($lock, LOCK_EX | LOCK_NB));
+        $root = $this->sandbox();
+        $server = $this->startServer($root);
+        $response = $this->request(
+            $server,
+            'POST',
+            ['Authorization' => 'Bearer ' . self::TOKEN, 'Content-Type' => 'application/json'],
+            ' [{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}]'
+        );
 
-        try {
-            $root = $this->sandbox();
-            $server = $this->startServer($root);
-            $response = $this->request(
-                $server,
-                'POST',
-                ['Authorization' => 'Bearer ' . self::TOKEN, 'Content-Type' => 'application/json'],
-                '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
-            );
-        } finally {
-            flock($lock, LOCK_UN);
-            fclose($lock);
-        }
-
-        $this->assertSame(503, $response['status']);
-        $this->assertMatchesRegularExpression('/^[5-8]\z/', $response['headers']['retry-after'] ?? '');
-        $this->assertSame('{"error":"Server busy, retry shortly"}', $response['body']);
+        $this->assertSame(400, $response['status']);
+        $this->assertSame('application/json', $response['headers']['content-type'] ?? null);
+        $payload = json_decode($response['body'], true);
+        $this->assertSame(-32600, $payload['error']['code'] ?? null);
+        $this->assertSame('Batch requests are not supported', $payload['error']['message'] ?? null);
         $this->assertSame((string) strlen($response['body']), $response['headers']['content-length'] ?? null);
     }
 

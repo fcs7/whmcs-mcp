@@ -5,7 +5,7 @@ namespace NtMcp\Tools;
 use NtMcp\Whmcs\DateNormalizer;
 use NtMcp\Whmcs\LocalApiClient;
 use NtMcp\Whmcs\LocalizedDate;
-use PhpMcp\Server\Attributes\McpTool;
+use Mcp\Capability\Attribute\McpTool;
 
 class SystemTools
 {

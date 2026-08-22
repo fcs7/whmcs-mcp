@@ -7,7 +7,7 @@ namespace NtMcp\Tests\Tools;
 use NtMcp\Crm\MgCrmRepository;
 use NtMcp\Tools\CrmTools;
 use NtMcp\Whmcs\CapsuleClient;
-use PhpMcp\Server\Attributes\McpTool;
+use Mcp\Capability\Attribute\McpTool;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 

@@ -1,6 +1,6 @@
 # NT MCP — WHMCS MCP Server Addon
 
-Addon PHP para WHMCS que expõe 86 tools via Model Context Protocol.
+Addon PHP para WHMCS que expõe 64 tools via Model Context Protocol.
 Repo: `git@github.com:fcs7/whmcs-mcp.git`
 
 ## Commands
@@ -10,9 +10,13 @@ cd modules/addons/nt_mcp
 composer install --ignore-platform-req=ext-iconv
 ./vendor/bin/phpunit --testdox                    # tests
 composer audit                                    # check dependency CVEs
-rg -o '#\[McpTool' src/Tools/*.php | wc -l        # 86 tools total
+rg -o '#\[McpTool' src/Tools/*.php | wc -l        # 64 tools total
 # Deploy manual via FTP (senha interativa — from modules/addons/nt_mcp/)
 lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror -R --only-newer --exclude .git/ --exclude vendor/ --exclude tests/ --exclude data/ --exclude .phpunit.cache/ --exclude .omc/ --exclude .full-review/ --exclude .security-hardening/ --exclude .security-hardening-archive-20260329/ . /httpdocs/modules/addons/nt_mcp/; bye" desenv.ntweb.com.br
+# Deploy com vendor/ (troca de lib SDK — sem --exclude vendor/)
+lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror -R --only-newer --exclude .git/ --exclude tests/ --exclude data/ --exclude vendor/bin/ --exclude .phpunit.cache/ --exclude .omc/ --exclude .full-review/ --exclude .security-hardening/ --exclude .security-hardening-archive-20260329/ . /httpdocs/modules/addons/nt_mcp/; bye" desenv.ntweb.com.br
+# Testes de subprocesso (McpEndpointHttpTest, DiagnosticBoundaryTest) falham no PHP 8.5 local — rodar em container:
+docker run --rm -v "$PWD:/app" -w /app php:8.3-cli-bookworm php vendor/bin/phpunit
 # Verify desenv: download deployed tools and count MCP attributes
 lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror /httpdocs/modules/addons/nt_mcp/src/Tools/ /tmp/nt_mcp_desenv_check/src/Tools/; bye" desenv.ntweb.com.br && test -f /tmp/nt_mcp_desenv_check/src/Tools/CrmTools.php && rg -o '#\[McpTool' /tmp/nt_mcp_desenv_check/src/Tools/*.php | wc -l
 ```
@@ -23,15 +27,15 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror /httpdocs/modules
 - `oauth.php` — Slim entry: TLS → headers → CORS → OAuthMigration → OAuthRouter::dispatch()
 - `nt_mcp.php` — WHMCS addon entry (_config/_activate/_output → AdminController/OAuthApprovalController)
 - `.well-known/openid-configuration/index.php` — RFC 8414 metadata discovery (redireciona para oauth.php)
-- `src/Server.php` — Entry: auth → lock (timeout 5s) → `PhpMcpV1Adapter::handle()` → resposta; body >1MB rejeitado (resources e prompts desabilitados)
-- `src/Mcp/` — `ServerAdapterInterface` + `PhpMcpV1Adapter`: isola a lib php-mcp/server pinada; discovery condicional (pula `discover()` com cache quente) + 11 Tools pré-registradas no container
+- `src/Server.php` — Entry: auth → método (POST/DELETE; GET 405) → M-02 1 MB guard → batch JSON-RPC (400 -32600) → PSR-7 → adapter → emit
+- `src/Mcp/` — `ServerAdapterInterface` + `McpSdkAdapter`: builder do SDK com discovery por atributo cacheada em `data/cache/mcp_elements.json` via `FileElementCache` (PSR-16); sessões `FileSessionStore` em `data/sessions/` TTL 1h GC 1/20; `StreamableHttpTransport` com `middleware: []` e `maxBodyBytes` 1 MiB
 - `src/Auth/BearerAuth.php` — Bearer token auth: `authenticate(): ?string` (static + OAuth), per-token admin binding
 - `src/Security/` — CsrfProtection (HMAC nonce), RateLimiter (TransientData + file fallback)
 - `src/Http/` — IpResolver, IpAllowlist, TlsEnforcer, SecurityHeaders, CorsHandler
 - `src/OAuth/` — OAuthRouter, OAuthMigration, OAuthHelper, Handlers/{Token,Authorization,Registration,Metadata}Handler
 - `src/Admin/` — AdminController (auth dashboard), OAuthApprovalController (5-layer approval)
 - `src/Whmcs/` — LocalApiClient (73 cmd allowlist + gates READ/WRITE/DESTRUCTIVE/FINANCIAL/COST/COMMS), CapsuleClient (3 table allowlist), CompatContainer, SystemUrl, AdminSession
-- `src/Tools/*.php` — 11 tool classes, 86 tools: Client(12), System(11), ProjectManager(10), Order(9), Domain(9), CRM(8), SupportInfo(7), Quote(6), Billing(5), Ticket(5), Service(4)
+- `src/Tools/*.php` — 11 tool classes, 64 tools: Client(12), ProjectManager(9), Quote(8), CRM(8), Ticket(5), System(5), Domain(5), Billing(5), Order(4), SupportInfo(3), Service(1)
 - `templates/admin/` — dashboard.php, oauth-approve.php (output escapado via htmlspecialchars)
 
 ### Admin Binding Flow
@@ -56,7 +60,8 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror /httpdocs/modules
 
 ## Conventions
 
-- Tools: `#[McpTool(name: 'whmcs_*', description: '...')]` — retornam `json_encode(..., JSON_PRETTY_PRINT)`
+- Tools: `#[McpTool]` (from `Mcp\Capability\Attribute\McpTool`) — retornam `json_encode(..., JSON_PRETTY_PRINT)`
+- CRM READ tools usam `#[Schema(additionalProperties:false)]` + `#[Schema(minimum:…)]` e retornam `CallToolResult::error()` para envelopes de erro
 - LocalAPI tools injetam `LocalApiClient`; CRM tools injetam `CapsuleClient`
 - Não usar try/catch nos tools — o framework captura exceções automaticamente
 - PHP 8.2+ obrigatório (PHPUnit 11)
@@ -79,7 +84,8 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror /httpdocs/modules
 - Command allowlist: 73 comandos em `LocalApiClient::ALLOWED_COMMANDS`
 - Table/column allowlist: 3 tabelas CRM em `CapsuleClient::ALLOWED_TABLES/COLUMNS`
 - Trusted proxy IP: `IpResolver::resolve()` — usa `\App::getClientIp()` do WHMCS quando disponível (coherence guard contra spoof em conexão direta); `isTrustedProxy()` mescla Trusted Proxies nativo (aba Security, chave `TrustedProxyIps`) ∪ `nt_mcp_trusted_proxies` (aditivo/opcional); fallback rightmost-untrusted XFF
-- Content-Length guard: Server.php rejeita >1MB
+- Content-Length guard: Server.php rejeita >1MB; transport maxBodyBytes = 1 MiB (hard limit)
+- Batch JSON-RPC rejeitado antes do SDK (rate limit por request): invalid requests → 400 -32600
 - customfields: json_encode (sem serialize), max 50 fields, 8KB, scalar-only
 - Passwords stripped de responses (ClientTools, ServiceTools)
 - Audit log: API calls logados com params sensíveis redactados
@@ -89,10 +95,11 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror /httpdocs/modules
 - CapsuleClient query limit: MAX 500 rows por SELECT (hard-clamped)
 - Write-class gate (WO-2): `LocalApiClient` classifica cada comando (READ/WRITE/DESTRUCTIVE/FINANCIAL/COST/COMMS). WRITE on por padrão; DESTRUCTIVE/FINANCIAL/COST/COMMS bloqueados por padrão (opt-in `nt_mcp_enable_*`); master switch `nt_mcp_readonly` (fail-closed). Espelhado em `CapsuleClient::assertWritable()`. `AcceptQuote`=FINANCIAL (gera fatura). Impersonação clampada: `adminid`/`adminusername` forçados ao admin do token
 - Admin fail-closed (WO-7): sem `nt_mcp_admin_user` resolvível, `BearerAuth` e `Server::run()` negam (401) — nunca vinculam ao superadmin `admin`
+- Middleware default do SDK (CorsMiddleware/DnsRebinding) desligado de propósito — CORS/IP/TLS são nossos, em mcp.php
 
 ## Gotchas
 
-- **Autoloader order CRÍTICO** — `vendor/autoload.php` DEVE ser carregado ANTES de `init.php` em todo entry point (`mcp.php`, `oauth.php`). WHMCS carrega `psr/log` v1 (params sem type hints); nosso vendor tem v3 (typed `string|\Stringable`). Se `init.php` carrega primeiro, v1 é registrada e qualquer classe v3 (incluindo `NullLogger` dentro de `php-mcp/server`) causa **fatal declaration compatibility** silencioso — sem output, sem shutdown handler, sem log.
+- **Autoloader order CRÍTICO** — `vendor/autoload.php` DEVE ser carregado ANTES de `init.php` em todo entry point (`mcp.php`, `oauth.php`). WHMCS carrega `psr/log` v1 (params sem type hints); nosso vendor tem v3 (typed `string|\Stringable`). Se `init.php` carrega primeiro, v1 é registrada e qualquer classe v3 (incluindo logger do SDK) causa **fatal declaration compatibility** silencioso — sem output, sem shutdown handler, sem log. Logger anônimo é passado explicitamente ao builder e ao transport para contornar.
 - **Admin session path-scoping** — cookies admin só são enviados para `/admin/*`, não funcionam em `/modules/addons/`
 - **CLIENTAREA vs ADMINAREA** — `define('CLIENTAREA', true)` carrega sessão cliente; para sessão admin usar redirect ao painel admin
 - **Addon access control** — cada addon precisa permissão explícita por role group (Setup > Addon Modules > Configure > Access Control)
@@ -101,21 +108,22 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror /httpdocs/modules
 - **CRM table names são placeholders** (`mod_mgcrm_*` em CrmTools.php) — verificar no banco real se o ModulesGarden CRM mudar schema
 - **CRM dependency** — se `mod_mgcrm_contacts` não existir, apenas as tools CRM devem falhar com erro claro; o restante do conector continua operacional
 - **mcp.php** requer `__DIR__ . '/../../../init.php'` (3 níveis até raiz WHMCS)
-- **php-mcp/server API real** difere da documentação web: usar HttpTransportHandler, CompatContainer, ArrayConfigurationRepository
 - **ext-iconv** pode não estar habilitada — usar `--ignore-platform-req=ext-iconv` no composer
 - **Bearer Token** armazenado em tblconfiguration, gerado na ativação do addon
 - **Nunca criar debug/token files no servidor** — `debug-log.php` e `mcp-make-token.php` são backdoors; usar WHMCS Activity Log
 - **Sempre comparar git vs prod** antes e depois de deploy — servidor pode ter arquivos extras ou versões antigas
 - **lftp requer senha interativa** — sem senha, falha silenciosamente ("assume anonymous login")
-- **php-mcp/server pinado em ^1.0** (atual 1.1.0) — v3.x é breaking change, não atualizar sem branch dedicada
-- **Lock global com timeout** — `Server::acquireLockWithTimeout()` faz `LOCK_EX|LOCK_NB` por até 5s → responde 503+`Retry-After` no timeout em vez de bloquear o worker FPM indefinidamente (era a causa da cascata 504 no `/admin`). Ainda serializa requests
-- **Custo por request (perfilado)** — dominante NÃO era o discovery, e sim `queueMessageForAll`: a lib enfileira uma cópia da resposta (~5.5KB) para CADA cliente ativo; clientes que não voltam nunca drenam `mcp_state_messages_<id>` → cache single-file incha e a latência quadratiza (sessão única que reusa o session-id é FLAT ~120ms; o storm só aparece com múltiplas sessões/flood de session-ids). Mitigações: (i) `PhpMcpV1Adapter::trackActiveClientAndGc()` poda clientes ociosos (`CLIENT_TTL=600s`) + teto rígido (`MAX_ACTIVE_CLIENTS=50`), deletando filas órfãs; (ii) `discover()` só no cold cache (`mcp_state_elements` sem TTL, invalidado no `nt_mcp_upgrade()`). **Débito #1 remanescente:** o single-file FileCache continua o gargalo real p/ alta concorrência — fix definitivo é cache por-cliente/Redis
-- **Débito deferido conscientemente** — split do IpResolver (322L) NÃO feito (recém-unificado no WO-TP e testado; risco > ganho); o `str_replace('"properties":[]'→'{}')` em Server.php e o `LoggerInterface` anônimo são workarounds de compat mantidos de propósito. Constructor injection dos seams do BearerAuth adicionado, setters mantidos como back-compat
-- **Audit fix IDs** — comentários `// SECURITY FIX (F1)` a `(F8)` + `(M-02)` referenciam findings da auditoria de production readiness; não remover
-- **Excluir do deploy**: `.full-review/`, `.security-hardening*/`, `.phpunit.cache/`, `data/` (runtime state)
-- **property_exists() guard** — colunas novas (`admin_user`, `approved_by`, `last_used_at`) podem não existir em DBs pré-migration; usar `property_exists($row, 'col')` antes de acessar
+- **`mcp/sdk` pinado em 0.7.1** (pre-1.0) — v0.6→v0.7 renomeou classes (`HttpTransportHandler` → `StreamableHttpTransport`, etc.); subir de versão só em branch dedicada
+- **`php-http/discovery` é plugin composer** — `allow-plugins` já no composer.json; sem isso, `composer install` falha
+- **Deploy com troca de lib PRECISA incluir `vendor/`** — o comando padrão exclui vendor; usar comando "deploy com vendor/" listado em Commands
+- **`data/sessions/` e `data/cache/` devem ser excluídos do deploy e são 0700** — sessões dinâmicas + cache de discovery; excluir sempre
+- **`nt_mcp_upgrade()` apaga `mcp_elements.json`** — quando há mudança de schema (tools/prompts novos), isso força rediscovery. Também limpa legacy `mcp_state.json`
+- **Audit fix IDs** — comentários `// SECURITY FIX (Fn)`/`(M-02)` referenciam findings da auditoria de production readiness; não remover. Com a migração pro SDK, os fixes F5 (lock_open_failed) e F6 (resposta vazia → -32603) do Server.php antigo ficaram obsoletos: não há mais lock global e o SDK responde sempre. M-02 (1 MB) continua em Server.php + `maxBodyBytes`
 - **Pending audit findings** — F-05, F-10, F-12 resolvidos. Resolvidos no refactor: F-07 (RateLimiter), F-11 (TokenHandler). Mitigados: F-06 (IpAllowlist), F-14 (SystemUrl — intencional)
 - **Semgrep PHP parser** — não suporta constructor promotion com `readonly` (PHP 8.2); RateLimiter gera PartialParsing warning, findings nesse arquivo podem ser incompletos
+- **Débito deferido conscientemente** — split do IpResolver (322L) NÃO feito (recém-unificado no WO-TP e testado; risco > ganho); o `LoggerInterface` anônimo (McpSdkAdapter::compatLogger) é workaround de compat psr/log v1/v3 mantido de propósito. Constructor injection dos seams do BearerAuth adicionado, setters mantidos como back-compat
+- **Excluir do deploy**: `.full-review/`, `.security-hardening*/`, `.phpunit.cache/`, `data/` (runtime state)
+- **property_exists() guard** — colunas novas (`admin_user`, `approved_by`, `last_used_at`) podem não existir em DBs pré-migration; usar `property_exists($row, 'col')` antes de acessar
 - **`deploy/htaccess-well-known.conf`** — regras RewriteRule a inserir no `.htaccess` da raiz WHMCS (antes das regras WHMCS existentes) para que Claude.ai auto-descubra o OAuth 2.1 via RFC 8414 (`/.well-known/oauth-authorization-server`); sem esse passo, Custom Connector do Claude.ai não consegue descobrir os endpoints
 - **Trusted proxy unificado (WO-TP)** — `IpResolver` reusa o IP resolvido pelo WHMCS (`\App::getClientIp()`) e mescla a lista nativa `TrustedProxyIps` (aba Security) ∪ `nt_mcp_trusted_proxies`. Consequências: (i) proxies da lista NATIVA também autorizam `X-Forwarded-Proto` e `NT_MCP_ALLOW_HTTP` no `TlsEnforcer` — liste só proxies próprios na aba Security; (ii) o caminho nativo honra o "Proxy IP Header" (ex.: CF-Connecting-IP), mas o fallback só lê `X-Forwarded-For`; (iii) se a chave nativa não for `TrustedProxyIps` na versão instalada, a unificação vira no-op — observável pelo error_log "X-Forwarded-For present but no trusted proxies configured". `nt_mcp_trusted_proxies` é agora opcional/aditivo
 - **Config obrigatória pré-deploy** — `nt_mcp_admin_user` DEVE estar setado antes do deploy (senão 401 fail-closed, ver WO-7); operador também configura `nt_mcp_allowed_ips`, `nt_mcp_cors_origins`, e (opcional) `nt_mcp_trusted_proxies` / Trusted Proxies nativo do WHMCS

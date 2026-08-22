@@ -69,6 +69,7 @@ $ntMcpAllowedHeaders = [
     'retry-after' => 'Retry-After',
     'content-type' => 'Content-Type',
     'mcp-session-id' => 'Mcp-Session-Id',
+    'mcp-protocol-version' => 'MCP-Protocol-Version',
     'allow' => 'Allow',
     'x-content-type-options' => 'X-Content-Type-Options',
     'x-frame-options' => 'X-Frame-Options',

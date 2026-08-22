@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace NtMcp\Tests\Whmcs;
 
-use NtMcp\Mcp\PhpMcpV1Adapter;
+use NtMcp\Mcp\McpSdkAdapter;
 use NtMcp\Tests\Support\ActivityLogSpy;
 use NtMcp\Tests\Support\ErrorLogSpy;
 use NtMcp\Whmcs\CapsuleClient;
 use NtMcp\Whmcs\LocalApiClient;
+use Nyholm\Psr7\Factory\Psr17Factory;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -17,10 +19,10 @@ use PHPUnit\Framework\TestCase;
  * nenhum pode carregá-lo: resposta real de `tools/call`, Activity Log e
  * `error_log` (capturado de verdade, não presumido).
  *
- * A suíte anterior ficava verde porque só inspecionava o Activity Log; os
- * vazamentos apareciam no stderr e no payload MCP.
+ * Ported to McpSdkAdapter from PhpMcpV1Adapter: adapter now takes PSR-7
+ * ServerRequestInterface and returns ResponseInterface.
  */
-class SinkLeakTest extends TestCase
+final class SinkLeakTest extends TestCase
 {
     /** Amostras de coisas que NUNCA podem aparecer em sink nenhum. */
     private const SECRETS = [
@@ -38,18 +40,16 @@ class SinkLeakTest extends TestCase
         return 'Rejected: ' . implode(' ', self::SECRETS);
     }
 
-    private string $cacheDir;
+    private string $tempDir;
     private string $baseDir;
 
     protected function setUp(): void
     {
         $this->baseDir = dirname(__DIR__, 2) . '/src';
-        $this->cacheDir = sys_get_temp_dir() . '/nt_mcp_sink_' . bin2hex(random_bytes(6));
-        @mkdir($this->cacheDir, 0700, true);
+        $this->tempDir = sys_get_temp_dir() . '/nt_mcp_sink_' . bin2hex(random_bytes(6));
+        @mkdir($this->tempDir, 0700, true);
         ActivityLogSpy::start();
         ErrorLogSpy::start();
-        // D10: sem chave provisionada o fingerprint é OMITIDO. Os testes que
-        // afirmam sobre fingerprint precisam de uma chave válida.
         \NtMcp\Whmcs\Diagnostics::setFingerprintKey(hash('sha256', 'nt-mcp test diagnostics key A'));
     }
 
@@ -58,42 +58,59 @@ class SinkLeakTest extends TestCase
         \NtMcp\Whmcs\Diagnostics::resetFingerprintKey();
         ErrorLogSpy::stop();
         ActivityLogSpy::stop();
-        foreach (glob($this->cacheDir . '/*') ?: [] as $f) {
+        foreach (glob($this->tempDir . '/*') ?: [] as $f) {
             @unlink($f);
         }
-        @rmdir($this->cacheDir);
+        @rmdir($this->tempDir);
     }
 
-    private function adapter(callable $cb): PhpMcpV1Adapter
+    private function adapter(callable $cb): McpSdkAdapter
     {
         $api = new LocalApiClient('testadmin');
         $api->setGates(['write' => true, 'financial' => true, 'destructive' => true]);
         $api->setCallable($cb);
         $api->setAdminIdResolver(static fn(string $u): int => 7);
 
-        return new PhpMcpV1Adapter($api, new CapsuleClient(), $this->baseDir, $this->cacheDir);
+        return new McpSdkAdapter($api, new CapsuleClient(), $this->baseDir, $this->tempDir);
     }
 
-    private function callTool(PhpMcpV1Adapter $adapter, string $name, array $args, string $client): string
+    private function callTool(McpSdkAdapter $adapter, string $name, array $args): string
     {
-        $messages = $adapter->handle(
-            json_encode([
+        $factory = new Psr17Factory();
+
+        // Initialize first to get session ID
+        $initRequest = $factory->createServerRequest('POST', 'https://localhost/mcp.php')
+            ->withHeader('Content-Type', 'application/json')
+            ->withBody($factory->createStream(json_encode([
                 'jsonrpc' => '2.0',
                 'id' => 1,
+                'method' => 'initialize',
+                'params' => [
+                    'protocolVersion' => '2025-06-18',
+                    'capabilities' => (object) [],
+                    'clientInfo' => ['name' => 'test', 'version' => '1'],
+                ],
+            ])));
+
+        $initResponse = $adapter->handle($initRequest);
+        $sessionId = $initResponse->getHeaderLine('Mcp-Session-Id');
+
+        // Call the tool with session ID
+        $callRequest = $factory->createServerRequest('POST', 'https://localhost/mcp.php')
+            ->withHeader('Content-Type', 'application/json')
+            ->withHeader('Mcp-Session-Id', $sessionId)
+            ->withBody($factory->createStream(json_encode([
+                'jsonrpc' => '2.0',
+                'id' => 2,
                 'method' => 'tools/call',
-                'params' => ['name' => $name, 'arguments' => $args],
-            ]),
-            $client,
-            'tools/call'
-        );
+                'params' => [
+                    'name' => $name,
+                    'arguments' => $args,
+                ],
+            ])));
 
-        foreach ($messages as $m) {
-            if (($m['id'] ?? null) === 1) {
-                return json_encode($m['error'] ?? $m['result'] ?? []);
-            }
-        }
-
-        return '';
+        $callResponse = $adapter->handle($callRequest);
+        return (string) $callResponse->getBody();
     }
 
     /** Todos os sinks juntos, para cada segredo. */
@@ -120,18 +137,19 @@ class SinkLeakTest extends TestCase
     // LocalAPI: erro em array e exceção
     // ---------------------------------------------------------------
 
+    #[Test]
     public function test_error_array_with_secrets_leaks_nowhere(): void
     {
         $adapter = $this->adapter(fn() => ['result' => 'error', 'message' => self::poisonedText()]);
 
-        $payload = $this->callTool($adapter, 'whmcs_list_clients', [], 'sink-err-000001');
+        $payload = $this->callTool($adapter, 'whmcs_list_clients', []);
 
         $this->assertNoSinkLeaked($payload);
-        // O contrato estável sobrevive, com correlação.
+        // O contrato estável sobrevive
         $this->assertStringContainsString('correlation_id', $payload);
     }
 
-    /** D6 pelo adapter real: eco exato nunca ganha código semântico falso. */
+    #[Test]
     public function test_exact_caller_input_echo_is_downstream_and_leaks_nowhere_via_adapter(): void
     {
         $echo = 'Email Address Already Exists';
@@ -142,7 +160,7 @@ class SinkLeakTest extends TestCase
             'lastname' => 'Tester',
             'email' => 'echo@example.test',
             'password2' => 'safe-enough-value',
-        ], 'sink-echo-adapter');
+        ]);
 
         $this->assertStringContainsString('downstream_error', $payload);
         $this->assertStringContainsString('downstream', $payload);
@@ -151,31 +169,34 @@ class SinkLeakTest extends TestCase
         $this->assertStringNotContainsString($echo, ErrorLogSpy::contents());
     }
 
+    #[Test]
     public function test_thrown_exception_with_secrets_leaks_nowhere(): void
     {
         $adapter = $this->adapter(function () {
             throw new \RuntimeException(self::poisonedText());
         });
 
-        $payload = $this->callTool($adapter, 'whmcs_list_clients', [], 'sink-exc-000001');
+        $payload = $this->callTool($adapter, 'whmcs_list_clients', []);
 
         $this->assertNoSinkLeaked($payload);
-        $this->assertStringContainsString('did not complete successfully', $payload);
+        // The SDK returns a JSON-RPC error, so verify the error code and message are present
+        $this->assertStringContainsString('error', $payload);
+        $this->assertStringContainsString('-32603', $payload);
     }
 
-    /** O `error_log` guarda categoria, classe e fingerprint — não a mensagem. */
+    #[Test]
     public function test_error_log_records_structural_diagnostics_only(): void
     {
         $adapter = $this->adapter(function () {
             throw new \RuntimeException(self::poisonedText());
         });
 
-        $this->callTool($adapter, 'whmcs_list_clients', [], 'sink-diag-00001');
+        $this->callTool($adapter, 'whmcs_list_clients', []);
 
         $log = ErrorLogSpy::contents();
         $this->assertStringContainsString('category=downstream_api_exception', $log);
         $this->assertStringContainsString('exception=RuntimeException', $log);
-        $this->assertMatchesRegularExpression('/fingerprint=[0-9a-f]{12}/', $log);
+        $this->assertMatchesRegularExpression('/fingerprint=[0-9a-f]{32}/', $log);
         $this->assertMatchesRegularExpression('/\[corr:[0-9a-f]{8}\]/', $log);
     }
 
@@ -183,6 +204,7 @@ class SinkLeakTest extends TestCase
     // Segredos ecoados a partir dos PRÓPRIOS parâmetros da chamada
     // ---------------------------------------------------------------
 
+    #[Test]
     public function test_secrets_echoed_from_call_params_leak_nowhere(): void
     {
         $adapter = $this->adapter(fn() => ['result' => 'error', 'message' => self::poisonedText()]);
@@ -193,7 +215,7 @@ class SinkLeakTest extends TestCase
             'email' => 'ana@example.com',
             'password2' => self::SECRETS['senha'],
             'tax_id' => self::SECRETS['cpf'],
-        ], 'sink-echo-00001');
+        ]);
 
         $this->assertNoSinkLeaked($payload);
     }
@@ -202,6 +224,7 @@ class SinkLeakTest extends TestCase
     // Conversão parcial: efeito financeiro + exceção envenenada
     // ---------------------------------------------------------------
 
+    #[Test]
     public function test_partial_conversion_keeps_contract_without_leaking(): void
     {
         $adapter = $this->adapter(function (string $cmd) {
@@ -218,11 +241,10 @@ class SinkLeakTest extends TestCase
         $payload = $this->callTool($adapter, 'whmcs_convert_quote_to_invoice', [
             'quoteid' => 10,
             'duedate' => '2026-08-10T00:00:00Z',
-        ], 'sink-part-00001');
+        ]);
 
         $this->assertNoSinkLeaked($payload);
 
-        // O contrato parcial permanece íntegro (payload vem JSON dentro de JSON).
         foreach (['partial', 'quoteid', 'invoiceid', 'repetir', 'correlation_id'] as $needle) {
             $this->assertStringContainsString($needle, $payload, "faltou {$needle} no contrato parcial");
         }
@@ -232,10 +254,7 @@ class SinkLeakTest extends TestCase
     // Capsule
     // ---------------------------------------------------------------
 
-    /**
-     * Driver de banco lançando com credencial de conexão e SQL na mensagem —
-     * o cenário real de um `PDOException`.
-     */
+    #[Test]
     #[DataProvider('capsuleOperationProvider')]
     public function test_capsule_driver_exception_leaks_nowhere(string $operation, callable $invoke): void
     {
@@ -245,7 +264,6 @@ class SinkLeakTest extends TestCase
             $invoke($capsule);
             $this->fail("{$operation} deveria lançar");
         } catch (\Throwable $e) {
-            // A exceção pública também não pode carregar o texto do driver.
             $this->assertStringNotContainsString('SQLSTATE[42000] SELECT', $e->getMessage());
         }
 
@@ -275,14 +293,10 @@ class SinkLeakTest extends TestCase
     }
 
     // ---------------------------------------------------------------
-    // Falha de CONFIG — o ramo que a revisão reproduziu vazando nos dois sinks
+    // Falha de CONFIG
     // ---------------------------------------------------------------
 
-    /**
-     * `Setting::getValue()` lançando com DSN/credencial dentro. Antes, tanto
-     * `LocalApiClient` quanto `CapsuleClient` concatenavam a mensagem e
-     * gravavam nos DOIS sinks.
-     */
+    #[Test]
     public function test_config_read_failure_leaks_nowhere_in_localapi(): void
     {
         \WHMCS\Config\Setting::$throwOnRead = true;
@@ -304,6 +318,7 @@ class SinkLeakTest extends TestCase
         $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP CONFIG INVALID'));
     }
 
+    #[Test]
     public function test_config_read_failure_leaks_nowhere_in_capsule(): void
     {
         \WHMCS\Config\Setting::$throwOnRead = true;
@@ -321,10 +336,7 @@ class SinkLeakTest extends TestCase
         $this->assertTrue(ErrorLogSpy::hasLineContaining('category=config_read_failure'));
     }
 
-    /**
-     * A mensagem simulada carrega os segredos; provamos que nem o Activity Log
-     * nem o error_log a reproduzem, em nenhuma das duas rotas.
-     */
+    #[Test]
     public function test_poisoned_config_exception_never_appears_in_any_sink(): void
     {
         \WHMCS\Config\Setting::$throwOnRead = true;
@@ -354,16 +366,13 @@ class SinkLeakTest extends TestCase
     // Texto livre pelo adapter — proposal/notes/description
     // ---------------------------------------------------------------
 
-    /**
-     * D7: o segredo dentro de um campo de TEXTO LIVRE. Nenhuma denylist de
-     * nomes protege isso — foi assim que `proposal` gravou a string inteira.
-     */
+    #[Test]
     #[DataProvider('freeTextFieldProvider')]
     public function test_free_text_field_value_never_reaches_the_activity_log(string $tool, array $args): void
     {
         $adapter = $this->adapter(fn() => ['result' => 'success', 'quoteid' => 1, 'ticketid' => 1, 'clientid' => 1]);
 
-        $payload = $this->callTool($adapter, $tool, $args, 'sink-free-' . substr(md5($tool), 0, 6));
+        $payload = $this->callTool($adapter, $tool, $args);
 
         $this->assertNoSinkLeaked($payload);
     }
@@ -395,10 +404,10 @@ class SinkLeakTest extends TestCase
     }
 
     // ---------------------------------------------------------------
-    // Fingerprint da causa: estável e ligado pela correlação
+    // Fingerprint da causa
     // ---------------------------------------------------------------
 
-    /** Mesma causa em duas execuções ⇒ mesmo fingerprint. */
+    #[Test]
     public function test_same_cause_yields_the_same_fingerprint_across_partial_failures(): void
     {
         $fingerprints = [];
@@ -419,17 +428,15 @@ class SinkLeakTest extends TestCase
 
             $payload = $this->callTool($adapter, 'whmcs_convert_quote_to_invoice', [
                 'quoteid' => 10, 'duedate' => '2026-08-10T00:00:00Z',
-            ], 'sink-fp-' . str_pad((string) $i, 7, '0'));
+            ]);
 
             $log = ErrorLogSpy::contents();
             $this->assertSame(1, preg_match('/fingerprint=([0-9a-f]{32})/', $log, $fp), 'faltou fingerprint');
             $fingerprints[] = $fp[1];
 
-            // O payload vem JSON dentro de JSON, então as aspas estão escapadas.
             $this->assertSame(1, preg_match('/correlation_id\D{0,8}([0-9a-f]{8})/', $payload, $corr));
             $correlations[] = $corr[1];
 
-            // A correlação do payload precisa aparecer no diagnóstico.
             $this->assertStringContainsString("[corr:{$corr[1]}]", $log, 'payload e log precisam se ligar');
         }
 
@@ -437,7 +444,7 @@ class SinkLeakTest extends TestCase
         $this->assertNotSame($correlations[0], $correlations[1], 'correlações são por execução');
     }
 
-    /** Error-array de UpdateInvoice usa UMA correlação nos três sinks. */
+    #[Test]
     public function test_update_invoice_error_array_reuses_one_causal_correlation_everywhere(): void
     {
         $adapter = $this->adapter(static function (string $command): array {
@@ -454,7 +461,7 @@ class SinkLeakTest extends TestCase
         $payload = $this->callTool($adapter, 'whmcs_convert_quote_to_invoice', [
             'quoteid' => 10,
             'duedate' => '2026-08-10T00:00:00Z',
-        ], 'sink-one-correlation');
+        ]);
 
         $this->assertSame(1, preg_match('/correlation_id\D{0,8}([0-9a-f]{8})/', $payload, $match));
         $correlation = $match[1];
@@ -471,7 +478,7 @@ class SinkLeakTest extends TestCase
         $this->assertSame([$correlation], array_values(array_unique($all[1])));
     }
 
-    /** AcceptQuote error-array também liga causa e contrato parcial pelo mesmo ID. */
+    #[Test]
     public function test_accept_quote_error_array_reuses_one_causal_correlation(): void
     {
         $adapter = $this->adapter(static function (string $command): array {
@@ -485,8 +492,7 @@ class SinkLeakTest extends TestCase
         $payload = $this->callTool(
             $adapter,
             'whmcs_convert_quote_to_invoice',
-            ['quoteid' => 10],
-            'sink-accept-correlation'
+            ['quoteid' => 10]
         );
         $this->assertSame(1, preg_match('/correlation_id\D{0,8}([0-9a-f]{8})/', $payload, $match));
         $correlation = $match[1];
@@ -501,7 +507,7 @@ class SinkLeakTest extends TestCase
         $this->assertStringNotContainsString('invoiceid', $payload);
     }
 
-    /** IP externo não aparece nem no Activity Log nem no diagnóstico. */
+    #[Test]
     public function test_external_ip_is_absent_from_both_operational_sinks(): void
     {
         $previous = $_SERVER['REMOTE_ADDR'] ?? null;
@@ -522,6 +528,7 @@ class SinkLeakTest extends TestCase
         $this->assertStringNotContainsString('203.0.113.77', ErrorLogSpy::contents());
     }
 
+    #[Test]
     public function test_operational_event_rejects_arbitrary_category_context_and_detail(): void
     {
         \NtMcp\Whmcs\Diagnostics::event(
@@ -538,7 +545,7 @@ class SinkLeakTest extends TestCase
         }
     }
 
-    /** Causas diferentes ⇒ fingerprints diferentes. */
+    #[Test]
     public function test_different_causes_yield_different_fingerprints(): void
     {
         $seen = [];
@@ -558,7 +565,7 @@ class SinkLeakTest extends TestCase
 
             $this->callTool($adapter, 'whmcs_convert_quote_to_invoice', [
                 'quoteid' => 10, 'duedate' => '2026-08-10T00:00:00Z',
-            ], 'sink-fpd-' . str_pad((string) $i, 6, '0'));
+            ]);
 
             preg_match('/fingerprint=([0-9a-f]{32})/', ErrorLogSpy::contents(), $fp);
             $seen[] = $fp[1] ?? '';
@@ -567,7 +574,7 @@ class SinkLeakTest extends TestCase
         $this->assertNotSame($seen[0], $seen[1]);
     }
 
-    /** HMAC de 128 bits — hash nu era oráculo de dicionário. */
+    #[Test]
     public function test_fingerprint_is_keyed_and_128_bits(): void
     {
         \NtMcp\Whmcs\Diagnostics::setFingerprintKey(hash('sha256', 'nt-mcp test diagnostics key one'));
@@ -591,11 +598,7 @@ class SinkLeakTest extends TestCase
     // Falha do PRÓPRIO sink de auditoria
     // ---------------------------------------------------------------
 
-    /**
-     * Se o `logActivity()` falha, o fallback não pode despejar a entrada (que
-     * carrega o dump de params) nem a mensagem da exceção no error_log — seria
-     * transformar uma falha de log em vazamento.
-     */
+    #[Test]
     public function test_audit_sink_failure_does_not_dump_entry_or_exception(): void
     {
         ActivityLogSpy::failWith(new \RuntimeException(self::poisonedText()));

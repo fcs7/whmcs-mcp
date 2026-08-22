@@ -4,7 +4,7 @@ namespace NtMcp\Tools;
 
 use NtMcp\Whmcs\LocalApiClient;
 use NtMcp\Whmcs\ResponseRedactor;
-use PhpMcp\Server\Attributes\McpTool;
+use Mcp\Capability\Attribute\McpTool;
 
 class ClientTools
 {

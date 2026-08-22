@@ -11,7 +11,7 @@ use NtMcp\Whmcs\LocalApiClient;
 use NtMcp\Whmcs\LocalizedDate;
 use NtMcp\Whmcs\PaymentGatewayDirectory;
 use NtMcp\Whmcs\Diagnostics;
-use PhpMcp\Server\Attributes\McpTool;
+use Mcp\Capability\Attribute\McpTool;
 
 class QuoteTools
 {

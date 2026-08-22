@@ -7,7 +7,10 @@ use NtMcp\Crm\MgCrmRepository;
 use NtMcp\Whmcs\CapsuleClient;
 use NtMcp\Whmcs\DateNormalizer;
 use NtMcp\Whmcs\Diagnostics;
-use PhpMcp\Server\Attributes\McpTool;
+use Mcp\Capability\Attribute\McpTool;
+use Mcp\Capability\Attribute\Schema;
+use Mcp\Schema\Content\TextContent;
+use Mcp\Schema\Result\CallToolResult;
 use WHMCS\Database\Capsule;
 
 /**
@@ -78,27 +81,36 @@ class CrmTools
      *    `downstream` — o chamador recebe só a correlação.
      *
      * Um bug de programação, portanto, também não vaza texto: ele vira um
-     * incidente correlacionado no log do operador. Quem marca a resposta como
-     * `isError: true` é `CrmReadBoundary`, no adapter.
+     * incidente correlacionado no log do operador. A marcação `isError: true`
+     * é feita aqui mesmo, via `CallToolResult::error()` (nativo do SDK).
      */
-    private function read(callable $operation): string
+    private function read(callable $operation): string|CallToolResult
     {
         try {
             return json_encode($operation(), JSON_PRETTY_PRINT);
         } catch (CrmException $e) {
-            return json_encode($e->toPublicArray(), JSON_PRETTY_PRINT);
+            return self::errorResult($e->toPublicArray());
         } catch (\Throwable $e) {
             $correlationId = Diagnostics::report(Diagnostics::CATEGORY_UNHANDLED, 'crm_read', $e);
 
-            return json_encode(
+            return self::errorResult(
                 CrmException::downstream(
                     $correlationId,
                     Diagnostics::fingerprint($e->getMessage()),
                     get_class($e)
-                )->toPublicArray(),
-                JSON_PRETTY_PRINT
+                )->toPublicArray()
             );
         }
+    }
+
+    /**
+     * Envelope canônico de erro como `CallToolResult` com `isError: true`.
+     * O texto é o MESMO JSON de antes; só a marcação muda — o SDK publica o
+     * resultado sem tocar no conteúdo, então nenhuma mensagem crua entra aqui.
+     */
+    private static function errorResult(array $envelope): CallToolResult
+    {
+        return CallToolResult::error([new TextContent(json_encode($envelope, JSON_PRETTY_PRINT))]);
     }
 
     #[McpTool(
@@ -110,12 +122,13 @@ class CrmTools
             . 'Registros removidos nao aparecem. Somente a ausencia do filtro (ou null) significa '
             . 'sem filtro: 0 e negativos sao recusados. limit maximo 100.'
     )]
+    #[Schema(additionalProperties: false)]
     public function listContacts(
-        ?int $type_id = null,
-        ?int $status_id = null,
-        int $limit = 25,
-        int $offset = 0
-    ): string {
+        #[Schema(minimum: 1)] ?int $type_id = null,
+        #[Schema(minimum: 1)] ?int $status_id = null,
+        #[Schema(minimum: 1)] int $limit = 25,
+        #[Schema(minimum: 0)] int $offset = 0
+    ): string|CallToolResult {
         return $this->read(fn(): array => $this->crm->listResources($type_id, $status_id, $limit, $offset));
     }
 
@@ -128,7 +141,8 @@ class CrmTools
             . 'de truncar. '
             . 'Recurso inexistente ou removido devolve crm_resource_not_found.'
     )]
-    public function getContact(int $resource_id): string
+    #[Schema(additionalProperties: false)]
+    public function getContact(#[Schema(minimum: 1)] int $resource_id): string|CallToolResult
     {
         return $this->read(fn(): array => $this->crm->getResource($resource_id));
     }
@@ -232,13 +246,14 @@ class CrmTools
             . 'e referencia removida ou ausente falha como downstream de integridade. '
             . 'Retorna items, count, limit, offset e has_more. limit maximo 100.'
     )]
+    #[Schema(additionalProperties: false)]
     public function listFollowups(
-        int $resource_id,
-        ?int $type_id = null,
-        ?int $status_id = null,
-        int $limit = 25,
-        int $offset = 0
-    ): string {
+        #[Schema(minimum: 1)] int $resource_id,
+        #[Schema(minimum: 1)] ?int $type_id = null,
+        #[Schema(minimum: 1)] ?int $status_id = null,
+        #[Schema(minimum: 1)] int $limit = 25,
+        #[Schema(minimum: 0)] int $offset = 0
+    ): string|CallToolResult {
         return $this->read(fn(): array => $this->crm->listFollowups(
             $resource_id,
             $type_id,
@@ -261,12 +276,13 @@ class CrmTools
             . 'Filtro opcional type_id restringe as raias a um tipo de recurso. '
             . 'limit_per_status controla apenas os items dentro de cada raia; maximo 25.'
     )]
+    #[Schema(additionalProperties: false)]
     public function getKanban(
-        ?int $type_id = null,
-        int $limit_per_status = 25,
-        int $status_limit = 25,
-        int $status_offset = 0
-    ): string {
+        #[Schema(minimum: 1)] ?int $type_id = null,
+        #[Schema(minimum: 1)] int $limit_per_status = 25,
+        #[Schema(minimum: 1, maximum: 25)] int $status_limit = 25,
+        #[Schema(minimum: 0)] int $status_offset = 0
+    ): string|CallToolResult {
         return $this->read(fn(): array => $this->crm->getKanban(
             $type_id,
             $limit_per_status,
