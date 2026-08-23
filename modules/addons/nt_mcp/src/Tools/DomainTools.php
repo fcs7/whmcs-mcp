@@ -3,6 +3,7 @@
 namespace NtMcp\Tools;
 
 use NtMcp\Whmcs\LocalApiClient;
+use NtMcp\Whmcs\ResponseRedactor;
 use NtMcp\Whmcs\ToolJson;
 use Mcp\Capability\Attribute\McpTool;
 

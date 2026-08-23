@@ -92,12 +92,16 @@ class OrderTools
         int $pid = 0,
         string $module = '',
         bool $full_description = false,
-        string $fields = 'full',
+        string $fields = 'lite',
         int $limit = 20,
         int $limitstart = 0
     ): string {
         if (!in_array($fields, ['lite', 'full'], true)) {
-            throw new \InvalidArgumentException('fields must be "lite" or "full"');
+            throw new \InvalidArgumentException("fields deve ser 'lite' ou 'full', recebido: " . var_export($fields, true));
+        }
+        // Pedir o HTML completo só faz sentido com o produto inteiro.
+        if ($full_description) {
+            $fields = 'full';
         }
         if ($limit < 1 || $limit > 100) {
             $limit = \max(1, \min(100, $limit));

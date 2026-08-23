@@ -552,9 +552,17 @@ final class ResponseRedactor
         unset($result['fraudoutput']);
     }
 
+    /** Chaves de ciclo/taxa em `pricing.{moeda}` do GetProducts (o resto é prefix/suffix). */
+    private const PRICING_CYCLE_KEYS = [
+        'msetupfee', 'qsetupfee', 'ssetupfee', 'asetupfee', 'bsetupfee', 'tsetupfee',
+        'monthly', 'quarterly', 'semiannually', 'annually', 'biennially', 'triennially',
+    ];
+
     /**
-     * Remove ciclos de preço com valor negativo (WHMCS usa -1.00 = ciclo
-     * desativado). Aplicável a GetProducts em ambos os modos (lite e full).
+     * Remove ciclos de preço com valor negativo. Estrutura real do WHMCS:
+     * `pricing.{moeda}.{ciclo}` (ex.: `pricing.BRL.monthly = "-1.00"`), com
+     * `prefix`/`suffix` ao lado — por isso só as chaves de ciclo/taxa são
+     * avaliadas. `-1.00` = ciclo desativado; nunca deve aparecer como preço.
      */
     public static function removeNegativePrices(array &$result): void
     {
@@ -566,29 +574,17 @@ final class ResponseRedactor
             if (!is_array($product) || !isset($product['pricing']) || !is_array($product['pricing'])) {
                 continue;
             }
-
-            foreach ($product['pricing'] as &$pricing) {
-                if (!is_array($pricing)) {
+            foreach ($product['pricing'] as &$currency) {
+                if (!is_array($currency)) {
                     continue;
                 }
-
-                foreach ($pricing as $currency => &$cycles) {
-                    if (!is_array($cycles)) {
-                        continue;
+                foreach (self::PRICING_CYCLE_KEYS as $cycle) {
+                    if (array_key_exists($cycle, $currency) && is_numeric($currency[$cycle]) && (float) $currency[$cycle] < 0) {
+                        unset($currency[$cycle]);
                     }
-
-                    $filtered = [];
-                    foreach ($cycles as $cycle => $price) {
-                        $numPrice = is_numeric($price) ? (float)$price : null;
-                        if ($numPrice !== null && $numPrice >= 0) {
-                            $filtered[$cycle] = $price;
-                        }
-                    }
-                    $cycles = $filtered;
                 }
-                unset($cycles);
             }
-            unset($pricing);
+            unset($currency);
         }
         unset($product);
     }

@@ -732,4 +732,33 @@ class QuoteToolsTest extends TestCase
 
         $tools->deleteQuote(quoteid: 7, confirm: true);
     }
+
+    // ---------------------------------------------------------------
+    // #18 — shape estável de GetQuotes
+    // ---------------------------------------------------------------
+
+    public function test_list_quotes_has_stable_shape_for_orphan_and_normal_quotes(): void
+    {
+        $tools = $this->makeTools(function (string $cmd, array $params) {
+            return ['result' => 'success', 'totalresults' => 2, 'quotes' => ['quote' => [
+                ['id' => 1, 'userid' => '0', 'datecreated' => '2026-01-01'],
+                ['id' => 2, 'userid' => '31', 'subject' => 'Proposta', 'stage' => 'Draft',
+                 'datecreated' => null, 'validuntil' => null, 'datesent' => null,
+                 'client' => ['firstname' => 'A']],
+            ]]];
+        });
+        $data = json_decode($tools->listQuotes(), true);
+        [$orphan, $normal] = $data['quotes']['quote'];
+
+        $this->assertNull($orphan['client']);
+        $this->assertSame('', $orphan['subject']);
+        $this->assertSame('', $orphan['stage']);
+        $this->assertSame(0, $orphan['userid']);
+        $this->assertTrue($orphan['is_orphan']);
+
+        $this->assertSame(31, $normal['userid']);
+        $this->assertArrayNotHasKey('is_orphan', $normal);
+        $this->assertSame('A', $normal['client']['firstname']);
+        $this->assertNull($normal['validuntil']);
+    }
 }

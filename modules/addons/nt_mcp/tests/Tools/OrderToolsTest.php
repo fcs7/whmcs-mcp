@@ -265,4 +265,79 @@ class OrderToolsTest extends TestCase
         $this->assertSame(['GetPromotions', ['code' => 'NATAL10']], $seen[1]);
     }
 
+    // ---------------------------------------------------------------
+    // #19 — fields=lite, ciclos negativos, paginação local
+    // ---------------------------------------------------------------
+
+    private function catalogFixture(int $count = 3): array
+    {
+        $products = [];
+        for ($i = 1; $i <= $count; $i++) {
+            $products[] = [
+                'pid' => $i, 'gid' => 2, 'type' => 'hostingaccount', 'name' => "Plano $i",
+                'description' => '<p>HTML longo</p>', 'module' => 'plesk', 'paytype' => 'recurring',
+                'product_url' => 'https://desenv.example/index.php?rp=/store/x',
+                'pricing' => ['BRL' => [
+                    'prefix' => 'R$', 'suffix' => '', 'msetupfee' => '0.00',
+                    'monthly' => '10.00', 'quarterly' => '-1.00', 'annually' => '100.00',
+                ]],
+                'customfields' => ['customfield' => []],
+                'configoptions' => ['configoption' => []],
+            ];
+        }
+        return ['result' => 'success', 'totalresults' => $count, 'products' => ['product' => $products]];
+    }
+
+    public function test_get_products_default_is_lite_without_bulky_keys_and_negative_cycles(): void
+    {
+        $tools = $this->makeTools(fn() => $this->catalogFixture());
+        $data = json_decode($tools->getProducts(gid: 2), true);
+        $p = $data['products']['product'][0];
+
+        foreach (['customfields', 'configoptions', 'description', 'product_url'] as $k) {
+            $this->assertArrayNotHasKey($k, $p, "lite não deve conter $k");
+        }
+        $this->assertSame('Plano 1', $p['name']);
+        $this->assertArrayNotHasKey('quarterly', $p['pricing']['BRL'], 'ciclo -1.00 deve sumir');
+        $this->assertSame('10.00', $p['pricing']['BRL']['monthly']);
+        $this->assertSame('R$', $p['pricing']['BRL']['prefix'], 'prefix não é ciclo, fica');
+    }
+
+    public function test_get_products_full_keeps_description_but_drops_negative_cycles(): void
+    {
+        $tools = $this->makeTools(fn() => $this->catalogFixture());
+        $data = json_decode($tools->getProducts(gid: 2, fields: 'full'), true);
+        $p = $data['products']['product'][0];
+
+        $this->assertArrayHasKey('description_plain', $p);
+        $this->assertArrayHasKey('customfields', $p);
+        $this->assertArrayNotHasKey('quarterly', $p['pricing']['BRL']);
+    }
+
+    public function test_get_products_full_description_implies_full_fields(): void
+    {
+        $tools = $this->makeTools(fn() => $this->catalogFixture());
+        $data = json_decode($tools->getProducts(gid: 2, full_description: true), true);
+        $this->assertSame('<p>HTML longo</p>', $data['products']['product'][0]['description']);
+    }
+
+    public function test_get_products_paginates_locally_and_warns_without_filter(): void
+    {
+        $tools = $this->makeTools(fn() => $this->catalogFixture(5));
+        $data = json_decode($tools->getProducts(limit: 2, limitstart: 1), true);
+
+        $this->assertCount(2, $data['products']['product']);
+        $this->assertSame(2, $data['products']['product'][0]['pid']);
+        $this->assertSame(5, $data['totalresults']);
+        $this->assertArrayHasKey('warning', $data);
+
+        $filtered = json_decode($tools->getProducts(gid: 2), true);
+        $this->assertArrayNotHasKey('warning', $filtered);
+    }
+
+    public function test_get_products_rejects_unknown_fields(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->makeTools(fn() => $this->catalogFixture())->getProducts(fields: 'x');
+    }
 }
