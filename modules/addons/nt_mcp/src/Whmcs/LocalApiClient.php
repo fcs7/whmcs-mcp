@@ -182,6 +182,15 @@ class LocalApiClient
     private const ALLOWLIST_TICKET_KEY = 'nt_mcp_write_allowlist_ticketids';
     private const CLIENT_TARGET_PARAMS = ['clientid', 'userid'];
     private const TICKET_TARGET_PARAMS = ['ticketid'];
+    /**
+     * Alvos indiretos (#14, achado 38): param de id → comando READ que resolve
+     * o dono, filtro usado, e caminho da lista no payload. O registro devolvido
+     * precisa ter `id` igual ao pedido (filtro ignorado = irresolúvel = nega).
+     */
+    private const OWNER_LOOKUPS = [
+        'orderid' => ['GetOrders', 'id',      ['orders', 'order']],
+        'quoteid' => ['GetQuotes', 'quoteid', ['quotes', 'quote']],
+    ];
     private const IMPERSONATION_COMMANDS = [
         'AddTicketReply','CreateProject','UpdateProject','AddProjectTask',
         'UpdateProjectTask','StartTaskTimer','EndTaskTimer','AddProjectMessage',
@@ -334,13 +343,14 @@ class LocalApiClient
      * independente (AND):
      *  - ticket allowlist: `ticketid` presente deve estar na lista;
      *  - client allowlist: `clientid`/`userid` presente deve estar na lista;
-     *    sem id de cliente mas com `ticketid`, o cliente é resolvido via
-     *    GetTicket ANTES do gate (ticket guest = sem cliente a checar — para
-     *    cobrir guests, configure também a allowlist de tickets).
-     * Comandos sem nenhum desses params (CancelOrder/orderid, DeleteQuote/
-     * quoteid, AddClient...) não têm alvo checável e seguem só pelo gate de
-     * classe. Falha de leitura de config, lista inválida ou ticket não
-     * resolvível = NEGA (fail-closed).
+     *    sem id de cliente, o dono é resolvido ANTES do gate a partir de
+     *    `ticketid` (GetTicket), `orderid` (GetOrders) ou `quoteid`
+     *    (GetQuotes) — todos READ, auditados. Registro guest/órfão (userid 0)
+     *    = sem cliente a checar (para cobrir guests, configure também a
+     *    allowlist de tickets).
+     * Comandos sem nenhum desses params (AddClient, projetos/tarefas) não têm
+     * alvo checável e seguem só pelo gate de classe. Falha de leitura de
+     * config, lista inválida ou alvo não resolvível = NEGA (fail-closed).
      */
     private function assertTargetAllowed(string $command, array $params): void
     {
@@ -358,20 +368,68 @@ class LocalApiClient
         }
 
         if ($clientList !== null) {
-            if ($clientId === null && $ticketId !== null) {
-                $clientId = $this->resolveTicketClientId($ticketId);
-                if ($clientId === null) {
-                    // Não resolvido (GetTicket falhou / ticket inexistente): nega.
-                    $this->denyTarget($command, $params, 'ticketid→clientid');
+            if ($clientId === null) {
+                [$clientId, $via] = $this->resolveIndirectClientId($params, $ticketId);
+                if ($via !== null && $clientId === null) {
+                    // Alvo indireto presente mas não resolvido (lookup falhou /
+                    // registro inexistente / filtro ignorado): nega.
+                    $this->denyTarget($command, $params, "{$via}→clientid");
                 }
                 if ($clientId === 0) {
-                    $clientId = null; // guest: sem cliente a checar
+                    $clientId = null; // guest/órfão: sem cliente a checar
                 }
             }
             if ($clientId !== null && !in_array($clientId, $clientList, true)) {
                 $this->denyTarget($command, $params, 'clientid');
             }
         }
+    }
+
+    /**
+     * Resolve o dono a partir do primeiro alvo indireto presente
+     * (ticketid, depois orderid/quoteid). @return array{?int, ?string} [clientId, via]
+     */
+    private function resolveIndirectClientId(array $params, ?int $ticketId): array
+    {
+        if ($ticketId !== null) {
+            return [$this->resolveTicketClientId($ticketId), 'ticketid'];
+        }
+        foreach (self::OWNER_LOOKUPS as $param => [$lookupCmd, $filter, $path]) {
+            $id = self::firstIntParam($params, [$param]);
+            if ($id === null) continue;
+            return [$this->resolveOwnerViaList($lookupCmd, $filter, $path, $id), $param];
+        }
+        return [null, null];
+    }
+
+    /**
+     * Dono via comando de listagem filtrado por id. Exige exatamente UM
+     * registro com `id` igual ao pedido; qualquer outra coisa = null.
+     * @param string[] $path
+     */
+    private function resolveOwnerViaList(string $lookupCmd, string $filter, array $path, int $id): ?int
+    {
+        try {
+            $res = $this->call($lookupCmd, [$filter => $id]);
+        } catch (\Throwable) {
+            return null;
+        }
+        if (($res['result'] ?? null) !== 'success') {
+            return null;
+        }
+        $rows = $res;
+        foreach ($path as $k) {
+            $rows = is_array($rows) ? ($rows[$k] ?? null) : null;
+        }
+        if (!is_array($rows)) {
+            return null;
+        }
+        $matches = array_values(array_filter($rows, fn($r) => is_array($r) && (int) ($r['id'] ?? 0) === $id));
+        if (count($matches) !== 1) {
+            return null;
+        }
+        $uid = $matches[0]['userid'] ?? $matches[0]['clientid'] ?? 0;
+        return is_numeric($uid) ? (int) $uid : null;
     }
 
     private function denyTarget(string $command, array $params, string $target): never

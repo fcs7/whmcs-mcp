@@ -229,7 +229,7 @@ Duas configs opcionais em `tblconfiguration` (CSV de inteiros):
 
 | Chave | Alvo checado | Params cobertos |
 |-------|--------------|-----------------|
-| `nt_mcp_write_allowlist_clientids` | cliente | `clientid`, `userid`; ou `ticketid` resolvido via `GetTicket` antes do gate |
+| `nt_mcp_write_allowlist_clientids` | cliente | `clientid`, `userid`; ou dono resolvido antes do gate a partir de `ticketid` (`GetTicket`), `orderid` (`GetOrders id=`), `quoteid` (`GetQuotes quoteid=`) |
 | `nt_mcp_write_allowlist_ticketids` | ticket | `ticketid` |
 
 Regras (aplicadas em `LocalApiClient::assertTargetAllowed`, só para comandos não-READ):
@@ -237,12 +237,18 @@ Regras (aplicadas em `LocalApiClient::assertTargetAllowed`, só para comandos n�
 - Vazia/ausente = sem restrição (comportamento anterior). As duas listas são independentes (AND).
 - Alvo fora da lista → `AuthorizationException` com `write_target_not_allowed` + Activity Log
   `MCP API BLOCKED BY TARGET ALLOWLIST`. O write nunca chega à LocalAPI.
-- `ticketid` sem `clientid`: o cliente do ticket é resolvido via `GetTicket` (READ, auditado).
-  Ticket inexistente/não resolvível → negado. Ticket **guest** (userid 0) não tem cliente a
-  checar — para cobrir guests, configure também a allowlist de tickets.
+- Sem `clientid`/`userid` explícito, o dono é resolvido ANTES do gate (READ, auditado):
+  `ticketid` → `GetTicket.userid`; `orderid` → `GetOrders id=N` (achado 38: `cancel_order`);
+  `quoteid` → `GetQuotes quoteid=N` (`delete_quote`, `update_quote`, `convert_quote_to_invoice`).
+  Para pedido/cotação o registro devolvido precisa ter `id` igual ao pedido e ser único —
+  lookup com erro, vazio, ou com outro id (filtro ignorado) = **negado**.
+  Registro **guest/órfão** (userid 0) não tem cliente a checar — para cobrir guests,
+  configure também a allowlist de tickets.
+- O gate de classe (DESTRUCTIVE/FINANCIAL opt-in) e o `confirm=true` das tools continuam
+  valendo ANTES da resolução: classe desligada nega sem fazer lookup.
 - Falha de leitura da config ou token não numérico → lista vazia = nega todo alvo (fail-closed, auditado).
-- **Não cobertos**: comandos sem `clientid`/`userid`/`ticketid` (`CancelOrder/orderid`,
-  `DeleteQuote/quoteid`, `AddClient`, tarefas/projetos). Esses seguem só pelo gate de classe.
+- **Não cobertos**: comandos sem nenhum id de alvo (`AddClient`, `CreateQuote` sem `userid`,
+  projetos/tarefas/To-Do). Esses seguem só pelo gate de classe.
 
 Complementos na camada de tool (não substituem o gate central):
 
