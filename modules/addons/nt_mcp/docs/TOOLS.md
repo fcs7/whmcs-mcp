@@ -93,7 +93,7 @@ Legenda de risco:
 | 27 | `whmcs_domain_get_nameservers` | DomainGetNameservers | READ | on | 🟢 | Obtém nameservers atuais |
 | 28 | `whmcs_domain_get_locking_status` | DomainGetLockingStatus | READ | on | 🟢 | Status de bloqueio de transferência |
 | 29 | `whmcs_domain_get_whois_info` | DomainGetWhoisInfo | READ | on | 🟢 | Informações WHOIS |
-| 30 | `whmcs_get_tld_pricing` | GetTLDPricing | READ | on | 🟢 | Preços de TLDs disponíveis |
+| 30 | `whmcs_get_tld_pricing` | GetTLDPricing | READ | on | 🟢 | Preços de TLDs (omite anos com preço 0, adiciona years_available e sinaliza grace/redemption ausentes) |
 
 ## OrderTools (7)
 

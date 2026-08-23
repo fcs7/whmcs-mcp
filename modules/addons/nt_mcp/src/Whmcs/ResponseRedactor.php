@@ -654,4 +654,88 @@ final class ResponseRedactor
 
         $products = array_slice($products, $limitstart, $limit);
     }
+
+    /**
+     * Normaliza GetTLDPricing removendo anos com preço 0 (não configurado) e
+     * adicionando metadados sobre configuração de grace_period/redemption.
+     *
+     * Estrutura de entrada:
+     *   pricing.{tld}.{register|transfer|renew}.{anos} = string com preço
+     *   pricing.{tld}.grace_period.{days|price}
+     *   pricing.{tld}.redemption.{days|price}
+     *
+     * Transformações:
+     *   - Remove anos com preço numérico == 0 em register/transfer/renew
+     *   - Adiciona years_available.{register|transfer|renew} = lista de anos restantes
+     *   - grace_period.price {amount: 0} ou == 0 vira null + not_configured=true
+     *   - Idem para redemption.price
+     */
+    public static function normalizeTldPricing(array &$result): void
+    {
+        if (!isset($result['pricing']) || !is_array($result['pricing'])) {
+            return;
+        }
+
+        foreach ($result['pricing'] as $tld => &$tldData) {
+            if (!is_array($tldData)) {
+                continue;
+            }
+
+            $years_available = [];
+
+            foreach (['register', 'transfer', 'renew'] as $op) {
+                if (isset($tldData[$op]) && is_array($tldData[$op])) {
+                    $filtered = [];
+                    foreach ($tldData[$op] as $years => $price) {
+                        $numPrice = is_numeric($price) ? (float)$price : 0;
+                        if ($numPrice > 0) {
+                            $filtered[$years] = $price;
+                        }
+                    }
+                    $tldData[$op] = $filtered;
+                    $years_available[$op] = array_keys($filtered);
+                } else {
+                    $years_available[$op] = [];
+                }
+            }
+
+            $tldData['years_available'] = $years_available;
+
+            self::normalizeTldPricingField($tldData, 'grace_period');
+            self::normalizeTldPricingField($tldData, 'redemption');
+        }
+        unset($tldData);
+    }
+
+    /**
+     * Helper para normalizar grace_period.price ou redemption.price:
+     * se for {amount: 0} ou == 0, vira null + not_configured=true.
+     */
+    private static function normalizeTldPricingField(array &$tldData, string $field): void
+    {
+        if (!isset($tldData[$field]) || !is_array($tldData[$field])) {
+            return;
+        }
+
+        $fieldData = &$tldData[$field];
+
+        if (isset($fieldData['price'])) {
+            $price = $fieldData['price'];
+
+            // Se é array com amount
+            if (is_array($price) && isset($price['amount'])) {
+                $amount = (float)$price['amount'];
+                if ($amount == 0) {
+                    $fieldData['price'] = null;
+                    $fieldData['not_configured'] = true;
+                }
+            } elseif (is_numeric($price)) {
+                $numPrice = (float)$price;
+                if ($numPrice == 0) {
+                    $fieldData['price'] = null;
+                    $fieldData['not_configured'] = true;
+                }
+            }
+        }
+    }
 }
