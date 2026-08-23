@@ -73,7 +73,14 @@ final class SessionLock
             $this->failureReason = 'open_failed';
             return false;
         }
-        if ((@fileperms($path) & 0777) !== 0600 && (!@chmod($path, 0600) || (@fileperms($path) & 0777) !== 0600)) {
+        // `fopen('c')` cria o arquivo com 0666 & ~umask (0644 no Plesk), então a
+        // PRIMEIRA request de cada faixa precisa corrigir o modo. O
+        // `clearstatcache()` entre o chmod e a releitura não é zelo: sem ele o
+        // `fileperms()` devolve o valor CACHEADO do stat anterior (0644), a
+        // verificação falha mesmo com o chmod bem-sucedido, e o request morre
+        // com 503 "Session busy" — falso-positivo que aparecia sempre que uma
+        // sessão nova caía numa faixa ainda inexistente.
+        if (!self::ensureMode($path, 0600)) {
             fclose($handle);
             $this->failureReason = 'open_failed';
             return false;
@@ -108,11 +115,32 @@ final class SessionLock
         $this->release();
     }
 
+    /**
+     * Confirma o modo do arquivo, corrigindo se necessário. Toda leitura de
+     * `fileperms()` é precedida de `clearstatcache()` porque o stat do PHP é
+     * cacheado por request: reler sem invalidar devolve o modo ANTERIOR ao
+     * chmod e transforma um chmod bem-sucedido em falha reportada.
+     */
+    private static function ensureMode(string $path, int $mode): bool
+    {
+        clearstatcache(true, $path);
+        if ((@fileperms($path) & 0777) === $mode) {
+            return true;
+        }
+        if (!@chmod($path, $mode)) {
+            return false;
+        }
+        clearstatcache(true, $path);
+
+        return (@fileperms($path) & 0777) === $mode;
+    }
+
     private static function ensureDirectory(string $dir): bool
     {
         if (!is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) {
             return false;
         }
+        clearstatcache(true, $dir);
         if ((@fileperms($dir) & 0777) !== 0700 && !@chmod($dir, 0700)) {
             return false;
         }

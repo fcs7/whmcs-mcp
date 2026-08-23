@@ -98,6 +98,34 @@ final class SessionLockTest extends TestCase
         }
     }
 
+    /**
+     * Regressão (desenv, 2026-08-23): a PRIMEIRA request de cada faixa cria o
+     * arquivo com 0644 (umask 022) e precisa corrigir o modo E prosseguir. A
+     * verificação relia `fileperms()` sem `clearstatcache()`, recebia o valor
+     * cacheado de ANTES do chmod e recusava o lock — o cliente MCP via 503
+     * "Session busy; retry" toda vez que uma sessão nova caía numa faixa ainda
+     * inexistente, sem nenhuma contenção real.
+     */
+    #[Test]
+    public function acquires_and_repairs_a_bucket_file_left_with_loose_permissions(): void
+    {
+        $id = 'c0ffee00-0000-4000-8000-000000000042';
+        @mkdir($this->dir, 0700, true);
+        $path = $this->dir . '/' . sprintf('bucket-%02d.lock', SessionLock::bucketFor($id));
+        file_put_contents($path, '');
+        chmod($path, 0644);
+        clearstatcache(true, $path);
+        self::assertSame(0644, fileperms($path) & 0777, 'pré-condição: arquivo frouxo');
+
+        $lock = new SessionLock($this->dir);
+        self::assertTrue($lock->acquire($id), 'lock deve ser adquirido, não recusado');
+        self::assertNull($lock->lastFailure());
+        $lock->release();
+
+        clearstatcache(true, $path);
+        self::assertSame(0600, fileperms($path) & 0777, 'modo deve ter sido corrigido');
+    }
+
     #[Test]
     public function unusable_directory_fails_closed(): void
     {

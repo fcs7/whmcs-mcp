@@ -1,6 +1,6 @@
 # NT MCP — WHMCS MCP Server Addon
 
-Addon PHP para WHMCS que expõe 64 tools via Model Context Protocol.
+Addon PHP para WHMCS que expõe 66 tools via Model Context Protocol.
 Repo: `git@github.com:fcs7/whmcs-mcp.git`
 
 ## Commands
@@ -10,7 +10,7 @@ cd modules/addons/nt_mcp
 composer install --ignore-platform-req=ext-iconv
 ./vendor/bin/phpunit --testdox                    # tests
 composer audit                                    # check dependency CVEs
-rg -o '#\[McpTool' src/Tools/*.php | wc -l        # 64 tools total
+rg -o "name: '[a-z_0-9]+'" src/Tools/*.php | wc -l  # 66 tools total (rg -o '#\[McpTool' conta um comentário em QuoteTools.php também)
 # Deploy manual via FTP (senha interativa — from modules/addons/nt_mcp/)
 lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror -R --only-newer --exclude .git/ --exclude vendor/ --exclude tests/ --exclude data/ --exclude .phpunit.cache/ --exclude .omc/ --exclude .full-review/ --exclude .security-hardening/ --exclude .security-hardening-archive-20260329/ . /httpdocs/modules/addons/nt_mcp/; bye" desenv.ntweb.com.br
 # Deploy com vendor/ (troca de lib SDK — sem --exclude vendor/)
@@ -35,7 +35,7 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror /httpdocs/modules
 - `src/OAuth/` — OAuthRouter, OAuthMigration, OAuthHelper, Handlers/{Token,Authorization,Registration,Metadata}Handler
 - `src/Admin/` — AdminController (auth dashboard), OAuthApprovalController (5-layer approval)
 - `src/Whmcs/` — LocalApiClient (73 cmd allowlist + gates READ/WRITE/DESTRUCTIVE/FINANCIAL/COST/COMMS), CapsuleClient (3 table allowlist), CompatContainer, SystemUrl, AdminSession
-- `src/Tools/*.php` — 11 tool classes, 64 tools: Client(12), ProjectManager(9), Quote(8), CRM(8), Ticket(5), System(5), Domain(5), Billing(5), Order(4), SupportInfo(3), Service(1)
+- `src/Tools/*.php` — 11 tool classes, 66 tools: Client(12), ProjectManager(9), Quote(7), CRM(8), Ticket(5), System(6), Domain(5), Billing(5), Order(5), SupportInfo(3), Service(1)
 - `templates/admin/` — dashboard.php, oauth-approve.php (output escapado via htmlspecialchars)
 
 ### Admin Binding Flow

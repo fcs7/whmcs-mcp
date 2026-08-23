@@ -268,7 +268,7 @@ class LocalApiClientGateTest extends TestCase
      * quando a superfície caiu de 86 para 64 tools saíram do allowlist. Nenhum
      * gate os traz de volta.
      */
-    public function test_commands_dropped_by_the_64_tool_surface_are_rejected_by_allowlist(): void
+    public function test_commands_dropped_by_the_66_tool_surface_are_rejected_by_allowlist(): void
     {
         $removed = [
             // custo / provisionamento
@@ -279,15 +279,18 @@ class LocalApiClientGateTest extends TestCase
             'SendEmail', 'SendQuote',
             // destrutivo fora da exceção decidida
             'DeleteProjectTask',
-            // lookups auxiliares retirados
-            'GetOrderStatuses', 'GetProducts', 'GetPromotions',
-            'GetCurrencies', 'GetEmailTemplates', 'GetPaymentMethods',
+            // lookups auxiliares retirados — `GetProducts` e `GetCurrencies`
+            // SAÍRAM desta lista em 2026-08-23: reintroduzidas como
+            // `whmcs_get_products`/`whmcs_get_currencies` (catálogo de
+            // produtos e moedas eram tools documentadas e nunca implementadas).
+            'GetOrderStatuses', 'GetPromotions',
+            'GetEmailTemplates', 'GetPaymentMethods',
             'GetToDoItemStatuses', 'LogActivity',
             'GetTicketNotes', 'GetTicketPredefinedCats',
             'GetTicketPredefinedReplies', 'GetTicketAttachment',
         ];
 
-        $this->assertCount(24, $removed);
+        $this->assertCount(22, $removed);
         $this->assertAllRejectedByAllowlist($removed);
     }
 

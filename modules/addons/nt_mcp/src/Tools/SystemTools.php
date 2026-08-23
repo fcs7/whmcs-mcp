@@ -88,4 +88,10 @@ class SystemTools
         if ($adminid > 0) $params['adminid'] = $adminid;
         return json_encode($this->api->call('UpdateToDoItem', $params), JSON_PRETTY_PRINT);
     }
+
+    #[McpTool(name: 'whmcs_get_currencies', description: 'Lista as moedas configuradas no WHMCS')]
+    public function getCurrencies(): string
+    {
+        return json_encode($this->api->call('GetCurrencies', []), JSON_PRETTY_PRINT);
+    }
 }

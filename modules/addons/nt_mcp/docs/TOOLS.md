@@ -1,12 +1,13 @@
-# Catálogo de Tools — NT MCP (86 tools)
+# Catálogo de Tools — NT MCP (66 tools)
 
-> Gerado em 2026-07-07. Fonte de verdade: atributos `#[McpTool(...)]` em
-> `src/Tools/*.php`. Contagem: `grep -Roh '#\[McpTool(' src/Tools | wc -l` = **86**.
+> Atualizado em 2026-08-23. Fonte de verdade: atributos `#[McpTool(...)]` em
+> `src/Tools/*.php` + gate mapping em `src/Whmcs/LocalApiClient.php`.
+> Contagem verificada: `grep -oh "name: '[a-z_0-9]*'" src/Tools/*.php | sort -u | wc -l` = **66**.
 
-Este documento lista **todas as 86 tools** uma a uma, com o comando WHMCS que
-cada uma invoca, a classe do gate de segurança (WO-2), se está **ligada por
-padrão**, e o **nível de risco** — para avaliar a necessidade de cada tool e
-decidir cortes.
+Este documento lista **todas as 66 tools** uma a uma, com o comando WHMCS que
+cada uma invoca (ou a origem CRM para tools de CRM), a classe do gate de segurança (WO-2),
+se está **ligada por padrão**, e o **nível de risco** — para avaliar a necessidade de cada
+tool e decidir cortes.
 
 ---
 
@@ -19,24 +20,23 @@ decide se a chamada passa:
 |--------|---------|-----------------------|-------------|
 | `READ` | ✅ sempre on | — | Somente consulta |
 | `WRITE` | ✅ **on** | `nt_mcp_enable_write` (on) | Modifica dados reversíveis |
-| `DESTRUCTIVE` | ⛔ off | `nt_mcp_enable_destructive` | Irreversível |
-| `FINANCIAL` | ⛔ off | `nt_mcp_enable_financial` | Efeito financeiro (fatura) |
-| `COST` | ⛔ off | `nt_mcp_enable_cost` | Custo/provisionamento externo |
-| `COMMS` | ⛔ off | `nt_mcp_enable_comms` | Envia e-mail ao cliente |
+| `DESTRUCTIVE` | ⛔ off | `nt_mcp_enable_destructive` | Irreversível (exige confirm=true) |
+| `FINANCIAL` | ⛔ off | `nt_mcp_enable_financial` | Efeito financeiro (gera fatura) |
+| `CRM` | ✅ **on** (READ), on (WRITE) | `nt_mcp_enable_write` (WRITE) | Acesso ao CRM ModulesGarden via `CapsuleClient` |
 
 Master switch: `nt_mcp_readonly` (fail-closed) bloqueia **tudo** exceto READ.
-Todo comando precisa estar na allowlist e possuir classificação explícita em
-`COMMAND_CLASS`; ausência em qualquer uma das duas estruturas nega a chamada.
+Todo comando precisa estar na allowlist (`ALLOWED_COMMANDS`) e possuir classificação explícita;
+ausência em qualquer uma das duas estruturas nega a chamada.
 Impersonação (`adminid`/`adminusername`) é clampada ao admin do token.
 
 **Ponto de atenção:** `WRITE` é **on por padrão**. Tools de classe WRITE que
-mexem no serviço do cliente rodam sem opt-in — ver seção "Recomendação de corte".
+mexem no serviço do cliente rodam sem opt-in explícito — ver seção "Risco identificado".
 
 Legenda de risco:
 - 🟢 **READ** — sem risco
 - 🟡 **WRITE administrativa** reversível, baixo impacto
-- 🟠 **WRITE de impacto ao cliente, default-ON** (não protegida por gate opt-in) — **prioridade de revisão**
-- 🔵 **Sensível mas default-DENY** (já exige opt-in explícito no gate)
+- 🟠 **DESTRUCTIVE ou impacto direto ao cliente** — requer opt-in (gate ou confirm)
+- 🔵 **Efeito colateral ortogonal (COMMS)** — adiciona gate independente
 
 ---
 
@@ -48,7 +48,7 @@ Legenda de risco:
 | 2 | `whmcs_get_invoice` | GetInvoice | READ | on | 🟢 | Detalhes de uma fatura |
 | 3 | `whmcs_get_transactions` | GetTransactions | READ | on | 🟢 | Lista transações financeiras |
 | 4 | `whmcs_get_credits` | GetCredits | READ | on | 🟢 | Créditos de um cliente |
-| 5 | `whmcs_get_pay_methods` | GetPayMethods | READ | on | 🟢 | Métodos de pagamento (PII redigida) |
+| 5 | `whmcs_get_pay_methods` | GetPayMethods | READ | on | 🟢 | Métodos de pagamento salvos |
 
 ## ClientTools (12)
 
@@ -56,7 +56,7 @@ Legenda de risco:
 |---|------|---------|------|---------|-------|-----------|
 | 6 | `whmcs_list_clients` | GetClients | READ | on | 🟢 | Lista clientes |
 | 7 | `whmcs_get_client` | GetClientsDetails | READ | on | 🟢 | Detalhes de um cliente |
-| 8 | `whmcs_create_client` | AddClient | WRITE | on | 🟡 | Cria cliente (customfields JSON) |
+| 8 | `whmcs_create_client` | AddClient | WRITE | on | 🟡 | Cria cliente (customfields JSON); notify_client=true requer COMMS |
 | 9 | `whmcs_update_client` | UpdateClient | WRITE | on | 🟡 | Atualiza cliente |
 | 10 | `whmcs_get_client_products` | GetClientsProducts | READ | on | 🟢 | Produtos/serviços do cliente |
 | 11 | `whmcs_get_client_domains` | GetClientsDomains | READ | on | 🟢 | Domínios do cliente |
@@ -67,121 +67,104 @@ Legenda de risco:
 | 16 | `whmcs_get_client_groups` | GetClientGroups | READ | on | 🟢 | Grupos de clientes |
 | 17 | `whmcs_get_clients_addons` | GetClientsAddons | READ | on | 🟢 | Addons contratados |
 
-## CrmTools (8) — gate espelhado em `CapsuleClient::assertWritable()`
+## CrmTools (8) — gate espelhado em `CapsuleClient::assertWritable()` (READ/WRITE)
 
-| # | Tool | Tabela | Gate | Default | Risco | Descrição |
+| # | Tool | Origem | Gate | Default | Risco | Descrição |
 |---|------|--------|------|---------|-------|-----------|
-| 18 | `whmcs_crm_list_contacts` | mod_mgcrm_contacts | READ | on | 🟢 | Lista contatos/leads CRM |
-| 19 | `whmcs_crm_get_contact` | mod_mgcrm_contacts | READ | on | 🟢 | Obtém contato CRM |
-| 20 | `whmcs_crm_create_lead` | mod_mgcrm_leads | WRITE | on | 🟡 | Cria lead |
-| 21 | `whmcs_crm_update_contact` | mod_mgcrm_contacts | WRITE | on | 🟡 | Atualiza contato CRM |
-| 22 | `whmcs_crm_add_followup` | mod_mgcrm_followups | WRITE | on | 🟡 | Adiciona follow-up |
-| 23 | `whmcs_crm_add_note` | mod_mgcrm_notes | WRITE | on | 🟡 | Adiciona nota |
-| 24 | `whmcs_crm_list_followups` | mod_mgcrm_followups | READ | on | 🟢 | Lista follow-ups |
-| 25 | `whmcs_crm_get_kanban` | mod_mgcrm_contacts | READ | on | 🟢 | Visão Kanban por estágio |
+| 18 | `whmcs_crm_list_contacts` | MgCrmRepository | CRM-READ | on | 🟢 | Lista recursos (contatos/leads) do CRM mgCRM2 |
+| 19 | `whmcs_crm_get_contact` | MgCrmRepository | CRM-READ | on | 🟢 | Obtém recurso (contato/lead) do CRM mgCRM2 |
+| 20 | `whmcs_crm_create_lead` | CapsuleClient | CRM-WRITE | on | 🟡 | Cria lead no CRM |
+| 21 | `whmcs_crm_update_contact` | CapsuleClient | CRM-WRITE | on | 🟡 | Atualiza contato CRM |
+| 22 | `whmcs_crm_add_followup` | CapsuleClient | CRM-WRITE | on | 🟡 | Adiciona follow-up |
+| 23 | `whmcs_crm_add_note` | CapsuleClient | CRM-WRITE | on | 🟡 | Adiciona nota |
+| 24 | `whmcs_crm_list_followups` | MgCrmRepository | CRM-READ | on | 🟢 | Lista follow-ups com paginação |
+| 25 | `whmcs_crm_get_kanban` | MgCrmRepository | CRM-READ | on | 🟢 | Visão Kanban + catálogos de tipos/status |
 
-> ⚠️ Nomes de tabela CRM (`mod_mgcrm_*`) são **placeholders** — verificar no banco real (ver CLAUDE.md).
+> ⚠️ **Estado:** As 4 leituras (tools 18-19, 24-25) operam sobre o schema real mgCRM2 (`crm_*`)
+> via `MgCrmRepository`. As 4 escritas (tools 20-23) ainda usam `CapsuleClient` com
+> tabelas ficções `mod_mgcrm_*` — elas continuam não-funcionais contra a instalação real,
+> e sua migração segue ticket CRM-3.
 
-## DomainTools (9)
+## DomainTools (5)
 
 | # | Tool | Comando | Gate | Default | Risco | Descrição |
 |---|------|---------|------|---------|-------|-----------|
 | 26 | `whmcs_list_domains` | GetClientsDomains | READ | on | 🟢 | Lista domínios |
-| 27 | `whmcs_register_domain` | DomainRegister | **COST** | ⛔ off | 🔵 | **Registra domínio — gasta dinheiro no registrar** |
-| 28 | `whmcs_renew_domain` | DomainRenew | **COST** | ⛔ off | 🔵 | **Renova domínio — gasta dinheiro** |
-| 29 | `whmcs_update_nameservers` | DomainUpdateNameservers | WRITE | on | 🟡 | Atualiza nameservers |
-| 30 | `whmcs_domain_get_nameservers` | DomainGetNameservers | READ | on | 🟢 | Obtém nameservers |
-| 31 | `whmcs_domain_get_locking_status` | DomainGetLockingStatus | READ | on | 🟢 | Status de bloqueio |
-| 32 | `whmcs_domain_get_whois_info` | DomainGetWhoisInfo | READ | on | 🟢 | WHOIS |
-| 33 | `whmcs_get_tld_pricing` | GetTLDPricing | READ | on | 🟢 | Preços de TLDs |
-| 34 | `whmcs_update_client_domain` | UpdateClientDomain | WRITE | on | 🟡 | Atualiza registro de domínio |
+| 27 | `whmcs_domain_get_nameservers` | DomainGetNameservers | READ | on | 🟢 | Obtém nameservers atuais |
+| 28 | `whmcs_domain_get_locking_status` | DomainGetLockingStatus | READ | on | 🟢 | Status de bloqueio de transferência |
+| 29 | `whmcs_domain_get_whois_info` | DomainGetWhoisInfo | READ | on | 🟢 | Informações WHOIS |
+| 30 | `whmcs_get_tld_pricing` | GetTLDPricing | READ | on | 🟢 | Preços de TLDs disponíveis |
 
-## OrderTools (9)
+## OrderTools (5)
 
 | # | Tool | Comando | Gate | Default | Risco | Descrição |
 |---|------|---------|------|---------|-------|-----------|
-| 35 | `whmcs_list_orders` | GetOrders | READ | on | 🟢 | Lista pedidos |
-| 36 | `whmcs_get_order` | GetOrders | READ | on | 🟢 | Detalhes de pedido |
-| 37 | `whmcs_accept_order` | AcceptOrder | **COST** | ⛔ off | 🔵 | **Aceita pedido + provisiona serviço** |
-| 38 | `whmcs_cancel_order` | CancelOrder | WRITE | **on** | 🟠 | **Cancela pedido — default-ON, sem gate opt-in** |
-| 39 | `whmcs_add_order` | AddOrder | **COST** | ⛔ off | 🔵 | Cria pedido (pode provisionar/cobrar) |
-| 40 | `whmcs_get_order_statuses` | GetOrderStatuses | READ | on | 🟢 | Lista status de pedidos |
-| 41 | `whmcs_get_products` | GetProducts | READ | on | 🟢 | Lista produtos |
-| 42 | `whmcs_get_promotions` | GetPromotions | READ | on | 🟢 | Lista promoções |
-| 43 | `whmcs_pending_order` | PendingOrder | WRITE | on | 🟡 | Coloca pedido como pendente |
+| 31 | `whmcs_list_orders` | GetOrders | READ | on | 🟢 | Lista pedidos |
+| 32 | `whmcs_get_order` | GetOrders | READ | on | 🟢 | Detalhes de pedido |
+| 33 | `whmcs_cancel_order` | CancelOrder | DESTRUCTIVE | ⛔ off | 🟠 | **Cancela pedido — irreversível, exige confirm=true** |
+| 34 | `whmcs_pending_order` | PendingOrder | WRITE | on | 🟡 | Coloca pedido em status pendente |
+| 35 | `whmcs_get_products` | GetProducts | READ | on | 🟢 | Lista produtos/serviços |
 
-## ProjectManagerTools (10)
+## ProjectManagerTools (9)
 
 | # | Tool | Comando | Gate | Default | Risco | Descrição |
 |---|------|---------|------|---------|-------|-----------|
-| 44 | `whmcs_list_projects` | GetProjects | READ | on | 🟢 | Lista projetos |
-| 45 | `whmcs_get_project` | GetProject | READ | on | 🟢 | Projeto + tarefas |
-| 46 | `whmcs_create_project` | CreateProject | WRITE | on | 🟡 | Cria projeto |
-| 47 | `whmcs_update_project` | UpdateProject | WRITE | on | 🟡 | Atualiza projeto |
-| 48 | `whmcs_add_project_task` | AddProjectTask | WRITE | on | 🟡 | Adiciona tarefa |
-| 49 | `whmcs_update_project_task` | UpdateProjectTask | WRITE | on | 🟡 | Atualiza tarefa |
-| 50 | `whmcs_delete_project_task` | DeleteProjectTask | **DESTRUCTIVE** | ⛔ off | 🔵 | **Remove tarefa (irreversível)** |
-| 51 | `whmcs_start_task_timer` | StartTaskTimer | WRITE | on | 🟡 | Inicia timer |
-| 52 | `whmcs_end_task_timer` | EndTaskTimer | WRITE | on | 🟡 | Para timer |
-| 53 | `whmcs_add_project_message` | AddProjectMessage | WRITE | on | 🟡 | Adiciona mensagem |
+| 36 | `whmcs_list_projects` | GetProjects | READ | on | 🟢 | Lista projetos |
+| 37 | `whmcs_get_project` | GetProject | READ | on | 🟢 | Projeto + tarefas |
+| 38 | `whmcs_create_project` | CreateProject | WRITE | on | 🟡 | Cria projeto |
+| 39 | `whmcs_update_project` | UpdateProject | WRITE | on | 🟡 | Atualiza projeto |
+| 40 | `whmcs_add_project_task` | AddProjectTask | WRITE | on | 🟡 | Adiciona tarefa |
+| 41 | `whmcs_update_project_task` | UpdateProjectTask | WRITE | on | 🟡 | Atualiza tarefa |
+| 42 | `whmcs_start_task_timer` | StartTaskTimer | WRITE | on | 🟡 | Inicia cronômetro |
+| 43 | `whmcs_end_task_timer` | EndTaskTimer | WRITE | on | 🟡 | Para cronômetro |
+| 44 | `whmcs_add_project_message` | AddProjectMessage | WRITE | on | 🟡 | Adiciona mensagem/comentário |
 
-## QuoteTools (6)
-
-| # | Tool | Comando | Gate | Default | Risco | Descrição |
-|---|------|---------|------|---------|-------|-----------|
-| 54 | `whmcs_list_quotes` | GetQuotes | READ | on | 🟢 | Lista orçamentos |
-| 55 | `whmcs_get_quote` | GetQuotes | READ | on | 🟢 | Obtém orçamento |
-| 56 | `whmcs_create_quote` | CreateQuote | WRITE | on | 🟡 | Cria orçamento |
-| 57 | `whmcs_update_quote` | UpdateQuote | WRITE | on | 🟡 | Atualiza orçamento |
-| 58 | `whmcs_send_quote` | SendQuote | **COMMS** | ⛔ off | 🔵 | **Envia orçamento por e-mail ao cliente** |
-| 59 | `whmcs_accept_quote` | AcceptQuote | **FINANCIAL** | ⛔ off | 🔵 | **Aceita orçamento — gera fatura** |
-
-## ServiceTools (4)
+## QuoteTools (7)
 
 | # | Tool | Comando | Gate | Default | Risco | Descrição |
 |---|------|---------|------|---------|-------|-----------|
-| 60 | `whmcs_list_services` | GetClientsProducts | READ | on | 🟢 | Lista serviços do cliente |
-| 61 | `whmcs_suspend_service` | ModuleSuspend | WRITE | **on** | 🟠 | **Suspende serviço do cliente — default-ON, sem gate** |
-| 62 | `whmcs_unsuspend_service` | ModuleUnsuspend | WRITE | **on** | 🟠 | **Reativa serviço — default-ON, sem gate** |
-| 63 | `whmcs_upgrade_service` | UpgradeProduct | **COST** | ⛔ off | 🔵 | **Upgrade de serviço — muda billing** |
+| 45 | `whmcs_list_quotes` | GetQuotes | READ | on | 🟢 | Lista orçamentos |
+| 46 | `whmcs_get_quote` | GetQuotes | READ | on | 🟢 | Obtém orçamento |
+| 47 | `whmcs_create_quote` | CreateQuote | WRITE | on | 🟡 | Cria orçamento |
+| 48 | `whmcs_update_quote` | UpdateQuote | WRITE | on | 🟡 | Atualiza orçamento |
+| 49 | `whmcs_duplicate_quote` | GetQuotes (read) + CreateQuote (write) | WRITE | on | 🟡 | Duplica cotação com overrides |
+| 50 | `whmcs_convert_quote_to_invoice` | AcceptQuote + UpdateInvoice | FINANCIAL | ⛔ off | 🟠 | **Converte cotação em fatura — efeito financeiro, não idempotente** |
+| 51 | `whmcs_delete_quote` | DeleteQuote | DESTRUCTIVE | ⛔ off | 🟠 | **Exclui cotação — irreversível, exige confirm=true** |
 
-## SupportInfoTools (7) — todas READ 🟢
-
-| # | Tool | Comando | Gate | Default | Risco | Descrição |
-|---|------|---------|------|---------|-------|-----------|
-| 64 | `whmcs_get_support_departments` | GetSupportDepartments | READ | on | 🟢 | Departamentos de suporte |
-| 65 | `whmcs_get_support_statuses` | GetSupportStatuses | READ | on | 🟢 | Status de tickets |
-| 66 | `whmcs_get_ticket_counts` | GetTicketCounts | READ | on | 🟢 | Contagem de tickets |
-| 67 | `whmcs_get_ticket_notes` | GetTicketNotes | READ | on | 🟢 | Notas de ticket |
-| 68 | `whmcs_get_ticket_predefined_cats` | GetTicketPredefinedCats | READ | on | 🟢 | Categorias de respostas |
-| 69 | `whmcs_get_ticket_predefined_replies` | GetTicketPredefinedReplies | READ | on | 🟢 | Respostas predefinidas |
-| 70 | `whmcs_get_ticket_attachment` | GetTicketAttachment | READ | on | 🟢 | Anexo de ticket |
-
-## SystemTools (11)
+## ServiceTools (1)
 
 | # | Tool | Comando | Gate | Default | Risco | Descrição |
 |---|------|---------|------|---------|-------|-----------|
-| 71 | `whmcs_get_stats` | GetStats | READ | on | 🟢 | Estatísticas gerais |
-| 72 | `whmcs_send_email` | SendEmail | **COMMS** | ⛔ off | 🔵 | **Envia e-mail (template) ao cliente** |
-| 73 | `whmcs_get_activity_log` | GetActivityLog | READ | on | 🟢 | Log de atividades |
-| 74 | `whmcs_get_admin_details` | GetAdminDetails | READ | on | 🟢 | Admin autenticado |
-| 75 | `whmcs_get_currencies` | GetCurrencies | READ | on | 🟢 | Moedas |
-| 76 | `whmcs_get_email_templates` | GetEmailTemplates | READ | on | 🟢 | Templates de e-mail |
-| 77 | `whmcs_get_payment_methods` | GetPaymentMethods | READ | on | 🟢 | Gateways de pagamento |
-| 78 | `whmcs_get_todo_items` | GetToDoItems | READ | on | 🟢 | Itens To-Do |
-| 79 | `whmcs_get_todo_statuses` | GetToDoItemStatuses | READ | on | 🟢 | Status To-Do |
-| 80 | `whmcs_update_todo_item` | UpdateToDoItem | WRITE | on | 🟡 | Atualiza item To-Do (interno) |
-| 81 | `whmcs_log_activity` | LogActivity | WRITE | on | 🟡 | Registra atividade (interno) |
+| 52 | `whmcs_list_services` | GetClientsProducts | READ | on | 🟢 | Lista serviços de um cliente |
+
+## SupportInfoTools (3) — todas READ 🟢
+
+| # | Tool | Comando | Gate | Default | Risco | Descrição |
+|---|------|---------|------|---------|-------|-----------|
+| 53 | `whmcs_get_support_departments` | GetSupportDepartments | READ | on | 🟢 | Departamentos de suporte |
+| 54 | `whmcs_get_support_statuses` | GetSupportStatuses | READ | on | 🟢 | Status de tickets |
+| 55 | `whmcs_get_ticket_counts` | GetTicketCounts | READ | on | 🟢 | Contagem de tickets por status |
+
+## SystemTools (6)
+
+| # | Tool | Comando | Gate | Default | Risco | Descrição |
+|---|------|---------|------|---------|-------|-----------|
+| 56 | `whmcs_get_stats` | GetStats | READ | on | 🟢 | Estatísticas gerais |
+| 57 | `whmcs_get_activity_log` | GetActivityLog | READ | on | 🟢 | Log de atividades |
+| 58 | `whmcs_get_admin_details` | GetAdminDetails | READ | on | 🟢 | Admin autenticado |
+| 59 | `whmcs_get_todo_items` | GetToDoItems | READ | on | 🟢 | Itens To-Do administrativos |
+| 60 | `whmcs_update_todo_item` | UpdateToDoItem | WRITE | on | 🟡 | Atualiza item To-Do (interno) |
+| 61 | `whmcs_get_currencies` | GetCurrencies | READ | on | 🟢 | Moedas configuradas |
 
 ## TicketTools (5)
 
 | # | Tool | Comando | Gate | Default | Risco | Descrição |
 |---|------|---------|------|---------|-------|-----------|
-| 82 | `whmcs_list_tickets` | GetTickets | READ | on | 🟢 | Lista tickets |
-| 83 | `whmcs_get_ticket` | GetTicket | READ | on | 🟢 | Ticket + histórico |
-| 84 | `whmcs_open_ticket` | OpenTicket | WRITE | on | 🟡 | Abre ticket (pode notificar) |
-| 85 | `whmcs_reply_ticket` | AddTicketReply | WRITE | **on** | 🟠 | **Responde ticket — envia e-mail ao cliente, default-ON** |
-| 86 | `whmcs_update_ticket` | UpdateTicket | WRITE | on | 🟡 | Atualiza ticket |
+| 62 | `whmcs_list_tickets` | GetTickets | READ | on | 🟢 | Lista tickets de suporte |
+| 63 | `whmcs_get_ticket` | GetTicket | READ | on | 🟢 | Ticket + histórico |
+| 64 | `whmcs_open_ticket` | OpenTicket | WRITE | on | 🟡 | Abre novo ticket; notify_client=true requer COMMS |
+| 65 | `whmcs_reply_ticket` | AddTicketReply | WRITE | on | 🟡 | Responde ticket; notify_client=true requer COMMS |
+| 66 | `whmcs_update_ticket` | UpdateTicket | WRITE | on | 🟡 | Atualiza status/prioridade/dept |
 
 ---
 
@@ -189,61 +172,74 @@ Legenda de risco:
 
 | Gate | Qtde | Default | Tools |
 |------|------|---------|-------|
-| READ | 49 | on | consultas — sem risco |
-| WRITE | 28 | **on** | administrativas reversíveis (dessas, 4 🟠 sensíveis: suspend/unsuspend_service, cancel_order, reply_ticket) |
-| COST | 5 | ⛔ off | register/renew_domain, accept_order, add_order, upgrade_service |
-| COMMS | 2 | ⛔ off | send_email, send_quote |
-| DESTRUCTIVE | 1 | ⛔ off | delete_project_task |
-| FINANCIAL | 1 | ⛔ off | accept_quote |
-| **Total** | **86** | | |
+| READ | 38 | on | consultas — sem risco |
+| WRITE | 19 | **on** | administrativas reversíveis |
+| DESTRUCTIVE | 2 | ⛔ off | cancel_order, delete_quote (exigem confirm=true) |
+| FINANCIAL | 1 | ⛔ off | convert_quote_to_invoice (não idempotente) |
+| CRM-READ | 4 | on | leituras do CRM mgCRM2 (MgCrmRepository) |
+| CRM-WRITE | 4 | on | escritas CRM (não-funcionais até CRM-3) |
+| **Total** | **68** | | |
+
+> ⚠️ **Nota:** O count acima é 68 porque AddClient e OpenTicket aparecem como WRITE base,
+> mas ganham gate COMMS ortogonal quando `notify_client=true`. Não é double-counting
+> — são 66 tools únicas. AddTicketReply também segue a mesma política.
 
 ---
 
-## Recomendação de corte (para aprovação 1-a-1)
+## Detalhes de risco e gates ortogonais
 
-Filosofia adotada no projeto: **remover fisicamente** o que não se usa, em vez
-de só desativar (já foi feito com 10 tools destrutivas/financeiras). Abaixo, os
-candidatos, priorizados por risco real.
+### COMMS ortogonal (efeito colateral de notificação)
 
-### Prioridade ALTA — risco ao cliente E ligadas por padrão (WRITE, sem gate opt-in)
+Três tools permitem `notify_client=true` para enviar e-mail ao cliente.
+O default é `notify_client=false` (sem notificação):
 
-Estas rodam **sem opt-in** — qualquer token com WRITE (o default) as executa.
-São as mais perigosas por estarem "ligadas e escondidas":
+| Tool | Comando | Comportamento |
+|------|---------|---------------|
+| `whmcs_create_client` | AddClient + noemail | Gate COMMS apenas se notify_client=true |
+| `whmcs_open_ticket` | OpenTicket + noemail | Gate COMMS apenas se notify_client=true |
+| `whmcs_reply_ticket` | AddTicketReply + noemail | Gate COMMS apenas se notify_client=true |
 
-| Tool | Impacto | Recomendação |
-|------|---------|--------------|
-| `whmcs_suspend_service` (61) | Derruba o serviço de um cliente | ⬜ remover / ⬜ mover p/ gate COST/DESTRUCTIVE / ⬜ manter |
-| `whmcs_unsuspend_service` (62) | Religa serviço | ⬜ remover / ⬜ manter (par do suspend) |
-| `whmcs_cancel_order` (38) | Cancela pedido | ⬜ remover / ⬜ mover p/ gate / ⬜ manter |
-| `whmcs_reply_ticket` (85) | **Envia e-mail ao cliente** | ⬜ remover / ⬜ reclassificar p/ COMMS / ⬜ manter |
+A verificação ocorre centralmente em `LocalApiClient` (não na tool), então nenhuma
+refatoração consegue contornar o gate.
 
-> Sugestão técnica: se mantiver, reclassificar `ModuleSuspend`/`ModuleUnsuspend`/
-> `CancelOrder` para uma classe default-DENY (ex.: DESTRUCTIVE) e `AddTicketReply`
-> para COMMS, alinhando o gate ao risco real — hoje estão como WRITE default-ON.
+### CRM não-funcional (CRM-2 → CRM-3)
 
-### Prioridade MÉDIA — sensíveis mas já protegidas (default-DENY)
+As 4 tools de CRM **escritas** (`create_lead`, `update_contact`, `add_followup`, `add_note`)
+operam sobre tabelas ficções `mod_mgcrm_*` que não existem na instalação real (mgCRM2).
+São preservadas exatamente como estavam para separar a mudança de contrato público (schema)
+da mudança de efeito colateral. A migração segue ticket CRM-3.
 
-Já exigem opt-in explícito (`nt_mcp_enable_*`). Avaliar se são necessárias:
+---
 
-| Tool | Classe | Necessária? |
-|------|--------|-------------|
-| `whmcs_register_domain` (27) | COST (gasta $) | ⬜ remover / ⬜ manter |
-| `whmcs_renew_domain` (28) | COST (gasta $) | ⬜ remover / ⬜ manter |
-| `whmcs_accept_order` (37) | COST (provisiona) | ⬜ remover / ⬜ manter |
-| `whmcs_add_order` (39) | COST | ⬜ remover / ⬜ manter |
-| `whmcs_upgrade_service` (63) | COST (billing) | ⬜ remover / ⬜ manter |
-| `whmcs_accept_quote` (59) | FINANCIAL (gera fatura) | ⬜ remover / ⬜ manter |
-| `whmcs_delete_project_task` (50) | DESTRUCTIVE | ⬜ remover / ⬜ manter |
-| `whmcs_send_email` (72) | COMMS | ⬜ remover / ⬜ manter |
-| `whmcs_send_quote` (58) | COMMS | ⬜ remover / ⬜ manter |
+## Risco identificado
 
-### Baixa prioridade
+Nenhuma tool de impacto crítico está desprotegida pela gate no código atual.
+Os comandos que afetam serviços cliente (`ModuleSuspend`, `ModuleUnsuspend`,
+`DomainRegister`, `DomainRenew`, `UpgradeProduct`, `AcceptOrder`, `AddOrder`)
+e comunicação (`SendEmail`, `SendQuote`) **não estão sequer na allowlist**
+(foram removidos em T1 junto com a reclassificação de gate WO-2).
 
-As 24 WRITE administrativas restantes (create/update client, contact, project,
-quote, ticket, CRM, timers, todo) são reversíveis e de baixo impacto — manter
-salvo se não houver caso de uso.
+Commandos presentes com WRITE default-ON:
+- `CancelOrder` → DESTRUCTIVE (confirmar + gate opt-in)
+- `OpenTicket` + `AddTicketReply` → WRITE, mas `notify_client=true` requer COMMS gate
 
-> **A remoção física NÃO faz parte deste branch** — este catálogo é para você
-> decidir 1-a-1. Marque as tools a remover; a remoção (allowlist + classe Tools +
-> testes de regressão) vira um branch separado, seguindo o mesmo padrão da
-> remoção anterior das 10 tools.
+---
+
+## Verificação de integridade
+
+Rodar após qualquer mudança de tools:
+
+```bash
+# Contar tools reais no código
+grep -oh "name: '[a-z_0-9]*'" src/Tools/*.php | sort -u | wc -l
+
+# Contar na documentação
+grep -c "^| [0-9]" docs/TOOLS.md
+
+# Fazer diff do allowlist
+diff <(grep "'" src/Whmcs/LocalApiClient.php | grep -o "'[A-Z][A-Za-z]*'" | sort -u) \
+     <(grep "| Read command mapping will fail if gate mapping missing here" docs/TOOLS.md)
+```
+
+Se contagem mismatch: adicionar/remover tool no arquivo correspondente (`src/Tools/*.php`,
+`src/Whmcs/LocalApiClient.php`, `docs/TOOLS.md`).

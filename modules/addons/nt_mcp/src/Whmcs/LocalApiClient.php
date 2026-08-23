@@ -53,6 +53,7 @@ class LocalApiClient
         'GetOrders',
         'CancelOrder',
         'PendingOrder',
+        'GetProducts',
 
         // DomainTools
         'DomainGetNameservers',
@@ -66,6 +67,7 @@ class LocalApiClient
         'GetAdminDetails',
         'GetToDoItems',
         'UpdateToDoItem',
+        'GetCurrencies',
 
         // ProjectManagerTools
         'GetProjects',
@@ -127,6 +129,7 @@ class LocalApiClient
         'GetStats'=>'READ','GetActivityLog'=>'READ','GetAdminDetails'=>'READ',
         'GetToDoItems'=>'READ','GetProjects'=>'READ','GetProject'=>'READ','GetQuotes'=>'READ',
         'GetSupportDepartments'=>'READ','GetSupportStatuses'=>'READ','GetTicketCounts'=>'READ',
+        'GetProducts'=>'READ','GetCurrencies'=>'READ',
         // WRITE (mutação reversível)
         'AddClient'=>'WRITE','UpdateClient'=>'WRITE','AddContact'=>'WRITE','UpdateContact'=>'WRITE',
         'OpenTicket'=>'WRITE','AddTicketReply'=>'WRITE','UpdateTicket'=>'WRITE',
@@ -432,6 +435,25 @@ class LocalApiClient
             self::auditLog(ActivityEvent::API_EXCEPTION, null, $correlationId, $command);
             Diagnostics::log($correlationId, Diagnostics::CATEGORY_API_EXCEPTION, $command, $e);
 
+            // O WHMCS não é consistente: para vários "não encontrado" ele LANÇA
+            // em vez de devolver `result: error` (`GetInvoice` com id inexistente
+            // é o caso observado). Tratar toda exceção como falha opaca fazia o
+            // chamador receber `-32603 "Error while executing tool"` — sem
+            // distinguir "esse id não existe" de "o WHMCS caiu", que pedem ações
+            // opostas. A mensagem passa pelo MESMO classificador do ramo
+            // `result === 'error'`: inspeção só em memória, e apenas o código do
+            // enum sai daqui (regra 2 do docblock do ErrorClassifier).
+            $classification = ErrorClassifier::classify($command, $e->getMessage(), $params);
+            if ($classification['category'] !== ErrorClassifier::DOWNSTREAM) {
+                return [
+                    'result'         => 'error',
+                    'error_code'     => $classification['code'],
+                    'error_category' => $classification['category'],
+                    'message'        => self::publicFailureMessage($command, $correlationId),
+                    'correlation_id' => $correlationId,
+                ];
+            }
+
             // F2: a exceção original NÃO é relançada nem encadeada — o adapter
             // a converteria em "Tool execution failed: <mensagem crua>", e
             // `(string)$exception` inclui a cadeia anterior. Classe e
@@ -449,12 +471,25 @@ class LocalApiClient
         // `[]`, `result` ausente, null ou desconhecido — é INDETERMINADO e
         // falha fechado. Antes, esses casos geravam um `OK` falso e devolviam a
         // resposta malformada como se tivesse dado certo.
+        //
+        // A API do WHMCS não é uniforme: a maioria dos comandos usa a chave
+        // `result`, mas ao menos `GetInvoice` (confirmado no desenv, id
+        // inexistente) devolve `status` em vez de `result` no mesmo formato
+        // (`error`/`success`). `status` só é consultado quando `result`
+        // ESTÁ AUSENTE — nunca sobrepõe um `result` presente — para não abrir
+        // uma segunda leitura em comandos onde `status` já significa outra
+        // coisa (ex.: status de ticket/pedido) e por acaso valeria a mesma
+        // string. Antes desta correção, `GetInvoice` inexistente caía direto
+        // no ramo INDETERMINADO abaixo e nunca era classificado — o chamador
+        // MCP via só `-32603` genérico, mesmo com `ErrorClassifier` já tendo
+        // `invoice_not_found` mapeado pra esse comando.
         // ---------------------------------------------------------------
-        $outcome = is_array($result) ? ($result['result'] ?? null) : null;
+        $outcome = is_array($result) ? ($result['result'] ?? $result['status'] ?? null) : null;
 
         if ($outcome === 'success') {
             self::auditLog(ActivityEvent::API_OK, null, $correlationId, $command);
             ResponseRedactor::scrubSensitive($result);  // D defense-in-depth
+            ResponseRedactor::normalizeTypes($result);  // "" -> [] / 0000-00-00 -> null
 
             return $result;
         }

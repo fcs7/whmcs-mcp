@@ -40,6 +40,48 @@ class OrderToolsTest extends TestCase
         $this->assertSame(5, $captured['params']['userid']);
     }
 
+    public function test_get_order_strips_maxmind_fraud_dump(): void
+    {
+        $tools = $this->makeTools(function (string $cmd, array $params) {
+            return [
+                'result' => 'success',
+                'id' => 70,
+                'fraudmodule' => 'maxmind',
+                'fraudoutput' => '{"billing_address":{"latitude":-15.7783}}',
+            ];
+        }, ['readonly' => true]);
+
+        $result = json_decode($tools->getOrder(orderid: 70), true);
+
+        $this->assertArrayNotHasKey('fraudoutput', $result);
+        $this->assertSame('maxmind', $result['fraudmodule']);
+    }
+
+    // ---------------------------------------------------------------
+    // whmcs_get_products
+    // ---------------------------------------------------------------
+
+    public function test_get_products_calls_get_products_and_strips_passwords(): void
+    {
+        $captured = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$captured) {
+            $captured = ['cmd' => $cmd, 'params' => $params];
+            return [
+                'result' => 'success',
+                'products' => ['product' => [
+                    ['pid' => 1, 'name' => 'NT VPS 1GB', 'password' => 'should-not-leak'],
+                ]],
+            ];
+        }, ['readonly' => true]);
+
+        $result = json_decode($tools->getProducts(gid: 3), true);
+
+        $this->assertSame('GetProducts', $captured['cmd']);
+        $this->assertSame(3, $captured['params']['gid']);
+        $this->assertArrayNotHasKey('password', $result['products']['product'][0]);
+        $this->assertSame('NT VPS 1GB', $result['products']['product'][0]['name']);
+    }
+
     // ---------------------------------------------------------------
     // cancel_order (DESTRUCTIVE + confirm)
     // ---------------------------------------------------------------

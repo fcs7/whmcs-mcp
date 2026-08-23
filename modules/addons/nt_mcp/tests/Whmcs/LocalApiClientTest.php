@@ -123,6 +123,78 @@ class LocalApiClientTest extends TestCase
         }
     }
 
+    /**
+     * Regressão (2026-08-23, desenv REAL — não simulado): `GetInvoice` com id
+     * inexistente não lança e não usa a chave `result`; devolve
+     * `{"status":"error","message":"Invoice ID Not Found"}`. O código antigo
+     * só olhava `$result['result']`, tratava isso como INDETERMINADO (nem
+     * sucesso nem erro reconhecido) e lançava sem classificar — o cliente MCP
+     * via `-32603` genérico mesmo com `invoice_not_found` já mapeado no
+     * ErrorClassifier pra este comando exato.
+     */
+    public function test_status_key_is_accepted_as_fallback_for_result_key(): void
+    {
+        $client = new LocalApiClient('testadmin');
+        $client->setCallable(fn() => ['status' => 'error', 'message' => 'Invoice ID Not Found']);
+
+        $result = $client->call('GetInvoice', ['invoiceid' => 999999]);
+
+        $this->assertSame('error', $result['result']);
+        $this->assertSame('invoice_not_found', $result['error_code']);
+    }
+
+    /** `result` presente sempre vence sobre `status`, mesmo que ambos existam. */
+    public function test_result_key_takes_precedence_over_status_key(): void
+    {
+        $client = new LocalApiClient('testadmin');
+        $client->setCallable(fn() => ['result' => 'success', 'status' => 'error', 'numreturns' => 1]);
+
+        $result = $client->call('GetClients', []);
+
+        $this->assertSame('success', $result['result']);
+    }
+
+    /**
+     * Regressão (2026-08-23): o WHMCS não é consistente — para vários "não
+     * encontrado" ele LANÇA em vez de devolver `result: error` (é o caso real
+     * de `GetInvoice` com id inexistente, reproduzido no desenv). Antes deste
+     * fix, TODA exceção virava `DownstreamFailureException` → `-32603`
+     * genérico no cliente MCP, sem distinguir "esse id não existe" de "o
+     * WHMCS caiu". Mensagem classificável agora vira o MESMO envelope
+     * estruturado do ramo `result === 'error'`, sem lançar.
+     */
+    public function test_classifiable_exception_becomes_a_structured_error_instead_of_throwing(): void
+    {
+        $client = new LocalApiClient('testadmin');
+        $client->setCallable(function () {
+            throw new \RuntimeException('Invoice ID Not Found');
+        });
+
+        $result = $client->call('GetInvoice', ['invoiceid' => 999999]);
+
+        $this->assertSame('error', $result['result']);
+        $this->assertSame('invoice_not_found', $result['error_code']);
+        $this->assertSame(\NtMcp\Whmcs\ErrorClassifier::NOT_FOUND, $result['error_category']);
+        $this->assertArrayHasKey('correlation_id', $result);
+        $this->assertStringNotContainsString('Invoice ID Not Found', $result['message']);
+    }
+
+    /**
+     * Mensagem NÃO classificável (SQLSTATE, stack trace, texto arbitrário)
+     * continua caindo em DOWNSTREAM e lançando — este caminho não vira
+     * silencioso por engano.
+     */
+    public function test_unclassifiable_exception_still_throws_downstream_failure(): void
+    {
+        $client = new LocalApiClient('testadmin');
+        $client->setCallable(function () {
+            throw new \RuntimeException('SQLSTATE[42000] connection refused at /var/www/secret.php');
+        });
+
+        $this->expectException(\NtMcp\Whmcs\DownstreamFailureException::class);
+        $client->call('GetClients', []);
+    }
+
     /** Negação de autorização mantém semântica própria (mensagem é nossa). */
     public function test_authorization_exception_is_not_wrapped(): void
     {
@@ -165,15 +237,18 @@ class LocalApiClientTest extends TestCase
             ->getReflectionConstant('COMMAND_CLASS')->getValue();
     }
 
-    public function test_allowed_commands_match_64_tool_profile(): void
+    public function test_allowed_commands_match_66_tool_profile(): void
     {
         $commands = self::allowedCommands();
 
-        $this->assertCount(51, $commands);
+        $this->assertCount(53, $commands);
         $this->assertSame($commands, array_values(array_unique($commands)), 'sem duplicatas');
         $this->assertContains('AcceptQuote', $commands);
         $this->assertContains('DeleteQuote', $commands);
         $this->assertContains('UpdateInvoice', $commands);
+        // Reintroduzidos em 2026-08-23: catálogo de produtos e moedas.
+        $this->assertContains('GetProducts', $commands);
+        $this->assertContains('GetCurrencies', $commands);
 
         foreach ([
             'ModuleSuspend',
@@ -182,14 +257,12 @@ class LocalApiClientTest extends TestCase
             'AcceptOrder',
             'AddOrder',
             'GetOrderStatuses',
-            'GetProducts',
             'GetPromotions',
             'DomainRegister',
             'DomainRenew',
             'DomainUpdateNameservers',
             'UpdateClientDomain',
             'SendEmail',
-            'GetCurrencies',
             'GetEmailTemplates',
             'GetPaymentMethods',
             'GetToDoItemStatuses',
@@ -210,7 +283,7 @@ class LocalApiClientTest extends TestCase
         $commands = self::allowedCommands();
         $classes = self::commandClasses();
 
-        $this->assertCount(51, $classes, 'COMMAND_CLASS não pode ter entrada órfã');
+        $this->assertCount(53, $classes, 'COMMAND_CLASS não pode ter entrada órfã');
 
         foreach ($commands as $command) {
             $this->assertArrayHasKey($command, $classes, "'{$command}' sem classe explícita");
@@ -222,7 +295,7 @@ class LocalApiClientTest extends TestCase
 
     /**
      * Nenhum comando órfão e nenhuma tool chamando comando ausente: o allowlist
-     * é exatamente o conjunto de comandos que as 64 tools realmente invocam.
+     * é exatamente o conjunto de comandos que as 66 tools realmente invocam.
      */
     public function test_allowlist_matches_exactly_the_commands_the_tools_call(): void
     {
@@ -253,7 +326,7 @@ class LocalApiClientTest extends TestCase
     {
         $counts = array_count_values(self::commandClasses());
 
-        $this->assertSame(29, $counts['READ'] ?? 0);
+        $this->assertSame(31, $counts['READ'] ?? 0);
         $this->assertSame(18, $counts['WRITE'] ?? 0);
         $this->assertSame(2, $counts['FINANCIAL'] ?? 0);
         $this->assertSame(2, $counts['DESTRUCTIVE'] ?? 0);

@@ -5,6 +5,7 @@ namespace NtMcp\Tools;
 use NtMcp\Whmcs\AuditMetadata;
 use NtMcp\Whmcs\ActivityEvent;
 use NtMcp\Whmcs\LocalApiClient;
+use NtMcp\Whmcs\ResponseRedactor;
 use Mcp\Capability\Attribute\McpTool;
 
 class OrderTools
@@ -18,13 +19,17 @@ class OrderTools
         if ($limitstart > 0) $params['limitstart'] = $limitstart;
         if ($status !== '') $params['status'] = $status;
         if ($clientid > 0) $params['userid'] = $clientid;
-        return json_encode($this->api->call('GetOrders', $params), JSON_PRETTY_PRINT);
+        $result = $this->api->call('GetOrders', $params);
+        ResponseRedactor::stripOrderFraudDump($result);
+        return json_encode($result, JSON_PRETTY_PRINT);
     }
 
     #[McpTool(name: 'whmcs_get_order', description: 'Obtém detalhes de um pedido específico')]
     public function getOrder(int $orderid): string
     {
-        return json_encode($this->api->call('GetOrders', ['id' => $orderid]), JSON_PRETTY_PRINT);
+        $result = $this->api->call('GetOrders', ['id' => $orderid]);
+        ResponseRedactor::stripOrderFraudDump($result);
+        return json_encode($result, JSON_PRETTY_PRINT);
     }
 
     /**
@@ -67,5 +72,17 @@ class OrderTools
     public function pendingOrder(int $orderid): string
     {
         return json_encode($this->api->call('PendingOrder', ['orderid' => $orderid]), JSON_PRETTY_PRINT);
+    }
+
+    #[McpTool(name: 'whmcs_get_products', description: 'Lista o catálogo de produtos/serviços do WHMCS, opcionalmente filtrado por grupo')]
+    public function getProducts(int $gid = 0, int $pid = 0, string $module = ''): string
+    {
+        $params = [];
+        if ($gid > 0) $params['gid'] = $gid;
+        if ($pid > 0) $params['pid'] = $pid;
+        if ($module !== '') $params['module'] = $module;
+        $result = $this->api->call('GetProducts', $params);
+        ResponseRedactor::stripProductPasswords($result);
+        return json_encode($result, JSON_PRETTY_PRINT);
     }
 }

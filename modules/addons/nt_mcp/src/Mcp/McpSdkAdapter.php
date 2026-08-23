@@ -6,6 +6,7 @@ namespace NtMcp\Mcp;
 
 use Mcp\Capability\Discovery\DiscoveryState;
 use Mcp\Schema\Enum\ProtocolVersion;
+use Mcp\Schema\ServerCapabilities;
 use Mcp\Server as McpServer;
 use Mcp\Server\Transport\Http\Middleware\ProtocolVersionMiddleware;
 use Mcp\Server\Transport\StreamableHttpTransport;
@@ -115,6 +116,7 @@ final class McpSdkAdapter implements ServerAdapterInterface
         $server = McpServer::builder()
             ->setServerInfo(self::SERVER_NAME, self::SERVER_VERSION)
             ->setProtocolVersion(self::PROTOCOL_VERSION)
+            ->setCapabilities(self::capabilities())
             ->setContainer($container)
             ->setLogger($logger)
             ->setDiscovery(
@@ -142,6 +144,38 @@ final class McpSdkAdapter implements ServerAdapterInterface
         );
 
         return $server->run($transport);
+    }
+
+    /**
+     * Capabilities declaradas explicitamente: este servidor expõe SÓ tools.
+     *
+     * A autodetecção do SDK (`Builder::detectCapabilities()`) anuncia
+     * `resources`, `resourcesSubscribe` e `prompts` sempre que há "fonte
+     * opaca" — e discovery por atributo é uma —, além de cravar `logging` e
+     * `completions` em `true`. O comentário do SDK chama isso de
+     * "over-advertising is harmless", o que é verdade no protocolo mas não na
+     * UI: o cliente cria as seções Prompts/Resources e elas aparecem vazias,
+     * lendo como feature quebrada (reportado no Cursor). Não temos nenhum
+     * `#[McpPrompt]`/`#[McpResource]` registrado, e o logger é um sink que
+     * descarta tudo — anunciar essas capacidades seria promessa sem lastro.
+     *
+     * ATENÇÃO: isto NÃO se atualiza sozinho. Ao registrar o primeiro prompt ou
+     * resource, ligar a flag correspondente aqui, senão o cliente nunca vai
+     * pedir a lista.
+     */
+    public static function capabilities(): ServerCapabilities
+    {
+        return new ServerCapabilities(
+            tools: true,
+            toolsListChanged: false,
+            resources: false,
+            resourcesSubscribe: false,
+            resourcesListChanged: false,
+            prompts: false,
+            promptsListChanged: false,
+            logging: false,
+            completions: false,
+        );
     }
 
     /**

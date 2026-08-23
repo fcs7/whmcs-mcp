@@ -120,16 +120,22 @@ class CrmTools
             . 'whmcs_crm_get_kanban; um id inexistente ou inativo devolve crm_catalog_invalid. '
             . 'Retorna items (projecao core), count (total sob o mesmo filtro), limit, offset e has_more. '
             . 'Registros removidos nao aparecem. Somente a ausencia do filtro (ou null) significa '
-            . 'sem filtro: 0 e negativos sao recusados. limit maximo 100.'
+            . 'sem filtro: 0 e negativos sao recusados. limit maximo 100. '
+            . 'limitnum e aceito como sinonimo de limit (compat com as demais tools).'
     )]
     #[Schema(additionalProperties: false)]
     public function listContacts(
         #[Schema(minimum: 1)] ?int $type_id = null,
         #[Schema(minimum: 1)] ?int $status_id = null,
         #[Schema(minimum: 1)] int $limit = 25,
-        #[Schema(minimum: 0)] int $offset = 0
+        #[Schema(minimum: 0)] int $offset = 0,
+        #[Schema(minimum: 1)] ?int $limitnum = null
     ): string|CallToolResult {
-        return $this->read(fn(): array => $this->crm->listResources($type_id, $status_id, $limit, $offset));
+        // Alias de `limit`: as tools LocalAPI usam `limitnum` (nome real do
+        // parametro do WHMCS) e o cliente as vezes manda o mesmo nome aqui —
+        // `additionalProperties: false` rejeitaria isso como schema invalido
+        // sem nenhuma pista do porque. Aceito como sinonimo em vez de recusar.
+        return $this->read(fn(): array => $this->crm->listResources($type_id, $status_id, $limitnum ?? $limit, $offset));
     }
 
     #[McpTool(
@@ -244,7 +250,8 @@ class CrmTools
             . 'de follow-up publicados por whmcs_crm_get_kanban. Cada item traz type_name e '
             . 'status_name sempre resolvidos: um tipo/status desativado mantem o nome historico, '
             . 'e referencia removida ou ausente falha como downstream de integridade. '
-            . 'Retorna items, count, limit, offset e has_more. limit maximo 100.'
+            . 'Retorna items, count, limit, offset e has_more. limit maximo 100. '
+            . 'limitnum e aceito como sinonimo de limit (compat com as demais tools).'
     )]
     #[Schema(additionalProperties: false)]
     public function listFollowups(
@@ -252,13 +259,15 @@ class CrmTools
         #[Schema(minimum: 1)] ?int $type_id = null,
         #[Schema(minimum: 1)] ?int $status_id = null,
         #[Schema(minimum: 1)] int $limit = 25,
-        #[Schema(minimum: 0)] int $offset = 0
+        #[Schema(minimum: 0)] int $offset = 0,
+        #[Schema(minimum: 1)] ?int $limitnum = null
     ): string|CallToolResult {
+        // Alias de `limit` — ver comentario em listContacts().
         return $this->read(fn(): array => $this->crm->listFollowups(
             $resource_id,
             $type_id,
             $status_id,
-            $limit,
+            $limitnum ?? $limit,
             $offset
         ));
     }

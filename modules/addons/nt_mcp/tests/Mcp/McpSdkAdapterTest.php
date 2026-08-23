@@ -47,6 +47,48 @@ final class McpSdkAdapterTest extends TestCase
         @rmdir($this->tempDir);
     }
 
+    /**
+     * O servidor expõe SÓ tools. A autodetecção do SDK anuncia prompts,
+     * resources, logging e completions só porque usamos discovery por atributo
+     * ("fonte opaca") — e o cliente então renderiza seções vazias, que o
+     * usuário lê como feature quebrada (reportado no Cursor). Este teste trava
+     * o contrato: se alguém registrar um prompt/resource de verdade, ligar a
+     * flag em McpSdkAdapter::capabilities() e ajustar aqui — de propósito, não
+     * por acidente.
+     */
+    #[Test]
+    public function initialize_advertises_only_the_capabilities_actually_implemented(): void
+    {
+        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $factory = new Psr17Factory();
+
+        $request = $factory->createServerRequest('POST', 'https://localhost/mcp.php')
+            ->withHeader('Content-Type', 'application/json')
+            ->withBody($factory->createStream(json_encode([
+                'jsonrpc' => '2.0',
+                'id' => 1,
+                'method' => 'initialize',
+                'params' => [
+                    'protocolVersion' => '2025-06-18',
+                    'capabilities' => (object) [],
+                    'clientInfo' => ['name' => 'test-client', 'version' => '1.0'],
+                ],
+            ])));
+
+        $body = json_decode((string) $adapter->handle($request)->getBody(), true);
+        $advertised = $body['result']['capabilities'] ?? null;
+
+        self::assertIsArray($advertised);
+        self::assertArrayHasKey('tools', $advertised);
+        foreach (['prompts', 'resources', 'logging', 'completions'] as $unimplemented) {
+            self::assertArrayNotHasKey(
+                $unimplemented,
+                $advertised,
+                sprintf('"%s" nao esta implementado e nao pode ser anunciado', $unimplemented)
+            );
+        }
+    }
+
     #[Test]
     public function initialize_returns_200_with_session_id_and_protocol_version(): void
     {
@@ -80,7 +122,7 @@ final class McpSdkAdapterTest extends TestCase
     }
 
     #[Test]
-    public function tools_list_returns_exactly_64_tools_with_whmcs_prefix(): void
+    public function tools_list_returns_exactly_66_tools_with_whmcs_prefix(): void
     {
         $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
         $factory = new Psr17Factory();
@@ -114,7 +156,7 @@ final class McpSdkAdapterTest extends TestCase
         $body = json_decode((string) $listResponse->getBody(), true);
 
         $tools = $body['result']['tools'] ?? [];
-        $this->assertCount(64, $tools);
+        $this->assertCount(66, $tools);
 
         foreach ($tools as $tool) {
             $this->assertStringStartsWith('whmcs_', $tool['name']);
@@ -669,7 +711,7 @@ final class McpSdkAdapterTest extends TestCase
     }
 
     #[Test]
-    public function warm_cache_still_lists_64_tools(): void
+    public function warm_cache_still_lists_66_tools(): void
     {
         $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
         $factory = new Psr17Factory();
@@ -736,8 +778,8 @@ final class McpSdkAdapterTest extends TestCase
         $body2 = json_decode((string) $listResp2->getBody(), true);
         $count2 = count($body2['result']['tools'] ?? []);
 
-        $this->assertSame(64, $count1);
-        $this->assertSame(64, $count2);
+        $this->assertSame(66, $count1);
+        $this->assertSame(66, $count2);
     }
 
     #[Test]

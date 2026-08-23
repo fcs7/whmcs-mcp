@@ -30,6 +30,19 @@ use Psr\SimpleCache\CacheInterface;
  *
  * Arquivos são criados já com 0600 (fail-closed se o chmod não confirmar);
  * o diretório é mantido em 0700.
+ *
+ * Métodos de `CacheInterface`: PARÂMETROS sem type-hint, RETORNO declarado.
+ * O WHMCS carrega sua própria cópia de `psr/simple-cache` v1 (interface sem
+ * tipo nenhum) e é ela que vence a resolução em runtime — mesma causa-raiz do
+ * workaround de `psr/log` em `McpSdkAdapter::compatLogger()`. Assinatura
+ * totalmente tipada (`get(string $key, mixed $default = null): mixed`)
+ * colidia com a v1: fatal "Declaration ... must be compatible with
+ * Psr\SimpleCache\CacheInterface::get()" que o shutdown handler do WHMCS
+ * levava ~60s pra processar — o request nunca respondia e o nginx cortava
+ * com 504 (era ESTE o "hang no discovery" visto pelos clientes MCP).
+ * Parâmetro sem tipo satisfaz as duas (contravariância); o retorno PRECISA
+ * ficar declarado, senão quebra contra a v3 do nosso vendor (covariância).
+ * Mesmo padrão de `CompatContainer::get($id): mixed`.
  */
 final class FileElementCache implements CacheInterface
 {
@@ -59,7 +72,7 @@ final class FileElementCache implements CacheInterface
     ) {
     }
 
-    public function get(string $key, mixed $default = null): mixed
+    public function get($key, $default = null): mixed
     {
         $this->load();
         if (!isset($this->data[$key])) {
@@ -73,14 +86,14 @@ final class FileElementCache implements CacheInterface
         return $value;
     }
 
-    public function set(string $key, mixed $value, null|int|\DateInterval $ttl = null): bool
+    public function set($key, $value, $ttl = null): bool
     {
         $this->load();
         $this->data[$key] = [$value, $this->expiry($ttl)];
         return $this->persist();
     }
 
-    public function delete(string $key): bool
+    public function delete($key): bool
     {
         $this->load();
         unset($this->data[$key]);
@@ -93,7 +106,7 @@ final class FileElementCache implements CacheInterface
         return !is_file($this->file) || @unlink($this->file);
     }
 
-    public function getMultiple(iterable $keys, mixed $default = null): iterable
+    public function getMultiple($keys, $default = null): iterable
     {
         $out = [];
         foreach ($keys as $key) {
@@ -102,7 +115,7 @@ final class FileElementCache implements CacheInterface
         return $out;
     }
 
-    public function setMultiple(iterable $values, null|int|\DateInterval $ttl = null): bool
+    public function setMultiple($values, $ttl = null): bool
     {
         $this->load();
         foreach ($values as $key => $value) {
@@ -111,7 +124,7 @@ final class FileElementCache implements CacheInterface
         return $this->persist();
     }
 
-    public function deleteMultiple(iterable $keys): bool
+    public function deleteMultiple($keys): bool
     {
         $this->load();
         foreach ($keys as $key) {
@@ -120,7 +133,7 @@ final class FileElementCache implements CacheInterface
         return $this->persist();
     }
 
-    public function has(string $key): bool
+    public function has($key): bool
     {
         return $this->get($key, $this) !== $this;
     }
@@ -263,6 +276,7 @@ final class FileElementCache implements CacheInterface
         if (!is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) {
             return false;
         }
+        clearstatcache(true, $dir);
         if ((@fileperms($dir) & 0777) !== 0700 && !@chmod($dir, 0700)) {
             return false;
         }
@@ -273,7 +287,12 @@ final class FileElementCache implements CacheInterface
             return false;
         }
         // Modo fechado ANTES de qualquer byte de conteúdo; verificado, não assumido.
-        if (!@chmod($tmp, 0600) || (@fileperms($tmp) & 0777) !== 0600) {
+        // `clearstatcache()` obrigatório entre chmod e releitura: o stat do PHP
+        // é cacheado por request e devolveria o modo anterior ao chmod (mesma
+        // armadilha que fazia o SessionLock recusar faixa recém-criada).
+        $tmpModeOk = @chmod($tmp, 0600);
+        clearstatcache(true, $tmp);
+        if (!$tmpModeOk || (@fileperms($tmp) & 0777) !== 0600) {
             fclose($handle);
             @unlink($tmp);
             return false;
