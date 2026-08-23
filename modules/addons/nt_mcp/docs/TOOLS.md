@@ -152,7 +152,7 @@ Legenda de risco:
 | # | Tool | Comando | Gate | Default | Risco | Descrição |
 |---|------|---------|------|---------|-------|-----------|
 | 58 | `whmcs_get_stats` | GetStats | READ | on | 🟢 | Estatísticas gerais |
-| 59 | `whmcs_get_activity_log` | GetActivityLog | READ | on | 🟢 | Log de atividades |
+| 59 | `whmcs_get_activity_log` | GetActivityLog | READ | on | 🟢 | Log de atividades (filtra Hooks Debug, auto-scan de páginas ruidosas, `scan_capped` se o teto bater) |
 | 60 | `whmcs_get_admin_details` | GetAdminDetails | READ | on | 🟢 | Admin autenticado |
 | 61 | `whmcs_get_todo_items` | GetToDoItems | READ | on | 🟢 | Itens To-Do administrativos |
 | 62 | `whmcs_update_todo_item` | UpdateToDoItem | WRITE | on | 🟡 | Atualiza item To-Do (interno) |
