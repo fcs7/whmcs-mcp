@@ -65,7 +65,7 @@ class QuoteTools
      * @param string $datecreated  Filtro por data de criação. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY nao sao aceitos por serem ambiguos.
      * @param string $lastmodified Filtro por data da última modificação. Mesmas formas aceitas de datecreated.
      */
-    #[McpTool(name: 'whmcs_list_quotes', description: 'Lista orçamentos com filtros')]
+    #[McpTool(name: 'whmcs_list_quotes', description: 'Lista orçamentos com filtros. Campos datecreated/validuntil/datesent/lastmodified podem ser null; client é null e is_orphan=true quando a cotação não tem cliente (userid=0).')]
     public function listQuotes(
         int $clientid = 0,
         int $quoteid = 0,
@@ -86,7 +86,9 @@ class QuoteTools
         // cru, então uma forma localizada atravessava sem erro — D9 estava
         // incompleta justamente no campo que ninguém olhou.
         if ($lastmodified !== '') $params['lastmodified'] = DateNormalizer::toWhmcsDate($lastmodified, 'lastmodified');
-        return ToolJson::encode($this->api->call('GetQuotes', $params));
+        $result = $this->api->call('GetQuotes', $params);
+        $this->normalizeQuoteShape($result);
+        return ToolJson::encode($result);
     }
 
     #[McpTool(name: 'whmcs_get_quote', description: 'Obtém detalhes de um orçamento')]
@@ -659,5 +661,67 @@ class QuoteTools
         }
 
         return 0;
+    }
+
+    /**
+     * Normaliza a forma de cotações em GetQuotes para uma shape estável:
+     *  - `client` é sempre presente (null se ausente ou array vazio)
+     *  - `stage` e `subject` são sempre strings ('' se ausentes)
+     *  - `userid` é sempre int
+     *  - `is_orphan: true` é adicionado quando `userid === 0`
+     *  - Datas (datecreated, validuntil, datesent, lastmodified) já foram
+     *    convertidas a null pelo ResponseRedactor se forem zero-date; nenhuma
+     *    ação extra aqui — o contrato é que elas podem ser null.
+     */
+    private function normalizeQuoteShape(array &$result): void
+    {
+        if (!isset($result['quotes']['quote']) || !is_array($result['quotes']['quote'])) {
+            return;
+        }
+
+        $quotes = &$result['quotes']['quote'];
+        if (!array_is_list($quotes)) {
+            $quotes = [$quotes];
+        }
+
+        foreach ($quotes as &$quote) {
+            if (!is_array($quote)) {
+                continue;
+            }
+
+            // `client` sempre presente (null se ausente ou array vazio)
+            if (!isset($quote['client']) || (is_array($quote['client']) && $quote['client'] === [])) {
+                $quote['client'] = null;
+            }
+
+            // `stage` e `subject` sempre strings
+            if (!isset($quote['stage']) || $quote['stage'] === '') {
+                $quote['stage'] = '';
+            } else {
+                $quote['stage'] = (string)$quote['stage'];
+            }
+
+            if (!isset($quote['subject']) || $quote['subject'] === '') {
+                $quote['subject'] = '';
+            } else {
+                $quote['subject'] = (string)$quote['subject'];
+            }
+
+            // `userid` sempre int
+            $userid = 0;
+            foreach (['userid', 'clientid'] as $key) {
+                if (isset($quote[$key]) && is_numeric($quote[$key])) {
+                    $userid = (int)$quote[$key];
+                    break;
+                }
+            }
+            $quote['userid'] = $userid;
+
+            // `is_orphan` quando sem cliente
+            if ($userid === 0) {
+                $quote['is_orphan'] = true;
+            }
+        }
+        unset($quote);
     }
 }

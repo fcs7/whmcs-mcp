@@ -125,7 +125,7 @@ Legenda de risco:
 
 | # | Tool | Comando | Gate | Default | Risco | Descrição |
 |---|------|---------|------|---------|-------|-----------|
-| 47 | `whmcs_list_quotes` | GetQuotes | READ | on | 🟢 | Lista orçamentos |
+| 47 | `whmcs_list_quotes` | GetQuotes | READ | on | 🟢 | Lista orçamentos com shape estável (client/stage/datas sempre presentes, is_orphan=true sem cliente) |
 | 48 | `whmcs_get_quote` | GetQuotes | READ | on | 🟢 | Obtém orçamento |
 | 49 | `whmcs_create_quote` | CreateQuote | WRITE | on | 🟡 | Cria orçamento |
 | 50 | `whmcs_update_quote` | UpdateQuote | WRITE | on | 🟡 | Atualiza orçamento |
