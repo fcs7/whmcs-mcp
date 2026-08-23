@@ -11,14 +11,18 @@ composer install --ignore-platform-req=ext-iconv
 ./vendor/bin/phpunit --testdox                    # tests
 composer audit                                    # check dependency CVEs
 rg -o "name: '[a-z_0-9]+'" src/Tools/*.php | wc -l  # 68 tools total (rg -o '#\[McpTool' conta um comentário em QuoteTools.php também)
-# Deploy manual via FTP (senha interativa — from modules/addons/nt_mcp/)
-lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror -R --only-newer --exclude .git/ --exclude vendor/ --exclude tests/ --exclude data/ --exclude .phpunit.cache/ --exclude .omc/ --exclude .full-review/ --exclude .security-hardening/ --exclude .security-hardening-archive-20260329/ . /httpdocs/modules/addons/nt_mcp/; bye" desenv.ntweb.com.br
+# Deploy manual via FTP (from modules/addons/nt_mcp/). A credencial DEV compartilhada
+# fica fora do git no repo do tema 2026; nunca pedir a senha novamente nem copiá-la
+# para este repositório.
+source /home/fcs/Documents/ntweb/whmcs-tema-2026/whmcs-theme/.env.deploy
+lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY_CERTIFICATE:-yes}; set ftp:ssl-force ${FTP_SSL_FORCE:-yes}; set ftp:ssl-protect-data ${FTP_SSL_FORCE:-yes}; mirror -R --only-newer --exclude .git/ --exclude vendor/ --exclude tests/ --exclude data/ --exclude .phpunit.cache/ --exclude .omc/ --exclude .full-review/ --exclude .security-hardening/ --exclude .security-hardening-archive-20260329/ . /httpdocs/modules/addons/nt_mcp/; bye" 191.7.26.232
 # Deploy com vendor/ (troca de lib SDK — sem --exclude vendor/)
-lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror -R --only-newer --exclude .git/ --exclude tests/ --exclude data/ --exclude vendor/bin/ --exclude .phpunit.cache/ --exclude .omc/ --exclude .full-review/ --exclude .security-hardening/ --exclude .security-hardening-archive-20260329/ . /httpdocs/modules/addons/nt_mcp/; bye" desenv.ntweb.com.br
+lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY_CERTIFICATE:-yes}; set ftp:ssl-force ${FTP_SSL_FORCE:-yes}; set ftp:ssl-protect-data ${FTP_SSL_FORCE:-yes}; mirror -R --only-newer --exclude .git/ --exclude tests/ --exclude data/ --exclude vendor/bin/ --exclude .phpunit.cache/ --exclude .omc/ --exclude .full-review/ --exclude .security-hardening/ --exclude .security-hardening-archive-20260329/ . /httpdocs/modules/addons/nt_mcp/; bye" 191.7.26.232
 # Testes de subprocesso (McpEndpointHttpTest, DiagnosticBoundaryTest) falham no PHP 8.5 local — rodar em container:
 docker run --rm -v "$PWD:/app" -w /app php:8.3-cli-bookworm php vendor/bin/phpunit
-# Verify desenv: download deployed tools and count MCP attributes
-lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror /httpdocs/modules/addons/nt_mcp/src/Tools/ /tmp/nt_mcp_desenv_check/src/Tools/; bye" desenv.ntweb.com.br && test -f /tmp/nt_mcp_desenv_check/src/Tools/CrmTools.php && rg -o '#\[McpTool' /tmp/nt_mcp_desenv_check/src/Tools/*.php | wc -l
+# Verify desenv: download deployed tools and count MCP attributes (usa o mesmo
+# $FTP_PASS carregado acima)
+lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY_CERTIFICATE:-yes}; set ftp:ssl-force ${FTP_SSL_FORCE:-yes}; set ftp:ssl-protect-data ${FTP_SSL_FORCE:-yes}; mirror /httpdocs/modules/addons/nt_mcp/src/Tools/ /tmp/nt_mcp_desenv_check/src/Tools/; bye" 191.7.26.232 && test -f /tmp/nt_mcp_desenv_check/src/Tools/CrmTools.php && rg -o '#\[McpTool' /tmp/nt_mcp_desenv_check/src/Tools/*.php | wc -l
 ```
 
 ## Architecture
@@ -126,7 +130,7 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror /httpdocs/modules
 - **Bearer Token** armazenado em tblconfiguration, gerado na ativação do addon
 - **Nunca criar debug/token files no servidor** — `debug-log.php` e `mcp-make-token.php` são backdoors; usar WHMCS Activity Log
 - **Sempre comparar git vs prod** antes e depois de deploy — servidor pode ter arquivos extras ou versões antigas
-- **lftp requer senha interativa** — sem senha, falha silenciosamente ("assume anonymous login")
+- **Credencial FTP DEV compartilhada** — fonte de verdade: `/home/fcs/Documents/ntweb/whmcs-tema-2026/whmcs-theme/.env.deploy` (arquivo local 0600, fora do git). Carregar com `source` antes do `lftp`; nunca pedir a senha ao usuário nem gravá-la neste repositório. O host operacional é `191.7.26.232` e o usuário é `desenvnt5442`
 - **`mcp/sdk` pinado em 0.7.1** (pre-1.0) — v0.6→v0.7 renomeou classes (`HttpTransportHandler` → `StreamableHttpTransport`, etc.); subir de versão só em branch dedicada
 - **`php-http/discovery` é plugin composer** — `allow-plugins` já no composer.json; sem isso, `composer install` falha
 - **Deploy com troca de lib PRECISA incluir `vendor/`** — o comando padrão exclui vendor; usar comando "deploy com vendor/" listado em Commands
