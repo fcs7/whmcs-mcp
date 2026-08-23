@@ -53,6 +53,7 @@ final class Diagnostics
         'admin_user_not_configured',
         'lock_open_failed',
         'lock_busy',
+        'element_cache_rejected',
         'allow_http_bypass',
         'xff_without_trusted_proxies',
         'rate_limit_dir_create_failed',

@@ -199,4 +199,27 @@ class CorsHandlerTest extends TestCase
             'CRLF' => ["Content-Type\r\nX-Poison: yes", false],
         ];
     }
+
+    public function test_closed_decision_accepts_post_delete_options_profile(): void
+    {
+        $decision = CorsDecision::proceed('*', ['MCP-Session-Id'], 'POST, DELETE, OPTIONS');
+        $this->assertSame('POST, DELETE, OPTIONS', $decision->headers()['Access-Control-Allow-Methods']);
+    }
+
+    public function test_preflight_for_delete_is_allowed_under_mcp_profile_only(): void
+    {
+        \WHMCS\Config\Setting::setValue('nt_mcp_cors_origins', 'https://client.example');
+        $_SERVER['REQUEST_METHOD'] = 'OPTIONS';
+        $_SERVER['HTTP_ORIGIN'] = 'https://client.example';
+        $_SERVER['HTTP_ACCESS_CONTROL_REQUEST_METHOD'] = 'DELETE';
+        unset($_SERVER['HTTP_ACCESS_CONTROL_REQUEST_HEADERS']);
+
+        $mcp = CorsHandler::handle(['MCP-Session-Id'], 'POST, DELETE, OPTIONS');
+        $this->assertSame(204, $mcp->terminalResponse()?->status());
+        $this->assertSame('POST, DELETE, OPTIONS', $mcp->headers()['Access-Control-Allow-Methods']);
+
+        // Perfil OAuth continua sem DELETE.
+        $oauth = CorsHandler::handle([], 'POST, OPTIONS');
+        $this->assertSame(403, $oauth->terminalResponse()?->status());
+    }
 }

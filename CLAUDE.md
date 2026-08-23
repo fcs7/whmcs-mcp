@@ -28,7 +28,7 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror /httpdocs/modules
 - `nt_mcp.php` — WHMCS addon entry (_config/_activate/_output → AdminController/OAuthApprovalController)
 - `.well-known/openid-configuration/index.php` — RFC 8414 metadata discovery (redireciona para oauth.php)
 - `src/Server.php` — Entry: auth → método (POST/DELETE; GET 405) → M-02 1 MB guard → batch JSON-RPC (400 -32600) → PSR-7 → adapter → emit
-- `src/Mcp/` — `ServerAdapterInterface` + `McpSdkAdapter`: builder do SDK com discovery por atributo cacheada em `data/cache/mcp_elements.json` via `FileElementCache` (PSR-16); sessões `FileSessionStore` em `data/sessions/` TTL 1h GC 1/20; `StreamableHttpTransport` com `middleware: []` e `maxBodyBytes` 1 MiB
+- `src/Mcp/` — `ServerAdapterInterface` + `McpSdkAdapter`: builder do SDK com discovery por atributo cacheada em `data/cache/mcp_elements.json` via `FileElementCache` (PSR-16, `unserialize` com allowlist fechada de 4 classes + pré-varredura, arquivo 0600); sessões `SecureFileSessionStore` (dir 0700, arquivos 0600, chmod fail-closed) em `data/sessions/` TTL 1h GC 1/20; `SessionLock` (64 faixas flock em `data/session-locks/`, 503+Retry-After se indisponível) serializa requests do mesmo `Mcp-Session-Id`; `RuntimeDirs::provision()` cria/endurece os 3 dirs na ativação e no upgrade; `StreamableHttpTransport` com `middleware: [ProtocolVersionMiddleware]` (header inválido → 400) e `maxBodyBytes` 1 MiB; `setProtocolVersion(2025-11-25)` explícito
 - `src/Auth/BearerAuth.php` — Bearer token auth: `authenticate(): ?string` (static + OAuth), per-token admin binding
 - `src/Security/` — CsrfProtection (HMAC nonce), RateLimiter (TransientData + file fallback)
 - `src/Http/` — IpResolver, IpAllowlist, TlsEnforcer, SecurityHeaders, CorsHandler
@@ -64,7 +64,7 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror /httpdocs/modules
 - CRM READ tools usam `#[Schema(additionalProperties:false)]` + `#[Schema(minimum:…)]` e retornam `CallToolResult::error()` para envelopes de erro
 - LocalAPI tools injetam `LocalApiClient`; CRM tools injetam `CapsuleClient`
 - Não usar try/catch nos tools — o framework captura exceções automaticamente
-- PHP 8.2+ obrigatório (PHPUnit 11)
+- PHP 8.1+ (composer `platform.php=8.1.34` — desenv/prod rodam 8.1; sem `readonly class`, sem tipo `true`, sem enum em const de array); PHPUnit ^10.5
 
 ## Current Tool Policy
 
@@ -95,7 +95,8 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror /httpdocs/modules
 - CapsuleClient query limit: MAX 500 rows por SELECT (hard-clamped)
 - Write-class gate (WO-2): `LocalApiClient` classifica cada comando (READ/WRITE/DESTRUCTIVE/FINANCIAL/COST/COMMS). WRITE on por padrão; DESTRUCTIVE/FINANCIAL/COST/COMMS bloqueados por padrão (opt-in `nt_mcp_enable_*`); master switch `nt_mcp_readonly` (fail-closed). Espelhado em `CapsuleClient::assertWritable()`. `AcceptQuote`=FINANCIAL (gera fatura). Impersonação clampada: `adminid`/`adminusername` forçados ao admin do token
 - Admin fail-closed (WO-7): sem `nt_mcp_admin_user` resolvível, `BearerAuth` e `Server::run()` negam (401) — nunca vinculam ao superadmin `admin`
-- Middleware default do SDK (CorsMiddleware/DnsRebinding) desligado de propósito — CORS/IP/TLS são nossos, em mcp.php
+- Middleware do SDK: só `ProtocolVersionMiddleware` ligado (spec: `MCP-Protocol-Version` inválido → 400; ausente tolerado). CorsMiddleware/DnsRebinding desligados de propósito — CORS/IP/TLS são nossos, em mcp.php. Perfil CORS do mcp.php = `POST, DELETE, OPTIONS` (DELETE encerra sessão); oauth.php continua `POST, OPTIONS`
+- Lock por sessão (`SessionLock`): o `FileSessionStore` do SDK faz read-modify-write sem lock — requests concorrentes com o mesmo `Mcp-Session-Id` perdiam resposta e cruzavam respostas entre clientes (reproduzido). Lock segurado até depois do `emit`; initialize (sem header) não trava
 
 ## Gotchas
 
@@ -116,8 +117,9 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror /httpdocs/modules
 - **`mcp/sdk` pinado em 0.7.1** (pre-1.0) — v0.6→v0.7 renomeou classes (`HttpTransportHandler` → `StreamableHttpTransport`, etc.); subir de versão só em branch dedicada
 - **`php-http/discovery` é plugin composer** — `allow-plugins` já no composer.json; sem isso, `composer install` falha
 - **Deploy com troca de lib PRECISA incluir `vendor/`** — o comando padrão exclui vendor; usar comando "deploy com vendor/" listado em Commands
-- **`data/sessions/` e `data/cache/` devem ser excluídos do deploy e são 0700** — sessões dinâmicas + cache de discovery; excluir sempre
-- **`nt_mcp_upgrade()` apaga `mcp_elements.json`** — quando há mudança de schema (tools/prompts novos), isso força rediscovery. Também limpa legacy `mcp_state.json`
+- **`data/sessions/`, `data/cache/` e `data/session-locks/` devem ser excluídos do deploy e são 0700** — sessões dinâmicas + cache de discovery + locks; excluir sempre (o comando padrão já exclui `data/`)
+- **`nt_mcp_upgrade()` apaga `mcp_elements.json`** — quando há mudança de schema (tools/prompts novos), isso força rediscovery. Também limpa legacy `mcp_state.json` e reprovisiona `data/{cache,sessions,session-locks}` 0700. Sessões NÃO são afetadas (arquivos próprios). `nt_mcp_config()['version']` = `2.0.0` = `McpSdkAdapter::SERVER_VERSION` — subir a versão aqui é o que dispara o upgrade no WHMCS
+- **Versão de protocolo**: SDK 0.7.1 conhece `2024-11-05`, `2025-03-26`, `2025-06-18`, `2025-11-25` (header) e responde SEMPRE `2025-11-25` no initialize, qualquer que seja a pedida — não há negociação para baixo nem modo stateless. Transporte é stateful (sessão obrigatória após initialize)
 - **Audit fix IDs** — comentários `// SECURITY FIX (Fn)`/`(M-02)` referenciam findings da auditoria de production readiness; não remover. Com a migração pro SDK, os fixes F5 (lock_open_failed) e F6 (resposta vazia → -32603) do Server.php antigo ficaram obsoletos: não há mais lock global e o SDK responde sempre. M-02 (1 MB) continua em Server.php + `maxBodyBytes`
 - **Pending audit findings** — F-05, F-10, F-12 resolvidos. Resolvidos no refactor: F-07 (RateLimiter), F-11 (TokenHandler). Mitigados: F-06 (IpAllowlist), F-14 (SystemUrl — intencional)
 - **Semgrep PHP parser** — não suporta constructor promotion com `readonly` (PHP 8.2); RateLimiter gera PartialParsing warning, findings nesse arquivo podem ser incompletos

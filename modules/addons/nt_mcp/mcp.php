@@ -272,9 +272,10 @@ use NtMcp\Whmcs\SystemUrl;
 // SECURITY CONTROL (9.2 -- F13): TLS enforcement
 $terminalResponse = TlsEnforcer::enforce();
 
-// CORS headers for browser-based MCP clients (Claude.ai Custom Connectors)
+// CORS headers for browser-based MCP clients (Claude.ai Custom Connectors).
+// DELETE encerra a sessão MCP (SDK) — precisa constar no preflight.
 if ($terminalResponse === null) {
-    $corsDecision = CorsHandler::handle(['MCP-Session-Id'], 'POST, OPTIONS');
+    $corsDecision = CorsHandler::handle(['MCP-Session-Id'], 'POST, DELETE, OPTIONS');
     $corsDecision->emitHeaders();
     $terminalResponse = $corsDecision->terminalResponse();
 }

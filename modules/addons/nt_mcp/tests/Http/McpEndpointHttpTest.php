@@ -88,7 +88,7 @@ final class McpEndpointHttpTest extends TestCase
                 '',
                 [
                     'Access-Control-Allow-Origin' => 'https://client.example',
-                    'Access-Control-Allow-Methods' => 'POST, OPTIONS',
+                    'Access-Control-Allow-Methods' => 'POST, DELETE, OPTIONS',
                     'Access-Control-Expose-Headers' => 'MCP-Session-Id',
                     'Vary' => 'Origin',
                 ],
@@ -148,7 +148,7 @@ final class McpEndpointHttpTest extends TestCase
                 'OPTIONS',
                 [
                     'Origin' => 'https://client.example',
-                    'Access-Control-Request-Method' => 'DELETE',
+                    'Access-Control-Request-Method' => 'PUT',
                 ],
                 403,
                 '{"error":"Forbidden: origin not allowed."}',
@@ -334,6 +334,69 @@ final class McpEndpointHttpTest extends TestCase
         $callPayload = $this->assertSnapshotResponse($call, 3);
         $this->assertArrayHasKey('result', $callPayload, json_encode($callPayload));
         $this->assertSame($sessionId, $call['headers']['mcp-session-id'] ?? null);
+    }
+
+    /**
+     * DELETE encerra a sessão (SDK) e precisa passar pelo preflight do browser:
+     * OPTIONS com Access-Control-Request-Method: DELETE → 204 com o perfil
+     * POST, DELETE, OPTIONS; DELETE autenticado → 200; POST seguinte → 404.
+     */
+    public function test_real_delete_session_flow_with_browser_preflight(): void
+    {
+        $root = $this->sandbox(settings: ['nt_mcp_cors_origins' => 'https://client.example']);
+        $server = $this->startServer($root);
+        $headers = [
+            'Authorization' => 'Bearer ' . self::TOKEN,
+            'Origin' => 'https://client.example',
+            'Content-Type' => 'application/json',
+        ];
+
+        $preflight = $this->request($server, 'OPTIONS', [
+            'Origin' => 'https://client.example',
+            'Access-Control-Request-Method' => 'DELETE',
+            'Access-Control-Request-Headers' => 'authorization, mcp-session-id',
+        ]);
+        $this->assertSame(204, $preflight['status']);
+        $this->assertSame('POST, DELETE, OPTIONS', $preflight['headers']['access-control-allow-methods'] ?? null);
+
+        $initialize = $this->request($server, 'POST', $headers, json_encode([
+            'jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize',
+            'params' => ['protocolVersion' => '2025-06-18', 'capabilities' => new \stdClass(), 'clientInfo' => ['name' => 'p', 'version' => '1']],
+        ]));
+        $payload = $this->assertSnapshotResponse($initialize, 1);
+        $this->assertSame('2025-11-25', $payload['result']['protocolVersion'] ?? null);
+        $sessionId = $initialize['headers']['mcp-session-id'] ?? '';
+        $this->assertNotSame('', $sessionId);
+
+        $headers['MCP-Session-Id'] = $sessionId;
+        $delete = $this->request($server, 'DELETE', $headers);
+        $this->assertSame(200, $delete['status']);
+
+        $after = $this->request($server, 'POST', $headers, json_encode(['jsonrpc' => '2.0', 'id' => 2, 'method' => 'ping']));
+        $this->assertSame(404, $after['status']);
+        $this->assertSame(-32600, json_decode($after['body'], true)['error']['code'] ?? null);
+    }
+
+    public function test_real_invalid_protocol_version_header_is_400(): void
+    {
+        $root = $this->sandbox(settings: ['nt_mcp_cors_origins' => 'https://client.example']);
+        $server = $this->startServer($root);
+        $headers = ['Authorization' => 'Bearer ' . self::TOKEN, 'Origin' => 'https://client.example', 'Content-Type' => 'application/json'];
+
+        $initialize = $this->request($server, 'POST', $headers, json_encode([
+            'jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize',
+            'params' => ['protocolVersion' => '2025-06-18', 'capabilities' => new \stdClass(), 'clientInfo' => ['name' => 'p', 'version' => '1']],
+        ]));
+        $headers['MCP-Session-Id'] = $initialize['headers']['mcp-session-id'] ?? '';
+
+        $bad = $this->request($server, 'POST', $headers + ['MCP-Protocol-Version' => 'not-a-version'], json_encode(['jsonrpc' => '2.0', 'id' => 2, 'method' => 'ping']));
+        $this->assertSame(400, $bad['status']);
+        $this->assertSame('application/json', $bad['headers']['content-type'] ?? null);
+        $this->assertSame(-32602, json_decode($bad['body'], true)['error']['code'] ?? null);
+        $this->assertSame((string) strlen($bad['body']), $bad['headers']['content-length'] ?? null);
+
+        $good = $this->request($server, 'POST', $headers + ['MCP-Protocol-Version' => '2025-11-25'], json_encode(['jsonrpc' => '2.0', 'id' => 3, 'method' => 'ping']));
+        $this->assertSnapshotResponse($good, 3);
     }
 
     public function test_real_server_405_and_413_remain_protocol_responses(): void

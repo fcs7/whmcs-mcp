@@ -6,6 +6,7 @@ namespace NtMcp\Tests\Mcp;
 
 use NtMcp\Crm\MgCrmRepository;
 use NtMcp\Mcp\McpSdkAdapter;
+use NtMcp\Tests\Support\FakeAdminIdentityResolver;
 use NtMcp\Tests\Support\FakeCapsule;
 use NtMcp\Tests\Support\FakeCrmQueryPort;
 use NtMcp\Tests\Support\FakeCrmSchemaProbe;
@@ -165,9 +166,10 @@ final class McpSdkAdapterTest extends TestCase
 
         $content = $body['result']['content'][0];
         $this->assertSame('text', $content['type']);
-        // isError may be boolean or absent, both are acceptable for a successful result
-        $isError = $content['isError'] ?? false;
-        $this->assertFalse($isError);
+        // isError vive no nível do result (CallToolResult), não no content;
+        // a chave PRECISA existir — `?? false` deixaria passar a ausência dela.
+        $this->assertArrayHasKey('isError', $body['result']);
+        $this->assertFalse($body['result']['isError']);
 
         $text = json_decode($content['text'], true);
         $this->assertArrayHasKey('cmd', $text);
@@ -389,65 +391,202 @@ final class McpSdkAdapterTest extends TestCase
     #[Test]
     public function crm_repository_exception_returns_error_with_error_code(): void
     {
-        // This test verifies that when a CRM repository throws, the error is properly
-        // wrapped with error_code and doesn't leak sensitive information
-        // We test this indirectly by checking the adapter behavior with a normal adapter
-        // The actual CRM exception handling is tested in CrmTools-specific tests
+        // Repositório CRM REAL com port que falha: a tool whmcs_crm_get_contact
+        // deve devolver um CallToolResult isError:true com o envelope canônico
+        // (error_code), sem SQLSTATE, path, segredo ou mensagem crua.
+        $raw = new \RuntimeException(
+            'SQLSTATE[HY000] [1045] Access denied for user \'crm\'@\'10.0.0.5\' (using password: YES) '
+            . 'in /var/www/html/modules/addons/nt_mcp/src/Crm/CapsuleQueryPort.php'
+        );
+        $port = (new FakeCrmQueryPort())->failWithRaw($raw);
+        $repo = new MgCrmRepository(
+            new \NtMcp\Crm\CrmSchemaGuard(FakeCrmSchemaProbe::healthy()),
+            $port,
+            FakeAdminIdentityResolver::resolvingTo(7),
+        );
 
-        $api = new LocalApiClient('testadmin');
-        $api->setGates(['write' => true]);
-        // Make API callable throw on certain commands
-        $api->setCallable(static function ($cmd, $params) {
-            if ($cmd === 'GetContacts') {
-                throw new \RuntimeException('Database connection failed');
-            }
-            return ['result' => 'success'];
-        });
-        $api->setAdminIdResolver(static fn($_) => 7);
+        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir, $repo);
+        $sessionId = $this->initialize($adapter);
 
-        $adapter = new McpSdkAdapter($api, $this->capsule, $this->baseDir, $this->tempDir);
+        $response = $adapter->handle($this->call($sessionId, 3, 'whmcs_crm_get_contact', ['resource_id' => 1]));
+        $this->assertSame(200, $response->getStatusCode());
+        $full = (string) $response->getBody();
+        $body = json_decode($full, true);
+
+        $this->assertSame('2.0', $body['jsonrpc'] ?? null);
+        $this->assertSame(3, $body['id'] ?? null);
+        $this->assertArrayHasKey('result', $body);
+        $this->assertTrue($body['result']['isError'] ?? false);
+        $envelope = json_decode((string) ($body['result']['content'][0]['text'] ?? ''), true);
+        $this->assertSame('error', $envelope['result'] ?? null);
+        $this->assertSame('downstream', $envelope['error_code'] ?? null);
+        $this->assertNotEmpty($envelope['correlation_id'] ?? '');
+
+        foreach (['SQLSTATE', 'Access denied', 'password', '/var/www', 'CapsuleQueryPort', '10.0.0.5', 'RuntimeException'] as $leak) {
+            $this->assertStringNotContainsString($leak, $full, $leak);
+        }
+    }
+
+    #[Test]
+    public function crm_exception_from_repository_keeps_canonical_error_code(): void
+    {
+        // Port saudável e vazio: o repositório real lança resourceNotFound.
+        $port = new FakeCrmQueryPort();
+        $repo = new MgCrmRepository(
+            new \NtMcp\Crm\CrmSchemaGuard(FakeCrmSchemaProbe::healthy()),
+            $port,
+            FakeAdminIdentityResolver::resolvingTo(7),
+        );
+        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir, $repo);
+        $sessionId = $this->initialize($adapter);
+
+        $body = json_decode((string) $adapter->handle($this->call($sessionId, 4, 'whmcs_crm_get_contact', ['resource_id' => 99]))->getBody(), true);
+        $this->assertTrue($body['result']['isError'] ?? false);
+        $envelope = json_decode((string) $body['result']['content'][0]['text'], true);
+        $this->assertSame('crm_resource_not_found', $envelope['error_code'] ?? null);
+    }
+
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+
+    private function initialize(McpSdkAdapter $adapter, string $clientVersion = '2025-06-18', array $headers = []): string
+    {
+        $factory = new Psr17Factory();
+        $request = $factory->createServerRequest('POST', 'https://localhost/mcp.php')
+            ->withHeader('Content-Type', 'application/json');
+        foreach ($headers as $name => $value) {
+            $request = $request->withHeader($name, $value);
+        }
+        $request = $request->withBody($factory->createStream(json_encode([
+            'jsonrpc' => '2.0',
+            'id' => 1,
+            'method' => 'initialize',
+            'params' => [
+                'protocolVersion' => $clientVersion,
+                'capabilities' => (object) [],
+                'clientInfo' => ['name' => 'test', 'version' => '1'],
+            ],
+        ])));
+        $response = $adapter->handle($request);
+        $this->assertSame(200, $response->getStatusCode(), (string) $response->getBody());
+
+        return $response->getHeaderLine('Mcp-Session-Id');
+    }
+
+    private function call(string $sessionId, int $id, string $tool, array $arguments, array $headers = []): \Psr\Http\Message\ServerRequestInterface
+    {
+        return $this->rpc($sessionId, ['jsonrpc' => '2.0', 'id' => $id, 'method' => 'tools/call', 'params' => ['name' => $tool, 'arguments' => $arguments]], $headers);
+    }
+
+    private function rpc(string $sessionId, array $payload, array $headers = []): \Psr\Http\Message\ServerRequestInterface
+    {
+        $factory = new Psr17Factory();
+        $request = $factory->createServerRequest('POST', 'https://localhost/mcp.php')
+            ->withHeader('Content-Type', 'application/json')
+            ->withHeader('Mcp-Session-Id', $sessionId);
+        foreach ($headers as $name => $value) {
+            $request = $request->withHeader($name, $value);
+        }
+
+        return $request->withBody($factory->createStream(json_encode($payload)));
+    }
+
+    // ------------------------------------------------------------------
+    // MCP-Protocol-Version (B) e versão efetiva (D)
+    // ------------------------------------------------------------------
+
+    #[Test]
+    public function invalid_protocol_version_header_is_rejected_with_400(): void
+    {
+        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $sessionId = $this->initialize($adapter);
+
+        $response = $adapter->handle($this->rpc($sessionId, ['jsonrpc' => '2.0', 'id' => 2, 'method' => 'ping'], ['MCP-Protocol-Version' => 'not-a-version']));
+        $this->assertSame(400, $response->getStatusCode());
+        $body = json_decode((string) $response->getBody(), true);
+        $this->assertSame(-32602, $body['error']['code'] ?? null);
+        $this->assertStringContainsString('Unsupported', $body['error']['message'] ?? '');
+
+        $future = $adapter->handle($this->rpc($sessionId, ['jsonrpc' => '2.0', 'id' => 2, 'method' => 'ping'], ['MCP-Protocol-Version' => '2026-07-28']));
+        $this->assertSame(400, $future->getStatusCode(), 'versão inexistente no SDK 0.7.1 não é aceita');
+    }
+
+    #[Test]
+    public function every_sdk_protocol_version_is_accepted_in_header(): void
+    {
+        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $sessionId = $this->initialize($adapter);
+        $cases = array_map(static fn(\Mcp\Schema\Enum\ProtocolVersion $v) => $v->value, \Mcp\Schema\Enum\ProtocolVersion::cases());
+        $this->assertSame(['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25'], $cases);
+
+        foreach ($cases as $version) {
+            $response = $adapter->handle($this->rpc($sessionId, ['jsonrpc' => '2.0', 'id' => 2, 'method' => 'ping'], ['MCP-Protocol-Version' => $version]));
+            $this->assertSame(200, $response->getStatusCode(), $version);
+            $body = json_decode((string) $response->getBody(), true);
+            $this->assertSame(2, $body['id'] ?? null, $version);
+            $this->assertArrayHasKey('result', $body, $version);
+        }
+    }
+
+    #[Test]
+    public function absent_protocol_version_header_is_tolerated(): void
+    {
+        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $sessionId = $this->initialize($adapter);
+        $response = $adapter->handle($this->rpc($sessionId, ['jsonrpc' => '2.0', 'id' => 2, 'method' => 'ping']));
+        $this->assertSame(200, $response->getStatusCode());
+    }
+
+    #[Test]
+    public function initialize_always_answers_the_configured_protocol_version(): void
+    {
+        foreach (['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25'] as $asked) {
+            $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+            $factory = new Psr17Factory();
+            $response = $adapter->handle($factory->createServerRequest('POST', 'https://localhost/mcp.php')
+                ->withHeader('Content-Type', 'application/json')
+                ->withBody($factory->createStream(json_encode([
+                    'jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize',
+                    'params' => ['protocolVersion' => $asked, 'capabilities' => (object) [], 'clientInfo' => ['name' => 't', 'version' => '1']],
+                ]))));
+            $body = json_decode((string) $response->getBody(), true);
+            $this->assertSame('2025-11-25', $body['result']['protocolVersion'] ?? null, "cliente pediu {$asked}");
+            $this->assertSame(McpSdkAdapter::PROTOCOL_VERSION->value, $body['result']['protocolVersion']);
+            $this->assertSame(McpSdkAdapter::SERVER_VERSION, $body['result']['serverInfo']['version'] ?? null);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Sessões: permissões (C) e DELETE (E)
+    // ------------------------------------------------------------------
+
+    #[Test]
+    public function session_files_are_private_and_directory_is_0700(): void
+    {
+        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $sessionId = $this->initialize($adapter);
+        $adapter->handle($this->rpc($sessionId, ['jsonrpc' => '2.0', 'id' => 2, 'method' => 'tools/list'])); // força discovery → cache
+        clearstatcache();
+        $this->assertSame(0700, fileperms($this->tempDir . '/sessions') & 0777);
+        $this->assertSame(0600, fileperms($this->tempDir . '/sessions/' . $sessionId) & 0777);
+        $this->assertSame(0700, fileperms($this->tempDir . '/cache') & 0777);
+        $this->assertSame(0600, fileperms($this->tempDir . '/cache/' . McpSdkAdapter::ELEMENTS_CACHE_FILE) & 0777);
+    }
+
+    #[Test]
+    public function delete_ends_session_and_later_post_is_404(): void
+    {
+        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $sessionId = $this->initialize($adapter);
         $factory = new Psr17Factory();
 
-        $initRequest = $factory->createServerRequest('POST', 'https://localhost/mcp.php')
-            ->withHeader('Content-Type', 'application/json')
-            ->withBody($factory->createStream(json_encode([
-                'jsonrpc' => '2.0',
-                'id' => 1,
-                'method' => 'initialize',
-                'params' => [
-                    'protocolVersion' => '2025-06-18',
-                    'capabilities' => (object) [],
-                    'clientInfo' => ['name' => 'test', 'version' => '1'],
-                ],
-            ])));
+        $delete = $adapter->handle($factory->createServerRequest('DELETE', 'https://localhost/mcp.php')->withHeader('Mcp-Session-Id', $sessionId));
+        $this->assertSame(200, $delete->getStatusCode());
+        $this->assertFileDoesNotExist($this->tempDir . '/sessions/' . $sessionId);
 
-        $initResp = $adapter->handle($initRequest);
-        $sessionId = $initResp->getHeaderLine('Mcp-Session-Id');
-
-        $callRequest = $factory->createServerRequest('POST', 'https://localhost/mcp.php')
-            ->withHeader('Content-Type', 'application/json')
-            ->withHeader('Mcp-Session-Id', $sessionId)
-            ->withBody($factory->createStream(json_encode([
-                'jsonrpc' => '2.0',
-                'id' => 3,
-                'method' => 'tools/call',
-                'params' => [
-                    'name' => 'whmcs_get_client',
-                    'arguments' => ['clientid' => 1],
-                ],
-            ])));
-
-        $response = $adapter->handle($callRequest);
-        $body = json_decode((string) $response->getBody(), true);
-
-        $this->assertArrayHasKey('result', $body);
-        $content = $body['result']['content'][0] ?? null;
-        $this->assertNotNull($content);
-
-        // Error response should have error_code in the text
-        // Sensitive message should be redacted
-        $text = (string) $content['text'];
-        $this->assertStringNotContainsString('Database connection failed', $text);
+        $after = $adapter->handle($this->rpc($sessionId, ['jsonrpc' => '2.0', 'id' => 2, 'method' => 'ping']));
+        $this->assertSame(404, $after->getStatusCode());
     }
 
     #[Test]

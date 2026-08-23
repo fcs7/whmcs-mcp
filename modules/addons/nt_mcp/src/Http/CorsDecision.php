@@ -56,7 +56,7 @@ final class CorsDecision
     /** @param string[] $exposeHeaders @return array<string, string> */
     private static function closedHeaders(?string $origin, array $exposeHeaders, string $methods): array
     {
-        if (!in_array($methods, ['POST, OPTIONS', 'GET, POST, OPTIONS'], true)) {
+        if (!in_array($methods, ['POST, OPTIONS', 'POST, DELETE, OPTIONS', 'GET, POST, OPTIONS'], true)) {
             throw new \InvalidArgumentException('Unsupported closed CORS method profile.');
         }
         if ($exposeHeaders !== [] && $exposeHeaders !== ['MCP-Session-Id']) {

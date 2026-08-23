@@ -5,6 +5,7 @@ namespace NtMcp;
 use Nyholm\Psr7\Factory\Psr17Factory;
 use NtMcp\Mcp\McpSdkAdapter;
 use NtMcp\Mcp\ServerAdapterInterface;
+use NtMcp\Mcp\SessionLock;
 use NtMcp\Whmcs\CapsuleClient;
 use NtMcp\Whmcs\Diagnostics;
 use NtMcp\Whmcs\LocalApiClient;
@@ -25,6 +26,19 @@ class Server
     public static function setAdapterFactory(?callable $factory): void
     {
         self::$adapterFactory = $factory;
+    }
+
+    /** Diretório data/ (locks de sessão) — substituível em testes. */
+    private static ?string $dataDir = null;
+
+    public static function setDataDir(?string $dataDir): void
+    {
+        self::$dataDir = $dataDir;
+    }
+
+    public static function dataDir(): string
+    {
+        return self::$dataDir ?? (__DIR__ . '/../data');
     }
 
     public static function run(string $adminUser = ''): void
@@ -103,11 +117,54 @@ class Server
         // ------------------------------------------------------------------
         $request = self::buildRequest($method, $input);
 
-        $adapter = self::$adapterFactory !== null
-            ? (self::$adapterFactory)($adminUser)
-            : new McpSdkAdapter(new LocalApiClient($adminUser), new CapsuleClient(), __DIR__);
+        // ------------------------------------------------------------------
+        // 5. Lock por sessão. O FileSessionStore do SDK não serializa
+        //    requests concorrentes com o mesmo Mcp-Session-Id (lost update e
+        //    resposta de A entregue a B). Segura o lock até DEPOIS do emit:
+        //    no caminho SSE o body consome a sessão durante a emissão.
+        //    initialize (sem header) cria UUID novo e não precisa de lock.
+        //    Sem lock = fail-closed (503 + Retry-After), nunca "tenta assim".
+        // ------------------------------------------------------------------
+        $sessionHeader = trim((string) ($_SERVER['HTTP_MCP_SESSION_ID'] ?? ''));
+        $lock = null;
+        if ($sessionHeader !== '' || $method === 'DELETE') {
+            $lock = new SessionLock(self::dataDir() . '/session-locks');
+            if (!$lock->acquire($sessionHeader !== '' ? $sessionHeader : 'delete-without-session')) {
+                // mkdir/chmod/fopen quebrados (ownership, disco cheio) e contenção
+                // real são causas diferentes; só a segunda se resolve sozinha.
+                $context = $lock->lastFailure() === 'timeout' ? 'lock_busy' : 'lock_open_failed';
+                Diagnostics::event(Diagnostics::CATEGORY_RUNTIME, $context);
+                header('Retry-After: 1');
+                self::emitJson(503, ['error' => 'Session busy; retry']);
+                return;
+            }
+        }
 
-        self::emit($adapter->handle($request));
+        try {
+            $adapter = self::$adapterFactory !== null
+                ? (self::$adapterFactory)($adminUser)
+                : new McpSdkAdapter(new LocalApiClient($adminUser), new CapsuleClient(), __DIR__);
+
+            $response = $adapter->handle($request);
+
+            // ------------------------------------------------------------------
+            // 6. SSE é a única resposta que pode, ela mesma, esperar por um novo
+            //    POST na MESMA sessão (sampling/elicitation via ClientGateway: o
+            //    cliente responde num request separado, mesmo Mcp-Session-Id).
+            //    Segurar o lock durante a emissão travaria esse POST de volta —
+            //    deadlock, não 503 passageiro. Libera ANTES do corpo (stream)
+            //    começar a fluir; para respostas JSON normais o lock continua
+            //    seguro até depois do emit (é isso que fecha o bug de sessão A).
+            // ------------------------------------------------------------------
+            if ($lock !== null && str_contains($response->getHeaderLine('Content-Type'), 'text/event-stream')) {
+                $lock->release();
+                $lock = null;
+            }
+
+            self::emit($response);
+        } finally {
+            $lock?->release();
+        }
     }
 
     /** Array JSON no nível raiz (primeiro byte não-branco é `[`). */

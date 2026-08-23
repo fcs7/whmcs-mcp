@@ -11,6 +11,7 @@ require_once __DIR__ . '/vendor/autoload.php';
 
 use NtMcp\Admin\AdminController;
 use NtMcp\Admin\OAuthApprovalController;
+use NtMcp\Mcp\RuntimeDirs;
 use NtMcp\OAuth\OAuthMigration;
 use NtMcp\Security\CsrfProtection;
 use NtMcp\Whmcs\ActivityEvent;
@@ -26,7 +27,7 @@ function nt_mcp_config(): array
     return [
         'name'        => 'NT MCP Server',
         'description' => 'Model Context Protocol server para integrar Claude Code ao WHMCS.',
-        'version'     => '1.0.0',
+        'version'     => '2.0.0', // = McpSdkAdapter::SERVER_VERSION; mudar aqui dispara nt_mcp_upgrade()
         'author'      => 'NT Web',
         'language'    => 'english',
         'fields'      => [], // Configuracoes gerenciadas na tela _output
@@ -54,23 +55,14 @@ function nt_mcp_activate(): array
         ];
     }
 
-    // FASE 4c (9.3): o servidor grava sessoes + cache de discovery em data/. Se o
-    // diretorio nao for gravavel, o addon fica inoperante em runtime (HTTP 500
-    // sem contexto). Valida agora, na ativacao, em vez de por request.
-    $dataDir = __DIR__ . '/data';
-    if (!is_dir($dataDir)) {
-        @mkdir($dataDir, 0700, true);
-    }
-    foreach (['cache', 'sessions'] as $sub) {
-        if (!is_dir($dataDir . '/' . $sub)) {
-            @mkdir($dataDir . '/' . $sub, 0700, true);
-        }
-    }
-    if (!is_dir($dataDir) || !is_writable($dataDir)) {
+    // FASE 4c (9.3): o servidor grava sessoes, locks de sessao e cache de
+    // discovery em data/. Cria/endurece tudo para 0700 e valida agora, na
+    // ativacao, em vez de por request (HTTP 500 sem contexto).
+    $dirError = RuntimeDirs::provision(__DIR__ . '/data');
+    if ($dirError !== null) {
         return [
             'status'      => 'error',
-            'description' => 'NT MCP: diretorio data/ nao gravavel (' . $dataDir . '). '
-                . 'Ajuste as permissoes e reative.',
+            'description' => 'NT MCP: ' . $dirError . '. Ajuste as permissoes e reative.',
         ];
     }
 
@@ -144,14 +136,20 @@ function nt_mcp_upgrade(array $vars): array
     // FASE 2/4c (9.4): invalida o cache de elementos (tool registry). O cache é
     // persistido SEM TTL (nunca expira), então uma versão nova com tools
     // alteradas precisa forçar novo discovery — senão o servidor continuaria
-    // servindo o registro antigo. Deletar o arquivo também zera o estado de
-    // sessão (compartilha o mesmo arquivo); aceitável no upgrade — clientes
-    // reinicializam e o próximo request re-descobre e regrava.
+    // servindo o registro antigo. Sessões NÃO são afetadas: vivem em arquivos
+    // próprios em data/sessions/ (TTL 1h), separados do cache.
     foreach (['mcp_elements.json', 'mcp_state.json' /* legado php-mcp/server */] as $cacheFile) {
         $registryCache = __DIR__ . '/data/cache/' . $cacheFile;
         if (is_file($registryCache)) {
             @unlink($registryCache);
         }
+    }
+
+    // Instalações ativadas em versões anteriores não passaram pelo
+    // provisionamento endurecido (0700) nem têm data/session-locks.
+    $dirError = RuntimeDirs::provision(__DIR__ . '/data');
+    if ($dirError !== null) {
+        return ['status' => 'error', 'description' => 'NT MCP: ' . $dirError . '.'];
     }
 
     // D10: instalações que já existiam antes desta versão não têm a chave;

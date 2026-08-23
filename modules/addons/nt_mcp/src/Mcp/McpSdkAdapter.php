@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace NtMcp\Mcp;
 
+use Mcp\Capability\Discovery\DiscoveryState;
+use Mcp\Schema\Enum\ProtocolVersion;
 use Mcp\Server as McpServer;
-use Mcp\Server\Session\FileSessionStore;
+use Mcp\Server\Transport\Http\Middleware\ProtocolVersionMiddleware;
 use Mcp\Server\Transport\StreamableHttpTransport;
 use Nyholm\Psr7\Factory\Psr17Factory;
 use NtMcp\Crm\CapsuleAdminIdentityResolver;
@@ -35,13 +37,22 @@ use Psr\Log\LoggerInterface;
  * Adapter sobre o SDK oficial `mcp/sdk` (StreamableHttpTransport, PSR-7).
  *
  * Decisões fixas aqui (ver CLAUDE.md → "SDK oficial"):
- *  - `middleware: []` — o SDK instalaria CorsMiddleware (bloqueia cross-origin)
- *    e DnsRebindingProtection (só localhost). CORS, IP allowlist, TLS e
- *    Bearer são responsabilidade das camadas em mcp.php, ANTES deste adapter.
+ *  - Middleware do SDK: SÓ `ProtocolVersionMiddleware` (header
+ *    `MCP-Protocol-Version` inválido/não suportado → 400, como a spec exige;
+ *    ausente → aceito, cobre o initialize e clientes legados). CorsMiddleware
+ *    (bloqueia cross-origin) e DnsRebindingProtection (só localhost) ficam
+ *    fora: CORS, IP allowlist, TLS e Bearer são das camadas em mcp.php, ANTES
+ *    deste adapter. `middleware: []` derrubaria a validação de protocolo junto.
+ *  - Versão de protocolo explícita (`PROTOCOL_VERSION`): o SDK 0.7.1 responde
+ *    SEMPRE essa versão no initialize, independentemente da pedida pelo
+ *    cliente (não há negociação para baixo); as quatro do enum são aceitas no
+ *    header das requests seguintes. Não existe modo stateless nesta versão.
  *  - `maxBodyBytes` = 1 MiB (M-02) — o default do SDK é 4 MiB; o guard em
  *    Server.php rejeita antes, este é o segundo cinto.
- *  - Sessões em `data/sessions/` (um arquivo por sessão, TTL 1h, GC 1/20) —
- *    substitui o single-file cache + flock global da lib anterior.
+ *  - Sessões em `data/sessions/` (um arquivo por sessão, 0600, TTL 1h, GC 1/20)
+ *    via SecureFileSessionStore — substitui o single-file cache da lib
+ *    anterior. O flock global virou SessionLock por faixa (Server.php), porque
+ *    o store do SDK não serializa requests concorrentes da mesma sessão.
  *  - Discovery das Tools por atributo, cacheado em `data/cache/mcp_elements.json`
  *    (FileElementCache), invalidado em nt_mcp_upgrade().
  *  - Logger anônimo sem type-hints: WHMCS pré-carrega psr/log v1; o SDK nunca
@@ -54,6 +65,7 @@ final class McpSdkAdapter implements ServerAdapterInterface
     public const MAX_BODY_BYTES = 1048576;
     public const SESSION_TTL = 3600;
     public const ELEMENTS_CACHE_FILE = 'mcp_elements.json';
+    public const PROTOCOL_VERSION = ProtocolVersion::V2025_11_25;
 
     private readonly string $dataDir;
     private readonly MgCrmRepository $crm;
@@ -102,16 +114,17 @@ final class McpSdkAdapter implements ServerAdapterInterface
 
         $server = McpServer::builder()
             ->setServerInfo(self::SERVER_NAME, self::SERVER_VERSION)
+            ->setProtocolVersion(self::PROTOCOL_VERSION)
             ->setContainer($container)
             ->setLogger($logger)
             ->setDiscovery(
                 $this->baseDir,
                 ['Tools'],
                 [],
-                new FileElementCache($this->dataDir . '/cache/' . self::ELEMENTS_CACHE_FILE)
+                new FileElementCache($this->dataDir . '/cache/' . self::ELEMENTS_CACHE_FILE, DiscoveryState::class)
             )
             ->setSession(
-                new FileSessionStore($this->dataDir . '/sessions', self::SESSION_TTL),
+                new SecureFileSessionStore($this->dataDir . '/sessions', self::SESSION_TTL),
                 gcProbability: 1,
                 gcDivisor: 20,
             )
@@ -124,7 +137,7 @@ final class McpSdkAdapter implements ServerAdapterInterface
             $psr17,
             $psr17,
             $logger,
-            middleware: [],
+            middleware: [new ProtocolVersionMiddleware(null, $psr17, $psr17)],
             maxBodyBytes: self::MAX_BODY_BYTES,
         );
 
