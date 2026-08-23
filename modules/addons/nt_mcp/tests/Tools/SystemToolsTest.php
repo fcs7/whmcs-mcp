@@ -72,4 +72,62 @@ class SystemToolsTest extends TestCase
         $this->assertCount(2, $data['activity']['entry']);
     }
 
+    /**
+     * Regressão (2026-08-23): página inicial 100% "Hooks Debug" fazia a tool
+     * devolver `activity.entry` vazio mesmo com linha real logo na página
+     * seguinte. A sonda (2ª chamada em diante) pede um lote de 200, maior
+     * que o `limitnum` do chamador.
+     */
+    public function test_activity_log_advances_pages_when_the_first_page_is_all_noise(): void
+    {
+        $calls = [];
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$calls) {
+            $calls[] = $params;
+            if ($params['limitstart'] === 0) {
+                return [
+                    'result' => 'success',
+                    'totalresults' => 200,
+                    'activity' => ['entry' => array_fill(0, 25, ['id' => 1, 'description' => 'Hooks Debug: Noise'])],
+                ];
+            }
+
+            return [
+                'result' => 'success',
+                'totalresults' => 200,
+                'activity' => ['entry' => [
+                    ['id' => 2, 'description' => 'Hooks Debug: Noise'],
+                    ['id' => 3, 'description' => 'Admin Login - admin'],
+                ]],
+            ];
+        });
+
+        $data = json_decode($tools->getActivityLog(), true);
+
+        $this->assertCount(1, $data['activity']['entry']);
+        $this->assertSame('Admin Login - admin', $data['activity']['entry'][0]['description']);
+        $this->assertSame(26, $data['filtered_out']);
+        $this->assertSame(2, $data['pages_scanned']);
+        $this->assertArrayNotHasKey('scan_capped', $data);
+        $this->assertSame(0, $calls[0]['limitstart']);
+        $this->assertSame(25, $calls[0]['limitnum']);
+        $this->assertSame(25, $calls[1]['limitstart']);
+        $this->assertSame(200, $calls[1]['limitnum'], 'sonda pede lote maior que o limitnum do chamador');
+    }
+
+    /** Regressão (2026-08-23): teto de segurança precisa avisar quando o resultado fica parcial. */
+    public function test_activity_log_flags_scan_capped_when_the_call_ceiling_is_hit(): void
+    {
+        $tools = $this->makeTools(fn() => [
+            'result' => 'success',
+            'totalresults' => 1000000,
+            'activity' => ['entry' => array_fill(0, 25, ['id' => 1, 'description' => 'Hooks Debug: Noise'])],
+        ]);
+
+        $data = json_decode($tools->getActivityLog(), true);
+
+        $this->assertSame([], $data['activity']['entry']);
+        $this->assertSame(20, $data['pages_scanned']);
+        $this->assertTrue($data['scan_capped']);
+    }
+
 }

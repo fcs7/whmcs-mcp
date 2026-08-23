@@ -36,13 +36,19 @@ class SystemTools
      *
      * `hide_hook_debug` filtra CLIENT-SIDE as linhas de "Hooks Debug": a API só
      * oferece `description` como filtro positivo, não há como pedir "tudo menos
-     * isto". Por isso a paginação do WHMCS é ANTERIOR ao filtro — uma página
-     * pode voltar com menos de `limitnum` itens, e `totalresults` continua
-     * contando o ruído. `filtered_out` diz quantas linhas saíram desta página.
+     * isto". Como a paginação do WHMCS é ANTERIOR ao filtro, esta tool avança
+     * páginas automaticamente (até 20 chamadas, sondas em lotes de 200) até
+     * completar `limitnum` linhas reais ou esgotar `totalresults`;
+     * `pages_scanned` só aparece quando mais de 1 chamada foi necessária.
+     * `filtered_out` soma o ruído de TODAS as páginas varridas, não só a
+     * primeira. Se o teto bater antes de reunir `limitnum` linhas E ainda
+     * houver log pela frente, `scan_capped: true` avisa que o resultado é
+     * PARCIAL — não é o fim do log. `totalresults` continua vindo cru do
+     * WHMCS (inclui o ruído).
      *
      * @param string $date Filtro de data. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY não são aceitos por serem ambíguos.
      */
-    #[McpTool(name: 'whmcs_get_activity_log', description: 'Obtém log de atividades do sistema. Por padrão descarta as linhas de "Hooks Debug" (ruído de depuração) e informa quantas saíram em filtered_out; a paginação do WHMCS é anterior ao filtro, então a página pode vir com menos itens que limitnum.')]
+    #[McpTool(name: 'whmcs_get_activity_log', description: 'Obtém log de atividades do sistema. Por padrão descarta as linhas de "Hooks Debug" (ruído de depuração), avançando páginas automaticamente até reunir limitnum linhas reais; filtered_out soma o ruído de todas as páginas varridas; scan_capped:true avisa quando o teto de chamadas bateu antes de encontrar linhas suficientes.')]
     public function getActivityLog(int $limitnum = 25, int $limitstart = 0, string $user = '', string $description = '', string $date = '', bool $hide_hook_debug = true): string
     {
         $params = compact('limitnum', 'limitstart');
@@ -53,7 +59,51 @@ class SystemTools
         }
         $result = $this->api->call('GetActivityLog', $params);
         if ($hide_hook_debug) {
-            $result['filtered_out'] = ResponseRedactor::filterActivityLogNoise($result);
+            $filteredOut = ResponseRedactor::filterActivityLogNoise($result);
+            $kept = $result['activity']['entry'] ?? [];
+            $total = (int) ($result['totalresults'] ?? 0);
+            $nextStart = $limitstart + $limitnum;
+            $calls = 1;
+
+            // A paginação do WHMCS acontece ANTES do filtro: uma página cheia
+            // de "Hooks Debug" volta vazia mesmo havendo linhas reais mais
+            // adiante. Medido no desenv: log com 729.249 linhas, quase todas
+            // ruído — 20 chamadas de 25 linhas (500 no total) só encontraram
+            // 1 linha real. As sondas (2ª chamada em diante) pedem um lote
+            // maior que `limitnum` para cobrir mais log por chamada; a
+            // PRIMEIRA chamada preserva `limitnum`/`limitstart` do chamador.
+            $probeBatch = max($limitnum, 200);
+
+            while (count($kept) < $limitnum && $calls < 20 && $nextStart < $total) {
+                $pageParams = $params;
+                $pageParams['limitnum'] = $probeBatch;
+                $pageParams['limitstart'] = $nextStart;
+                $page = $this->api->call('GetActivityLog', $pageParams);
+                if (($page['result'] ?? null) === 'error') {
+                    break;
+                }
+                $filteredOut += ResponseRedactor::filterActivityLogNoise($page);
+                foreach (($page['activity']['entry'] ?? []) as $entry) {
+                    $kept[] = $entry;
+                    if (count($kept) >= $limitnum) {
+                        break;
+                    }
+                }
+                $calls++;
+                $nextStart += $probeBatch;
+            }
+
+            $result['activity']['entry'] = $kept;
+            $result['filtered_out'] = $filteredOut;
+            if ($calls > 1) {
+                $result['pages_scanned'] = $calls;
+            }
+            // Parou no teto de chamadas com ruído ainda pela frente: não é o
+            // fim do log, é o scan batendo no limite de segurança. O
+            // chamador precisa saber pra não achar que "acabaram as linhas".
+            if (count($kept) < $limitnum && $nextStart < $total) {
+                $result['scan_capped'] = true;
+            }
         }
         return ToolJson::encode($result);
     }

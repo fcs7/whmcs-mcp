@@ -490,6 +490,14 @@ class LocalApiClient
         // ---------------------------------------------------------------
         $outcome = is_array($result) ? ($result['result'] ?? $result['status'] ?? null) : null;
 
+        // `GetProject` (confirmado no desenv, ids 1 e 2) não devolve `result`
+        // NEM `status` no caso de sucesso — só `projectinfo` + `messages`. O
+        // caso de erro ("project not found") segue o envelope padrão
+        // `result: error`, então este fallback só cobre a lacuna do sucesso.
+        if ($outcome === null && $command === 'GetProject' && is_array($result) && array_key_exists('projectinfo', $result)) {
+            $outcome = 'success';
+        }
+
         if ($outcome === 'success') {
             self::auditLog(ActivityEvent::API_OK, null, $correlationId, $command);
             // Pipeline ÚNICO de saída (objetos -> escalar, JSON-string -> array,

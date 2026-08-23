@@ -178,6 +178,7 @@ class ResponseNormalizationTest extends TestCase
             'GetToDoItems'     => 'todoitems',
             'GetClientGroups'  => 'groups',
             'GetClientsAddons' => 'addons',
+            'GetPromotions'    => 'promotions',
         ] as $command => $key) {
             $result = ['result' => 'success', 'totalresults' => 0];
             ResponseRedactor::normalizeResponse($result, $command);

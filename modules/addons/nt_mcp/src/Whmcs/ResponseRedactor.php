@@ -81,6 +81,7 @@ final class ResponseRedactor
         'GetToDoItems'     => ['todoitems'],
         'GetClientGroups'  => ['groups'],
         'GetClientsAddons' => ['addons'],
+        'GetPromotions'    => ['promotions'],
     ];
 
     /**
