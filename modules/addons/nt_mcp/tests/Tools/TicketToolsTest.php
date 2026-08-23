@@ -371,4 +371,192 @@ class TicketToolsTest extends TestCase
 
         $this->assertArrayNotHasKey('display_id', $result['tickets']['ticket'][0]);
     }
+
+    public function test_list_tickets_multi_status_merges_and_deduplicates(): void
+    {
+        $callCount = 0;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$callCount) {
+            $callCount++;
+            $status = $params['status'] ?? '';
+
+            if ($status === 'Open') {
+                // 20 tickets, ids 1-20
+                $tickets = [];
+                for ($i = 1; $i <= 20; $i++) {
+                    $tickets[] = ['id' => $i, 'subject' => "Open $i", 'lastreply' => "2026-08-$i"];
+                }
+                return ['result' => 'success', 'tickets' => ['ticket' => $tickets], 'totalresults' => 20];
+            } else {
+                // Customer-Reply: ids 20, 21 (20 é repetido para testar dedup)
+                return [
+                    'result' => 'success',
+                    'tickets' => [
+                        'ticket' => [
+                            ['id' => 20, 'subject' => 'Reply 20', 'lastreply' => '2026-08-20'],
+                            ['id' => 21, 'subject' => 'Reply 21', 'lastreply' => '2026-08-21'],
+                        ]
+                    ],
+                    'totalresults' => 2
+                ];
+            }
+        });
+
+        $json = $tools->listTickets(status: 'Open,Customer-Reply', limitnum: 100);
+        $result = json_decode($json, true);
+
+        // Verificar que são 21 items (20 + 1 novo, 20 é dedup)
+        $this->assertCount(21, $result['tickets']['ticket']);
+
+        // Verificar statuses_queried
+        $this->assertSame(['Open', 'Customer-Reply'], $result['statuses_queried']);
+
+        // Verificar totalresults é a soma (20 + 2)
+        $this->assertSame(22, $result['totalresults']);
+
+        // Duas chamadas foram feitas (uma per status)
+        $this->assertSame(2, $callCount);
+    }
+
+    public function test_list_tickets_single_status_uses_compatible_path(): void
+    {
+        $capturedParams = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$capturedParams) {
+            $capturedParams = $params;
+            return ['result' => 'success', 'tickets' => ['ticket' => []], 'totalresults' => 0];
+        });
+
+        $tools->listTickets(status: 'Open');
+
+        // Single status: deve fazer uma chamada compatível
+        $this->assertSame('Open', $capturedParams['status']);
+        $this->assertArrayNotHasKey('statuses_queried', json_decode($tools->listTickets(status: 'Open'), true));
+    }
+
+    public function test_list_tickets_default_status_is_open_customer_reply(): void
+    {
+        $json = '';
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$json) {
+            static $count = 0;
+            $count++;
+
+            if ($count === 1) {
+                // Primeira chamada: Open
+                return ['result' => 'success', 'tickets' => ['ticket' => []], 'totalresults' => 0];
+            } else {
+                // Segunda chamada: Customer-Reply
+                return ['result' => 'success', 'tickets' => ['ticket' => []], 'totalresults' => 0];
+            }
+        });
+
+        // Sem especificar status: deve usar Open,Customer-Reply
+        $json = $tools->listTickets();
+        $result = json_decode($json, true);
+
+        $this->assertArrayHasKey('statuses_queried', $result);
+        $this->assertSame(['Open', 'Customer-Reply'], $result['statuses_queried']);
+    }
+
+    public function test_list_tickets_with_awaiting_alias(): void
+    {
+        $json = '';
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$json) {
+            static $count = 0;
+            $count++;
+
+            if ($count === 1) {
+                return ['result' => 'success', 'tickets' => ['ticket' => []], 'totalresults' => 0];
+            } else {
+                return ['result' => 'success', 'tickets' => ['ticket' => []], 'totalresults' => 0];
+            }
+        });
+
+        // Alias "awaiting" deve expandir para Open,Customer-Reply
+        $json = $tools->listTickets(status: 'awaiting');
+        $result = json_decode($json, true);
+
+        $this->assertSame(['Open', 'Customer-Reply'], $result['statuses_queried']);
+    }
+
+    public function test_list_tickets_rejects_more_than_4_statuses(): void
+    {
+        $tools = $this->makeTools();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Máximo 4 status');
+
+        $tools->listTickets(status: 'Open,Customer-Reply,Answered,On Hold,Closed');
+    }
+
+    public function test_list_tickets_hide_sample_removes_guest_with_markers(): void
+    {
+        $tools = $this->makeTools(function () {
+            return [
+                'result' => 'success',
+                'tickets' => [
+                    'ticket' => [
+                        // Guest + marker: remove
+                        ['id' => 1, 'userid' => 0, 'subject' => 'This is a sample ticket', 'name' => 'Guest'],
+                        // Guest + no marker: keep
+                        ['id' => 2, 'userid' => 0, 'subject' => 'Real ticket', 'name' => 'Guest'],
+                        // Non-guest + marker: keep (não é sample)
+                        ['id' => 3, 'userid' => 5, 'subject' => 'This is a sample ticket', 'name' => 'Client'],
+                    ]
+                ],
+                'totalresults' => 3
+            ];
+        });
+
+        $json = $tools->listTickets(hide_sample: true);
+        $result = json_decode($json, true);
+
+        // Deve ter 2 tickets (removed id=1)
+        $this->assertCount(2, $result['tickets']['ticket']);
+
+        // IDs 2 e 3 devem estar presentes
+        $ids = array_column($result['tickets']['ticket'], 'id');
+        $this->assertContains(2, $ids);
+        $this->assertContains(3, $ids);
+        $this->assertNotContains(1, $ids);
+
+        // hidden_sample_count = 1
+        $this->assertSame(1, $result['hidden_sample_count']);
+    }
+
+    public function test_list_tickets_hide_sample_false_keeps_all(): void
+    {
+        $tools = $this->makeTools(function () {
+            return [
+                'result' => 'success',
+                'tickets' => [
+                    'ticket' => [
+                        ['id' => 1, 'userid' => 0, 'subject' => 'This is a sample ticket'],
+                    ]
+                ],
+                'totalresults' => 1
+            ];
+        });
+
+        $json = $tools->listTickets(hide_sample: false);
+        $result = json_decode($json, true);
+
+        $this->assertCount(1, $result['tickets']['ticket']);
+        $this->assertSame(0, $result['hidden_sample_count']);
+    }
+
+    public function test_list_tickets_adds_hidden_sample_count_field(): void
+    {
+        $tools = $this->makeTools(function () {
+            return [
+                'result' => 'success',
+                'tickets' => ['ticket' => []],
+                'totalresults' => 0
+            ];
+        });
+
+        $json = $tools->listTickets();
+        $result = json_decode($json, true);
+
+        $this->assertArrayHasKey('hidden_sample_count', $result);
+        $this->assertSame(0, $result['hidden_sample_count']);
+    }
 }

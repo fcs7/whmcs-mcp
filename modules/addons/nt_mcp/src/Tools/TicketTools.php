@@ -8,17 +8,108 @@ use Mcp\Capability\Attribute\McpTool;
 
 class TicketTools
 {
+    /** Marcadores (lowercase) de tickets de amostra/teste — só valem para tickets guest (userid=0). */
+    private const SAMPLE_MARKERS = ['this is a sample ticket', 'prestus'];
+
     public function __construct(private readonly LocalApiClient $api) {}
 
-    #[McpTool(name: 'whmcs_list_tickets', description: 'Lista tickets de suporte. O campo userid de cada ticket é o clientid de whmcs_get_client (userid=0 = guest).')]
-    public function listTickets(int $clientid = 0, string $status = 'Open', int $limitnum = 25, int $deptid = 0, int $limitstart = 0, string $subject = ''): string
+    /** Status: lista separada por vírgula, ex. "Open,Customer-Reply". Alias "awaiting" expande automaticamente. */
+    #[McpTool(name: 'whmcs_list_tickets', description: 'Lista tickets de suporte. Por padrão une Open+Customer-Reply. O campo userid de cada ticket é o clientid de whmcs_get_client (userid=0 = guest). Não traz corpo — use whmcs_get_ticket. flag = id do admin atribuído (0 = ninguém).')]
+    public function listTickets(int $clientid = 0, string $status = 'Open,Customer-Reply', int $limitnum = 25, int $deptid = 0, int $limitstart = 0, string $subject = '', bool $hide_sample = true): string
     {
-        $params = ['limitnum' => $limitnum, 'status' => $status];
-        if ($clientid > 0) $params['clientid'] = $clientid;
-        if ($deptid > 0) $params['deptid'] = $deptid;
-        if ($limitstart > 0) $params['limitstart'] = $limitstart;
-        if ($subject !== '') $params['subject'] = $subject;
-        $result = $this->api->call('GetTickets', $params);
+        // Expandir alias e split
+        if (strtolower(trim($status)) === 'awaiting') {
+            $status = 'Open,Customer-Reply';
+        }
+        $statuses = array_unique(array_filter(array_map('trim', explode(',', $status))));
+
+        if (count($statuses) > 4) {
+            throw new \InvalidArgumentException('Máximo 4 status; fornecido ' . count($statuses));
+        }
+
+        // Se um só status: comportamento compatível (uma chamada)
+        $isMultiStatus = count($statuses) > 1;
+        $result = null;
+        $totalresults = 0;
+        $hidden_sample_count = 0;
+
+        if (!$isMultiStatus) {
+            // Uma chamada só
+            $params = ['limitnum' => $limitnum, 'status' => reset($statuses)];
+            if ($clientid > 0) $params['clientid'] = $clientid;
+            if ($deptid > 0) $params['deptid'] = $deptid;
+            if ($limitstart > 0) $params['limitstart'] = $limitstart;
+            if ($subject !== '') $params['subject'] = $subject;
+            $result = $this->api->call('GetTickets', $params);
+            $totalresults = (int)($result['totalresults'] ?? 0);
+        } else {
+            // Múltiplos status: uma chamada por status, mesclar
+            $allTickets = [];
+            $ticketIds = [];
+
+            foreach ($statuses as $st) {
+                $params = ['limitnum' => $limitnum, 'status' => $st];
+                if ($clientid > 0) $params['clientid'] = $clientid;
+                if ($deptid > 0) $params['deptid'] = $deptid;
+                if ($limitstart > 0) $params['limitstart'] = $limitstart;
+                if ($subject !== '') $params['subject'] = $subject;
+
+                $resp = $this->api->call('GetTickets', $params);
+
+                // Envelope de erro: retornar direto
+                if (($resp['result'] ?? null) === 'error') {
+                    return ToolJson::encode($resp);
+                }
+
+                $totalresults += (int)($resp['totalresults'] ?? 0);
+
+                // Coletar e dedupar
+                if (isset($resp['tickets']['ticket']) && is_array($resp['tickets']['ticket'])) {
+                    foreach ($resp['tickets']['ticket'] as $ticket) {
+                        $id = (int)($ticket['id'] ?? 0);
+                        if ($id > 0 && !isset($ticketIds[$id])) {
+                            $allTickets[] = $ticket;
+                            $ticketIds[$id] = true;
+                        }
+                    }
+                }
+            }
+
+            // Ordenar por lastreply desc (string sort)
+            usort($allTickets, function ($a, $b) {
+                $aDate = ($a['lastreply'] ?? '');
+                $bDate = ($b['lastreply'] ?? '');
+                return -strcmp($aDate, $bDate);
+            });
+
+            // Filtro sample
+            if ($hide_sample) {
+                $allTickets = $this->filterSampleTickets($allTickets, $hidden_sample_count);
+            }
+
+            // Cortar em limitnum
+            $allTickets = array_slice($allTickets, 0, $limitnum);
+
+            // Reindexar para array JSON
+            $result = [
+                'result' => 'success',
+                'tickets' => ['ticket' => array_values($allTickets)],
+                'totalresults' => $totalresults,
+                'statuses_queried' => array_values($statuses),
+            ];
+        }
+
+        // Adicionar hidden_sample_count (sempre, mesmo em single-status)
+        if (isset($result['tickets']['ticket']) && is_array($result['tickets']['ticket'])) {
+            if (!$isMultiStatus && $hide_sample) {
+                // Single status: aplicar filtro também
+                $tickets = $result['tickets']['ticket'];
+                $tickets = $this->filterSampleTickets($tickets, $hidden_sample_count);
+                $result['tickets']['ticket'] = array_values($tickets);
+            }
+            $result['hidden_sample_count'] = $hidden_sample_count;
+        }
+
         $this->addDisplayIds($result);
         return ToolJson::encode($result);
     }
@@ -86,6 +177,39 @@ class TicketTools
         return ToolJson::encode($this->api->call('UpdateTicket', $params));
     }
 
+    /** Remove tickets de amostra (guest + subject/name/email com markers). Incrementa counter. */
+    private function filterSampleTickets(array $tickets, int &$hiddenCount): array
+    {
+        $filtered = [];
+        $hiddenCount = 0;
+
+        foreach ($tickets as $ticket) {
+            $userid = (int)($ticket['userid'] ?? 0);
+            if ($userid === 0) {
+                // Guest ticket: verificar markers
+                $text = strtolower(
+                    ($ticket['subject'] ?? '') . ' ' .
+                    ($ticket['name'] ?? '') . ' ' .
+                    ($ticket['email'] ?? '')
+                );
+                $found = false;
+                foreach (self::SAMPLE_MARKERS as $marker) {
+                    if (strpos($text, $marker) !== false) {
+                        $found = true;
+                        break;
+                    }
+                }
+                if ($found) {
+                    $hiddenCount++;
+                    continue;
+                }
+            }
+            $filtered[] = $ticket;
+        }
+
+        return $filtered;
+    }
+
     /** Adiciona display_id (valor de tid) quando disponível em tickets individuais ou em listas. */
     private function addDisplayIds(array &$result): void
     {
@@ -96,6 +220,7 @@ class TicketTools
                     $ticket['display_id'] = $ticket['tid'];
                 }
             }
+            unset($ticket);
         }
         // Resposta de getTicket: tid na raiz
         if (isset($result['tid']) && $result['tid'] !== '') {

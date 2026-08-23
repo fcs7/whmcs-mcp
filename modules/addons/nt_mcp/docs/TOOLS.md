@@ -145,7 +145,7 @@ Legenda de risco:
 |---|------|---------|------|---------|-------|-----------|
 | 55 | `whmcs_get_support_departments` | GetSupportDepartments | READ | on | 🟢 | Departamentos de suporte |
 | 56 | `whmcs_get_support_statuses` | GetSupportStatuses | READ | on | 🟢 | Status de tickets |
-| 57 | `whmcs_get_ticket_counts` | GetTicketCounts | READ | on | 🟢 | Contagem de tickets por status |
+| 57 | `whmcs_get_ticket_counts` | GetTicketCounts | READ | on | 🟢 | Contagem de tickets; department_scope_limited indica escopo limitado |
 
 ## SystemTools (6)
 
@@ -162,7 +162,7 @@ Legenda de risco:
 
 | # | Tool | Comando | Gate | Default | Risco | Descrição |
 |---|------|---------|------|---------|-------|-----------|
-| 64 | `whmcs_list_tickets` | GetTickets | READ | on | 🟢 | Lista tickets de suporte; userid de cada ticket = clientid de whmcs_get_client |
+| 64 | `whmcs_list_tickets` | GetTickets | READ | on | 🟢 | Lista tickets; default une Open+Customer-Reply; hide_sample remove amostra; flag = id do admin |
 | 65 | `whmcs_get_ticket` | GetTicket | READ | on | 🟢 | Detalhes e histórico; use ticketid (id interno) OU tid (número exibido) |
 | 66 | `whmcs_open_ticket` | OpenTicket | WRITE | on | 🟡 | Abre novo ticket; notify_client=true requer COMMS |
 | 67 | `whmcs_reply_ticket` | AddTicketReply | WRITE | on | 🟡 | Responde ticket; notify_client=true requer COMMS |
