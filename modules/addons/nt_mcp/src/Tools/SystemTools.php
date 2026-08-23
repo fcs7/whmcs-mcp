@@ -6,6 +6,7 @@ use NtMcp\Whmcs\DateNormalizer;
 use NtMcp\Whmcs\LocalApiClient;
 use NtMcp\Whmcs\LocalizedDate;
 use NtMcp\Whmcs\ResponseRedactor;
+use NtMcp\Whmcs\SystemUrl;
 use NtMcp\Whmcs\ToolJson;
 use Mcp\Capability\Attribute\McpTool;
 
@@ -114,10 +115,18 @@ class SystemTools
         return ToolJson::encode($result);
     }
 
-    #[McpTool(name: 'whmcs_get_admin_details', description: 'Obtém detalhes do administrador autenticado')]
+    #[McpTool(name: 'whmcs_get_admin_details', description: 'Obtém detalhes do administrador autenticado. Inclui system_host (hostname do WHMCS) para o cliente validar o ambiente no boot.')]
     public function getAdminDetails(): string
     {
         $result = $this->api->call('GetAdminDetails', []);
+
+        // Enriquece com hostname do WHMCS para validação de ambiente cliente-side.
+        try {
+            $result['system_host'] = SystemUrl::host();
+        } catch (\Throwable $_ex) {
+            // Falha na resolução do hostname não pode derrubar a tool
+            $result['system_host'] = null;
+        }
 
         // Adiciona capabilidades disponíveis
         $result['capabilities'] = [

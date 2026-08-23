@@ -44,6 +44,15 @@ final class SystemUrl
     }
 
     /**
+     * Extract the hostname from the resolved system URL (e.g. "desenv.ntweb.com.br").
+     * Lowercase for consistent comparison.
+     */
+    public static function host(): string
+    {
+        return strtolower((string) parse_url(self::resolve(), PHP_URL_HOST));
+    }
+
+    /**
      * Full URL to the MCP endpoint.
      */
     public static function mcpUrl(): string

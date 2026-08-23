@@ -9,6 +9,7 @@ use NtMcp\Mcp\SessionLock;
 use NtMcp\Whmcs\CapsuleClient;
 use NtMcp\Whmcs\Diagnostics;
 use NtMcp\Whmcs\LocalApiClient;
+use NtMcp\Whmcs\SystemUrl;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 
@@ -41,6 +42,24 @@ class Server
         return self::$dataDir ?? (__DIR__ . '/../data');
     }
 
+    /**
+     * Verifica se o hostname do request não corresponde ao esperado.
+     * Usado para isolamento de desenv/prod quando um token é reaproveitado.
+     *
+     * @param string|null $configured hostname esperado (da config); trim'd e lowercase.
+     *                               Vazio/null significa "qualquer hostname é válido".
+     * @param string $actual hostname real do request (já lowercase)
+     * @return bool true se houver mismatch (falha-fechada)
+     */
+    public static function expectedHostMismatch(?string $configured, string $actual): bool
+    {
+        $configured = trim($configured ?? '');
+        if ($configured === '') {
+            return false;
+        }
+        return strtolower($configured) !== $actual;
+    }
+
     public static function run(string $adminUser = ''): void
     {
         // ------------------------------------------------------------------
@@ -61,6 +80,28 @@ class Server
             if ($adminUser === '') {
                 Diagnostics::event(Diagnostics::CATEGORY_AUTH, 'admin_user_unresolved');
                 self::emitJson(401, ['error' => 'Unauthorized: no admin user configured']);
+                return;
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // 0b. Isolamento de ambiente: verifica se o hostname do request
+        //     corresponde ao esperado na config. Evita que um token
+        //     reaproveitado acesse um WHMCS errado sem ninguém perceber.
+        // ------------------------------------------------------------------
+        if (class_exists('\WHMCS\Config\Setting')) {
+            try {
+                $expectedHost = trim(\WHMCS\Config\Setting::getValue('nt_mcp_expected_host') ?? '');
+                $actualHost = SystemUrl::host();
+                if (self::expectedHostMismatch($expectedHost, $actualHost)) {
+                    Diagnostics::event(Diagnostics::CATEGORY_CONFIG_READ, 'host_mismatch');
+                    self::emitJson(403, ['error' => 'Forbidden: host mismatch', 'code' => 'host_mismatch']);
+                    return;
+                }
+            } catch (\Throwable $_ex) {
+                // Config read or host resolution failed — treat as mismatch (fail-closed)
+                Diagnostics::event(Diagnostics::CATEGORY_CONFIG_READ, 'host_mismatch');
+                self::emitJson(403, ['error' => 'Forbidden: host mismatch', 'code' => 'host_mismatch']);
                 return;
             }
         }

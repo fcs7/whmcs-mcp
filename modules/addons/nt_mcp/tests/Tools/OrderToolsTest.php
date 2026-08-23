@@ -340,4 +340,56 @@ class OrderToolsTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
         $this->makeTools(fn() => $this->catalogFixture())->getProducts(fields: 'x');
     }
+
+    // ---------------------------------------------------------------
+    // product_url stripping
+    // ---------------------------------------------------------------
+
+    /** Por padrão, product_url é removido para reduzir payload. */
+    public function test_get_products_strips_product_url_by_default(): void
+    {
+        $tools = $this->makeTools(fn() => ['result' => 'success', 'products' => ['product' => [
+            ['pid' => 1, 'name' => 'NT VPS', 'product_url' => 'https://example.com/vps'],
+        ]]]);
+
+        $data = json_decode($tools->getProducts(fields: 'full'), true);
+        $product = $data['products']['product'][0];
+
+        $this->assertArrayNotHasKey('product_url', $product, 'product_url deve estar ausente por padrão');
+        $this->assertSame('NT VPS', $product['name']);
+    }
+
+    /** product_url é preservado quando include_urls=true. */
+    public function test_get_products_keeps_product_url_when_include_urls_true(): void
+    {
+        $tools = $this->makeTools(fn() => ['result' => 'success', 'products' => ['product' => [
+            ['pid' => 1, 'name' => 'NT VPS', 'product_url' => 'https://example.com/vps'],
+        ]]]);
+
+        $data = json_decode($tools->getProducts(fields: 'full', include_urls: true), true);
+        $product = $data['products']['product'][0];
+
+        $this->assertArrayHasKey('product_url', $product, 'product_url deve estar presente com include_urls=true');
+        $this->assertSame('https://example.com/vps', $product['product_url']);
+    }
+
+    /** Guarda contra is_array, elementos não-array e keys ausentes. */
+    public function test_get_products_handles_malformed_products_gracefully(): void
+    {
+        // products.product não é array
+        $tools = $this->makeTools(fn() => ['result' => 'success', 'products' => ['product' => 'not-an-array']]);
+        $data = json_decode($tools->getProducts(), true);
+        $this->assertSame('not-an-array', $data['products']['product']);
+
+        // products.product ausente
+        $tools = $this->makeTools(fn() => ['result' => 'success', 'products' => []]);
+        $data = json_decode($tools->getProducts(), true);
+        $this->assertArrayNotHasKey('product', $data['products']);
+
+        // products ausente
+        $tools = $this->makeTools(fn() => ['result' => 'success']);
+        $data = json_decode($tools->getProducts(), true);
+        $this->assertArrayNotHasKey('products', $data);
+    }
+
 }

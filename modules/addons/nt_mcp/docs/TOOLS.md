@@ -103,7 +103,7 @@ Legenda de risco:
 | 32 | `whmcs_get_order` | GetOrders | READ | on | 🟢 | Detalhes de pedido |
 | 33 | `whmcs_cancel_order` | CancelOrder | DESTRUCTIVE | ⛔ off | 🟠 | **Cancela pedido — irreversível, exige confirm=true** |
 | 34 | `whmcs_pending_order` | PendingOrder | WRITE | on | 🟡 | Coloca pedido em status pendente |
-| 35 | `whmcs_get_products` | GetProducts | READ | on | 🟢 | Lista produtos com fields=lite, paginação local e sem ciclos desativados |
+| 35 | `whmcs_get_products` | GetProducts | READ | on | 🟢 | Lista produtos com fields=lite (default), paginação local, sem ciclos desativados; `product_url` só com `fields=full` + `include_urls=true` |
 | 36 | `whmcs_get_order_statuses` | GetOrderStatuses | READ | on | 🟢 | Status de pedido configurados + contagem |
 | 37 | `whmcs_get_promotions` | GetPromotions | READ | on | 🟢 | Promoções/cupons; filtro opcional por código |
 
@@ -153,7 +153,7 @@ Legenda de risco:
 |---|------|---------|------|---------|-------|-----------|
 | 58 | `whmcs_get_stats` | GetStats | READ | on | 🟢 | Estatísticas gerais |
 | 59 | `whmcs_get_activity_log` | GetActivityLog | READ | on | 🟢 | Log de atividades (filtra Hooks Debug, auto-scan de páginas ruidosas, `scan_capped` se o teto bater) |
-| 60 | `whmcs_get_admin_details` | GetAdminDetails | READ | on | 🟢 | Admin autenticado |
+| 60 | `whmcs_get_admin_details` | GetAdminDetails | READ | on | 🟢 | Admin autenticado; inclui `system_host` (hostname) para validação de ambiente |
 | 61 | `whmcs_get_todo_items` | GetToDoItems | READ | on | 🟢 | Itens To-Do administrativos |
 | 62 | `whmcs_update_todo_item` | UpdateToDoItem | WRITE | on | 🟡 | Atualiza item To-Do (interno) |
 | 63 | `whmcs_get_currencies` | GetCurrencies | READ | on | 🟢 | Moedas configuradas |

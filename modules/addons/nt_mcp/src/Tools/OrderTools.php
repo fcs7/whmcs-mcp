@@ -85,8 +85,11 @@ class OrderTools
      * e mantendo apenas chaves essenciais (pid, gid, name, type, module, paytype,
      * description_plain, pricing reduzido). Ciclos com preço negativo são sempre
      * removidos (ambos os modes).
+     *
+     * `product_url` só é retornado quando `include_urls=true` (e `fields=full`);
+     * por padrão é removido para reduzir tamanho do payload.
      */
-    #[McpTool(name: 'whmcs_get_products', description: 'Lista o catálogo de produtos/serviços com opções de filtro, paginação local e modo lite. Por padrão a descrição vem como texto truncado em description_plain; use full_description=true para o HTML completo. Use fields=lite para reduzir payload (sem customfields, configoptions, product_url).')]
+    #[McpTool(name: 'whmcs_get_products', description: 'Lista o catálogo de produtos/serviços com opções de filtro, paginação local e modo lite. Por padrão a descrição vem como texto truncado em description_plain; use full_description=true para o HTML completo. Use fields=lite para reduzir payload (sem customfields, configoptions, product_url). product_url só aparece com fields=full e include_urls=true.')]
     public function getProducts(
         int $gid = 0,
         int $pid = 0,
@@ -94,7 +97,8 @@ class OrderTools
         bool $full_description = false,
         string $fields = 'lite',
         int $limit = 20,
-        int $limitstart = 0
+        int $limitstart = 0,
+        bool $include_urls = false
     ): string {
         if (!in_array($fields, ['lite', 'full'], true)) {
             throw new \InvalidArgumentException("fields deve ser 'lite' ou 'full', recebido: " . var_export($fields, true));
@@ -122,9 +126,28 @@ class OrderTools
         ResponseRedactor::removeNegativePrices($result);
         if ($fields === 'lite') {
             ResponseRedactor::productLiteView($result);
+        } elseif (!$include_urls) {
+            $this->stripProductUrls($result);
         }
         ResponseRedactor::paginateProducts($result, $limit, $limitstart, $gid === 0 && $pid === 0 && $module === '');
         return ToolJson::encode($result);
+    }
+
+    /**
+     * Remove product_url de cada produto do resultado (reduz payload).
+     */
+    private function stripProductUrls(array &$result): void
+    {
+        if (!isset($result['products']['product']) || !is_array($result['products']['product'])) {
+            return;
+        }
+
+        foreach ($result['products']['product'] as $key => &$product) {
+            if (is_array($product)) {
+                unset($product['product_url']);
+            }
+        }
+        unset($product);
     }
 
     #[McpTool(name: 'whmcs_get_order_statuses', description: 'Lista os status de pedido configurados no WHMCS, com a contagem de pedidos em cada um')]

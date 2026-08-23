@@ -250,4 +250,23 @@ class SystemToolsTest extends TestCase
         $this->assertSame('snapshot; não é histórico', $result['note']);
     }
 
+    /** Regressão: getAdminDetails enriquece com hostname do WHMCS (system_host) para validação de ambiente. */
+    public function test_get_admin_details_includes_system_host_as_string_or_null(): void
+    {
+        $tools = $this->makeTools(fn() => [
+            'result' => 'success',
+            'adminid' => 1,
+            'username' => 'admin',
+            'email' => 'admin@example.com',
+        ]);
+
+        $result = json_decode($tools->getAdminDetails(), true);
+
+        $this->assertArrayHasKey('system_host', $result);
+        $this->assertTrue(
+            is_string($result['system_host']) || $result['system_host'] === null,
+            'system_host deve ser string ou null'
+        );
+    }
+
 }
