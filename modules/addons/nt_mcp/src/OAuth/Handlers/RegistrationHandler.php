@@ -16,9 +16,16 @@ use NtMcp\Security\RateLimiter;
  */
 final class RegistrationHandler
 {
+    // RFC 8252 native app redirect schemes — allowlist fechada.
+    private const NATIVE_APP_SCHEMES = ['cursor', 'vscode'];
+
     public static function handle(): void
     {
-        (new RateLimiter('nt_mcp_reg_rl_', 20, 3600, 'reg_', 'Too many client registrations. Maximum 20 per hour.'))->enforce();
+        $terminal = (new RateLimiter('nt_mcp_reg_rl_', 20, 3600, 'reg_', 'Too many client registrations. Maximum 20 per hour.'))->enforce();
+        if ($terminal !== null) {
+            $terminal->emit();
+            return;
+        }
 
         // Max client count: prevent DB exhaustion
         $maxClients = 50;
@@ -52,9 +59,15 @@ final class RegistrationHandler
                 return;
             }
             // Allow http://localhost and http://127.0.0.1 for local development (MCP clients)
-            $isLocalhost = in_array($parsed['host'], ['localhost', '127.0.0.1', '[::1]'], true);
-            if ($parsed['scheme'] !== 'https' && !($parsed['scheme'] === 'http' && $isLocalhost)) {
-                OAuthHelper::error(400, 'invalid_redirect_uri', 'redirect_uri must use HTTPS (except localhost): ' . $uri);
+            $isLocalhost   = in_array($parsed['host'], ['localhost', '127.0.0.1', '[::1]'], true);
+            $isHttpsOk     = $parsed['scheme'] === 'https';
+            $isLocalHttpOk = $parsed['scheme'] === 'http' && $isLocalhost;
+            // RFC 8252: allow native app URI schemes for editor/IDE MCP clients (e.g. Cursor)
+            $isNativeAppOk = in_array($parsed['scheme'], self::NATIVE_APP_SCHEMES, true)
+                && $parsed['host'] !== ''
+                && ($parsed['path'] ?? '') === '/oauth/callback';
+            if (!$isHttpsOk && !$isLocalHttpOk && !$isNativeAppOk) {
+                OAuthHelper::error(400, 'invalid_redirect_uri', 'redirect_uri must use HTTPS, localhost, or an allowed native app scheme: ' . $uri);
                 return;
             }
             // Reject fragments (OAuth 2.1 requirement)

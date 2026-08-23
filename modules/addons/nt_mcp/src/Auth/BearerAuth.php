@@ -2,6 +2,12 @@
 // src/Auth/BearerAuth.php
 namespace NtMcp\Auth;
 
+use NtMcp\Whmcs\Diagnostics;
+use NtMcp\Whmcs\ActivityEvent;
+use NtMcp\Whmcs\ActivityLog;
+use NtMcp\Whmcs\AuditMetadata;
+use NtMcp\Http\TerminalResponse;
+
 use Illuminate\Database\Capsule\Manager as Capsule;
 
 class BearerAuth
@@ -104,7 +110,7 @@ class BearerAuth
             $v = trim((string) (\WHMCS\Config\Setting::getValue('nt_mcp_disable_static_bearer') ?? ''));
             return $v === '1' || strtolower($v) === 'true' || strtolower($v) === 'on';
         } catch (\Throwable $e) {
-            error_log('NT MCP BearerAuth: Failed to read nt_mcp_disable_static_bearer: ' . $e->getMessage());
+            Diagnostics::report(Diagnostics::CATEGORY_CONFIG_READ, 'nt_mcp_disable_static_bearer', $e);
             return false;
         }
     }
@@ -128,7 +134,7 @@ class BearerAuth
                 return $admin;
             }
         } catch (\Throwable $e) {
-            error_log('NT MCP BearerAuth: Failed to read nt_mcp_bearer_token_admin: ' . $e->getMessage());
+            Diagnostics::report(Diagnostics::CATEGORY_CONFIG_READ, 'nt_mcp_bearer_token_admin', $e);
         }
 
         return $this->getFallbackAdmin();
@@ -180,7 +186,7 @@ class BearerAuth
                         ->where('id', $row->id)
                         ->update(['last_used_at' => time()]);
                 } catch (\Throwable $e) {
-                    error_log('NT MCP BearerAuth: last_used_at update failed for token ID ' . $row->id . ': ' . $e->getMessage());
+                    Diagnostics::report(Diagnostics::CATEGORY_AUTH, 'oauth_token_last_used', $e);
                 }
             }
 
@@ -191,9 +197,7 @@ class BearerAuth
             // exists in tbladmins and is not disabled.  If not, revoke the
             // token (expires_at=0) and return 401.
             if (!$this->validateAdminActive($resolved)) {
-                if (function_exists('logActivity')) {
-                    @logActivity("[NT-MCP] OAuth token revoked: admin '{$resolved}' missing or disabled (token id {$row->id})");
-                }
+                ActivityLog::record(ActivityEvent::OAUTH_ORPHAN_REVOKED, AuditMetadata::ids(['id' => (int) $row->id]));
                 $this->revokeToken((int) $row->id);
                 return null;
             }
@@ -203,7 +207,7 @@ class BearerAuth
             // SECURITY FIX (F4 -- audit): Log DB failures instead of silently
             // returning null.  A database outage should not masquerade as an
             // authentication failure with zero diagnostic information.
-            error_log('NT MCP BearerAuth: OAuth token validation failed: ' . $e->getMessage());
+            Diagnostics::report(Diagnostics::CATEGORY_AUTH, 'oauth_token_validation', $e);
             return null;
         }
     }
@@ -232,7 +236,7 @@ class BearerAuth
                 ->where('disabled', 0)
                 ->exists();
         } catch (\Throwable $e) {
-            error_log('NT MCP BearerAuth: tbladmins validation failed: ' . $e->getMessage());
+            Diagnostics::report(Diagnostics::CATEGORY_AUTH, 'tbladmins_validation', $e);
             return false;
         }
     }
@@ -253,7 +257,7 @@ class BearerAuth
                 ->where('id', $tokenId)
                 ->update(['expires_at' => 0]);
         } catch (\Throwable $e) {
-            error_log('NT MCP BearerAuth: failed to revoke token id ' . $tokenId . ': ' . $e->getMessage());
+            Diagnostics::report(Diagnostics::CATEGORY_AUTH, 'oauth_token_revoke', $e);
         }
     }
 
@@ -273,10 +277,10 @@ class BearerAuth
                 return $configured;
             }
         } catch (\Throwable $e) {
-            error_log('NT MCP BearerAuth: Failed to read nt_mcp_admin_user: ' . $e->getMessage());
+            Diagnostics::report(Diagnostics::CATEGORY_CONFIG_READ, 'nt_mcp_admin_user', $e);
         }
 
-        error_log('NT MCP BearerAuth: WARNING - No admin_user configured, denying (no fallback admin)');
+        Diagnostics::event(Diagnostics::CATEGORY_AUTH, 'admin_user_not_configured');
         return null;
     }
 
@@ -284,18 +288,8 @@ class BearerAuth
      * @param string $resourceMetadataUrl  Full URL to the Protected Resource
      *                                     Metadata endpoint (RFC 9728).
      */
-    public static function denyAndExit(string $resourceMetadataUrl = ''): never
+    public static function deniedResponse(string $resourceMetadataUrl = ''): TerminalResponse
     {
-        http_response_code(401);
-
-        if ($resourceMetadataUrl !== '') {
-            header('WWW-Authenticate: Bearer resource_metadata="' . $resourceMetadataUrl . '"');
-        } else {
-            header('WWW-Authenticate: Bearer realm="WHMCS MCP"');
-        }
-
-        header('Content-Type: application/json');
-        echo json_encode(['error' => 'Unauthorized']);
-        exit;
+        return TerminalResponse::unauthorized($resourceMetadataUrl);
     }
 }

@@ -1,23 +1,23 @@
 # NT MCP Server — WHMCS Addon
 
-Servidor MCP (Model Context Protocol) que expoe 86 ferramentas WHMCS como ferramentas para o Claude. Funciona como **Conector** — conecta o Claude ao seu WHMCS para gerenciar clientes, faturas, tickets, servicos, dominios, pedidos, projetos e CRM via conversacao.
+Servidor MCP (Model Context Protocol) que expoe 68 ferramentas WHMCS como ferramentas para o Claude. Funciona como **Conector** — conecta o Claude ao seu WHMCS para gerenciar clientes, faturas, tickets, servicos, dominios, pedidos, projetos e CRM via conversacao.
 
-> **Para a experiencia completa**, combine este Conector com a **Habilidade** (Skill) que ensina o Claude a usar os 86 tools → **[fcs7/whmcs-mcp-plugin](https://github.com/fcs7/whmcs-mcp-plugin)**
+> **Para a experiencia completa**, combine este Conector com a **Habilidade** (Skill) que ensina o Claude a usar as 68 tools → **[fcs7/whmcs-mcp-plugin](https://github.com/fcs7/whmcs-mcp-plugin)**
 
-> 📖 **Catalogo completo das 86 tools** (comando WHMCS, classe de gate, risco e recomendacao de corte 1-a-1): **[modules/addons/nt_mcp/docs/TOOLS.md](modules/addons/nt_mcp/docs/TOOLS.md)**
+> 📖 **Catalogo completo das 68 tools** (comando WHMCS, classe de gate, risco e recomendacao de corte 1-a-1): **[modules/addons/nt_mcp/docs/TOOLS.md](modules/addons/nt_mcp/docs/TOOLS.md)**
 
 ### Como os componentes se encaixam
 
 | Conceito | O que faz | Repositorio |
 |----------|-----------|-------------|
-| **Conector** (este repo) | Expoe 86 tools MCP via HTTP — o Claude *pode* usar | Voce esta aqui |
+| **Conector** (este repo) | Expoe 68 tools MCP via HTTP — o Claude *pode* usar | Voce esta aqui |
 | **Habilidade** ([plugin repo](https://github.com/fcs7/whmcs-mcp-plugin)) | Ensina o Claude *como* usar os tools — parametros, workflows, boas praticas | [fcs7/whmcs-mcp-plugin](https://github.com/fcs7/whmcs-mcp-plugin) |
 
 > Sem a Habilidade o Claude tem acesso aos tools mas pode errar parametros ou nao saber a melhor sequencia de operacoes. Sem o Conector, a Habilidade nao tem como executar nada.
 
 ## Requisitos
 
-- **PHP** >= 8.2
+- **PHP** >= 8.1 (desenvolvimento e producao rodam 8.1; o `composer.json` pina `platform.php=8.1.34`)
 - **WHMCS** 7.x ou 8.x
 - **Composer** (para instalar dependencias)
 - **HTTPS** obrigatorio (o endpoint rejeita HTTP com status 421)
@@ -107,39 +107,33 @@ Use um cliente FTP como FileZilla, WinSCP ou Cyberduck:
         .htaccess           # Protecao: rejeita acesso direto a vendor/, src/, etc
         
         src/
-          Server.php        # Bootstrap php-mcp/server
+          Server.php        # Fronteira HTTP: metodo, teto de corpo, batch, lock de sessao
+          Mcp/
+            McpSdkAdapter.php    # Builder do SDK oficial mcp/sdk (discovery + sessao)
+            SessionLock.php      # Um lock por Mcp-Session-Id
+            FileElementCache.php # Cache do discovery de tools
           Auth/
             BearerAuth.php  # Autenticacao Bearer token + OAuth 2.1
           OAuth/
             OAuthRouter.php
             Handlers/
-          Tools/
-            Client.php      # 12 tools de clientes
-            Order.php       # 9 tools de pedidos
-            ...             # (9 classes no total)
+          Tools/            # 11 classes com 68 tools
           Whmcs/
-            LocalApiClient.php   # Wrapper com allowlist de comandos
-            CapsuleClient.php    # Query builder com allowlist
-            CompatContainer.php  # PSR-11 container
+            LocalApiClient.php   # Wrapper localAPI() com allowlist + gates
+            CapsuleClient.php    # Query builder DB com allowlist
+            ResponseRedactor.php # Pipeline unico de saida (normalizacao + scrub)
+            ErrorMessages.php    # Frase humana por codigo de erro
+            CompatContainer.php  # PSR-11 container com auto-wiring
           Admin/
             AdminController.php  # Dashboard admin
           Http/
             IpResolver.php       # CIDR proxy resolution
           Security/
             ...
-          
+
         .well-known/
           openid-configuration/
             index.php      # Discovery fallback
-        src/
-          Server.php       # Bootstrap MCP server
-          Auth/
-            BearerAuth.php # Autenticacao Bearer + OAuth
-          Tools/            # 11 classes com 86 tools
-          Whmcs/
-            LocalApiClient.php   # Wrapper localAPI() com allowlist
-            CapsuleClient.php    # Query builder DB com allowlist
-            CompatContainer.php  # PSR-11 container com auto-wiring
         vendor/            # Criado pelo composer (nao versionado)
         tests/              # (NAO envie - fica local)
         deploy/             # (NAO envie - templates para seu deploy)
@@ -447,7 +441,7 @@ claude        # iniciar o Claude Code
 /mcp          # ver status dos servidores MCP
 ```
 
-O servidor deve aparecer como `connected` com 86 tools disponiveis.
+O servidor deve aparecer como `connected` com 68 tools disponiveis.
 
 **Debug:**
 
@@ -491,12 +485,12 @@ O OAuth e iniciado automaticamente na primeira chamada de tool.
 
 Va em **Settings > Habilidades** e crie uma **habilidade pessoal** com o conteudo do arquivo [`SKILL.md` do plugin](https://github.com/fcs7/whmcs-mcp-plugin/blob/main/skills/whmcs-mcp/SKILL.md).
 
-Sem a Habilidade, o Claude tem acesso aos 86 tools mas nao sabe os parametros de cabeca — pode errar nomes de campo ou esquecer parametros obrigatorios.
+Sem a Habilidade, o Claude tem acesso às 68 tools mas nao sabe os parametros de cabeca — pode errar nomes de campo ou esquecer parametros obrigatorios.
 
 **Verificar:**
 
 1. Reinicie o Claude Desktop
-2. As 86 tools do WHMCS devem aparecer na lista de ferramentas
+2. As 68 tools do WHMCS devem aparecer na lista de ferramentas
 3. Teste: pergunte "liste meus clientes do WHMCS"
 
 **Troubleshooting Claude Desktop:**
@@ -522,7 +516,7 @@ Sem a Habilidade, o Claude tem acesso aos 86 tools mas nao sabe os parametros de
 Apos configurar qualquer cliente, confirme que:
 
 1. **Conexao** — o cliente mostra o servidor como conectado
-2. **Tools** — 86 ferramentas visiveis na lista
+2. **Tools** — 68 ferramentas visiveis na lista
 3. **Execucao** — pergunte "liste os clientes do WHMCS" e confirme que retorna dados reais
 
 ## Autenticacao
@@ -597,28 +591,31 @@ Ao exceder, retorna `429 Too Many Requests` com header `Retry-After`.
 
 ## Ferramentas Disponiveis
 
-86 ferramentas organizadas em 11 categorias:
+68 ferramentas organizadas em 11 categorias:
 
 | Categoria | Qty | Descricao |
 |-----------|:---:|-----------|
-| **ClientTools** | 13 | Listar, buscar, criar, atualizar e fechar clientes; produtos, dominios, faturas, contatos, grupos, addons |
-| **BillingTools** | 12 | Faturas, pagamentos, transacoes, creditos, billable items, metodos de pagamento |
-| **SystemTools** | 11 | Estatisticas, email, activity log, admin, moedas, templates, to-dos |
-| **OrderTools** | 10 | Pedidos: listar, aceitar, cancelar, deletar, criar; produtos, promocoes, status |
-| **ProjectManagerTools** | 10 | Projetos, tarefas, time tracking, mensagens |
-| **DomainTools** | 9 | Dominios: registrar, renovar, nameservers, locking, whois, pricing TLD |
-| **CrmTools** | 8 | Contatos/leads, follow-ups, notas, Kanban (requer ModulesGarden CRM) |
-| **SupportInfoTools** | 7 | Departamentos, status, contadores e notas de tickets, respostas predefinidas |
-| **QuoteTools** | 6 | Orcamentos: listar, criar, atualizar, enviar, aceitar |
-| **ServiceTools** | 5 | Servicos: suspender, reativar, terminar, upgrade |
-| **TicketTools** | 5 | Tickets: listar, abrir, responder, atualizar |
+| **ClientTools** | 12 | Listar, buscar, criar e atualizar clientes; produtos, dominios, faturas, contatos, grupos, addons |
+| **ProjectManagerTools** | 9 | Projetos, tarefas, time tracking, mensagens |
+| **CrmTools** | 8 | Contatos/leads, follow-ups, notas (requer ModulesGarden CRM) |
+| **OrderTools** | 7 | Pedidos: listar, obter, cancelar, marcar pendente; catalogo de produtos, status de pedido, promocoes |
+| **QuoteTools** | 7 | Orcamentos: listar, obter, criar, atualizar, duplicar, converter em fatura, excluir |
+| **SystemTools** | 6 | Estatisticas, activity log, admin, to-dos, moedas |
+| **BillingTools** | 5 | Faturas, transacoes, creditos, metodos de pagamento |
+| **DomainTools** | 5 | Dominios: listar, nameservers, locking, whois, pricing TLD |
+| **TicketTools** | 5 | Tickets: listar, obter, abrir, responder, atualizar |
+| **SupportInfoTools** | 3 | Departamentos, status e contadores de tickets |
+| **ServiceTools** | 1 | Servicos de um cliente |
+
+> Catalogo completo, com o comando WHMCS e a classe de gate de cada tool:
+> [modules/addons/nt_mcp/docs/TOOLS.md](modules/addons/nt_mcp/docs/TOOLS.md).
 
 ## Seguranca
 
 Defesa em profundidade em 3 camadas:
 
 1. **Autenticacao** — OAuth 2.1 com PKCE S256 ou Bearer Token SHA-256 (`hash_equals`)
-2. **Gateway API** — Allowlist de 73 comandos WHMCS; campos sensiveis bloqueados
+2. **Gateway API** — Allowlist de 55 comandos WHMCS, cada um com classe de efeito colateral (READ/WRITE/DESTRUCTIVE/FINANCIAL/COST/COMMS); campos sensiveis bloqueados
 3. **Acesso a dados** — Tabelas e colunas restritas por allowlist no acesso direto ao banco
 
 Controles adicionais: security headers (HSTS, CSP, X-Frame-Options), rate limiting, audit logging, CORS, protecao `.htaccess`, validacao de Session ID.
@@ -679,7 +676,7 @@ scp -r . usuario@servidor:httpdocs/modules/addons/nt_mcp/
 
 ## Habilidade (Skill) — Ensinar o Claude a Usar os Tools
 
-Este servidor (Conector) expoe 86 tools via MCP. A **Habilidade** ensina o Claude *como* usa-los — parametros, workflows, boas praticas.
+Este servidor (Conector) expoe 68 tools via MCP. A **Habilidade** ensina o Claude *como* usa-los — parametros, workflows, boas praticas.
 
 **[fcs7/whmcs-mcp-plugin](https://github.com/fcs7/whmcs-mcp-plugin)** — Conector + Habilidade + Hooks de seguranca
 
@@ -696,7 +693,7 @@ Este servidor (Conector) expoe 86 tools via MCP. A **Habilidade** ensina o Claud
 │  Addon WHMCS (PHP):          │      │  Claude Code: Plugin auto    │
 │  • mcp.php (endpoint HTTP)   │      │  Claude Desktop: SKILL.md    │
 │  • oauth.php (OAuth 2.1)     │ ──── │                              │
-│  • src/Tools/ (86 tools)     │ MCP  │  • SKILL.md (referencia)     │
+│  • src/Tools/ (68 tools)     │ MCP  │  • SKILL.md (referencia)     │
 │  • src/Auth/ (Bearer+OAuth)  │      │  • .mcp.json (conector auto) │
 │                              │      │  • hooks.json (seguranca)    │
 │  Roda em: Servidor WHMCS     │      │                              │

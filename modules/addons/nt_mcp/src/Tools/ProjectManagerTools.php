@@ -2,8 +2,10 @@
 // src/Tools/ProjectManagerTools.php
 namespace NtMcp\Tools;
 
+use NtMcp\Whmcs\DateNormalizer;
 use NtMcp\Whmcs\LocalApiClient;
-use PhpMcp\Server\Attributes\McpTool;
+use NtMcp\Whmcs\ToolJson;
+use Mcp\Capability\Attribute\McpTool;
 
 class ProjectManagerTools
 {
@@ -21,15 +23,18 @@ class ProjectManagerTools
         if ($userid > 0) $params['userid'] = $userid;
         if ($status !== '') $params['status'] = $status;
         if ($completed) $params['completed'] = true;
-        return json_encode($this->api->call('GetProjects', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('GetProjects', $params));
     }
 
     #[McpTool(name: 'whmcs_get_project', description: 'Obtém detalhes completos de um projeto incluindo tarefas')]
     public function getProject(int $projectid): string
     {
-        return json_encode($this->api->call('GetProject', ['projectid' => $projectid]), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('GetProject', ['projectid' => $projectid]));
     }
 
+    /**
+     * @param string $duedate Prazo do projeto. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY nao sao aceitos por serem ambiguos.
+     */
     #[McpTool(name: 'whmcs_create_project', description: 'Cria um novo projeto no WHMCS Project Manager')]
     public function createProject(
         string $title,
@@ -43,12 +48,15 @@ class ProjectManagerTools
         $params = ['title' => $title, 'adminid' => $adminid];
         if ($userid > 0) $params['userid'] = $userid;
         if ($status !== '') $params['status'] = $status;
-        if ($duedate !== '') $params['duedate'] = $duedate;
+        if ($duedate !== '') $params['duedate'] = DateNormalizer::toWhmcsDate($duedate, 'duedate');
         if ($notes !== '') $params['notes'] = $notes;
         if ($ticketids !== '') $params['ticketids'] = $ticketids;
-        return json_encode($this->api->call('CreateProject', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('CreateProject', $params));
     }
 
+    /**
+     * @param string $duedate Prazo do projeto. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY nao sao aceitos por serem ambiguos.
+     */
     #[McpTool(name: 'whmcs_update_project', description: 'Atualiza um projeto existente')]
     public function updateProject(
         int $projectid,
@@ -60,11 +68,14 @@ class ProjectManagerTools
         $params = ['projectid' => $projectid];
         if ($title !== '') $params['title'] = $title;
         if ($status !== '') $params['status'] = $status;
-        if ($duedate !== '') $params['duedate'] = $duedate;
+        if ($duedate !== '') $params['duedate'] = DateNormalizer::toWhmcsDate($duedate, 'duedate');
         if ($completed !== null) $params['completed'] = $completed ? 1 : 0;
-        return json_encode($this->api->call('UpdateProject', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('UpdateProject', $params));
     }
 
+    /**
+     * @param string $duedate Prazo da tarefa. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY nao sao aceitos por serem ambiguos.
+     */
     #[McpTool(name: 'whmcs_add_project_task', description: 'Adiciona uma tarefa a um projeto')]
     public function addProjectTask(
         int $projectid,
@@ -73,11 +84,15 @@ class ProjectManagerTools
         int $adminid,
         bool $completed = false
     ): string {
-        $params = compact('projectid', 'task', 'duedate', 'adminid');
+        $params = compact('projectid', 'task', 'adminid');
+        $params['duedate'] = DateNormalizer::toWhmcsDate($duedate, 'duedate');
         if ($completed) $params['completed'] = true;
-        return json_encode($this->api->call('AddProjectTask', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('AddProjectTask', $params));
     }
 
+    /**
+     * @param string $duedate Prazo da tarefa. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY nao sao aceitos por serem ambiguos.
+     */
     #[McpTool(name: 'whmcs_update_project_task', description: 'Atualiza uma tarefa de projeto')]
     public function updateProjectTask(
         int $projectid,
@@ -88,32 +103,26 @@ class ProjectManagerTools
     ): string {
         $params = ['projectid' => $projectid, 'taskid' => $taskid];
         if ($task !== '') $params['task'] = $task;
-        if ($duedate !== '') $params['duedate'] = $duedate;
+        if ($duedate !== '') $params['duedate'] = DateNormalizer::toWhmcsDate($duedate, 'duedate');
         if ($completed !== null) $params['completed'] = $completed ? 1 : 0;
-        return json_encode($this->api->call('UpdateProjectTask', $params), JSON_PRETTY_PRINT);
-    }
-
-    #[McpTool(name: 'whmcs_delete_project_task', description: 'Remove uma tarefa de um projeto')]
-    public function deleteProjectTask(int $projectid, int $taskid): string
-    {
-        return json_encode($this->api->call('DeleteProjectTask', compact('projectid', 'taskid')), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('UpdateProjectTask', $params));
     }
 
     #[McpTool(name: 'whmcs_start_task_timer', description: 'Inicia cronômetro de uma tarefa (time tracking)')]
     public function startTaskTimer(int $projectid, int $taskid, int $adminid): string
     {
-        return json_encode($this->api->call('StartTaskTimer', compact('projectid', 'taskid', 'adminid')), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('StartTaskTimer', compact('projectid', 'taskid', 'adminid')));
     }
 
     #[McpTool(name: 'whmcs_end_task_timer', description: 'Para cronômetro de uma tarefa')]
     public function endTaskTimer(int $projectid, int $taskid, int $adminid): string
     {
-        return json_encode($this->api->call('EndTaskTimer', compact('projectid', 'taskid', 'adminid')), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('EndTaskTimer', compact('projectid', 'taskid', 'adminid')));
     }
 
     #[McpTool(name: 'whmcs_add_project_message', description: 'Adiciona mensagem/comentário a um projeto')]
     public function addProjectMessage(int $projectid, string $message, int $adminid): string
     {
-        return json_encode($this->api->call('AddProjectMessage', compact('projectid', 'message', 'adminid')), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('AddProjectMessage', compact('projectid', 'message', 'adminid')));
     }
 }

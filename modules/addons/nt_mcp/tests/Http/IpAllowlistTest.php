@@ -10,9 +10,8 @@ class IpAllowlistTest extends TestCase
 {
     public function test_placeholder_for_manual_verification(): void
     {
-        // IpAllowlist::enforce() usa http_response_code(), header() e exit —
-        // nao e testavel unitariamente sem refatorar para injetar response handler.
-        // A cobertura real e feita via code review + testes de integracao na instalacao.
+        // A cobertura efetiva dos envelopes 403/503 vive em
+        // McpEndpointHttpTest, pelo endpoint e servidor HTTP reais.
         $this->assertTrue(true);
     }
 }

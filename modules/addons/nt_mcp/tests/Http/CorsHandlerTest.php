@@ -5,13 +5,21 @@ declare(strict_types=1);
 namespace NtMcp\Tests\Http;
 
 use NtMcp\Http\CorsHandler;
+use NtMcp\Http\CorsDecision;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 class CorsHandlerTest extends TestCase
 {
     protected function tearDown(): void
     {
-        unset($_SERVER['HTTP_ORIGIN']);
+        unset(
+            $_SERVER['HTTP_ORIGIN'],
+            $_SERVER['REQUEST_METHOD'],
+            $_SERVER['HTTP_ACCESS_CONTROL_REQUEST_METHOD'],
+            $_SERVER['HTTP_ACCESS_CONTROL_REQUEST_HEADERS'],
+        );
+        \WHMCS\Config\Setting::reset();
     }
 
     // --- getAllowedOrigins() ---
@@ -82,14 +90,30 @@ class CorsHandlerTest extends TestCase
 
     // --- getAllowedOriginsOrFail() fail-closed (WO-5 / item E) ---
 
+    /**
+     * O suite agora define um stub de \WHMCS\Config\Setting (necessário para
+     * exercitar o parser tri-state em M3), então a ausência da classe deixou de
+     * ser a forma de simular falha de leitura. Estes dois testes passam a
+     * provocar o erro explicitamente — o que é mais fiel ao cenário real (DB
+     * fora do ar) do que "a classe não existe".
+     */
+    private function withFailingConfigRead(callable $fn): mixed
+    {
+        \WHMCS\Config\Setting::$throwOnRead = true;
+        try {
+            return $fn();
+        } finally {
+            \WHMCS\Config\Setting::reset();
+        }
+    }
+
     public function test_get_allowed_origins_or_fail_returns_false_on_config_error(): void
     {
-        // No WHMCS bootstrap in tests → \WHMCS\Config\Setting doesn't exist → this is
-        // exactly the "real config-read error" path. It must return the `false`
-        // sentinel, NOT an empty array — an empty array would be indistinguishable
-        // from "no allowlist configured" and resolveOriginHeader() would then hand
-        // back a wildcard on what is actually an infra failure.
-        $result = CorsHandler::getAllowedOriginsOrFail();
+        // Erro real de leitura de config. Deve devolver o sentinela `false`, NÃO
+        // um array vazio — vazio seria indistinguível de "sem allowlist
+        // configurada" e resolveOriginHeader() devolveria wildcard para o que na
+        // verdade é uma falha de infraestrutura.
+        $result = $this->withFailingConfigRead(fn() => CorsHandler::getAllowedOriginsOrFail());
         $this->assertFalse($result);
     }
 
@@ -97,7 +121,7 @@ class CorsHandlerTest extends TestCase
     {
         // Demonstrates the bug WO-5 fixes: naively feeding a config-read error into
         // resolveOriginHeader() (by collapsing it to []) silently produces '*'.
-        $orFail = CorsHandler::getAllowedOriginsOrFail();
+        $orFail = $this->withFailingConfigRead(fn() => CorsHandler::getAllowedOriginsOrFail());
         $this->assertFalse($orFail, 'error must be reported as false, not []');
 
         // The buggy pre-fix behaviour (error treated as empty allowlist):
@@ -121,5 +145,81 @@ class CorsHandlerTest extends TestCase
     {
         $result = CorsHandler::resolveOriginHeader('https://not-allowed.example', ['https://claude.ai', 'https://app.example.com']);
         $this->assertNull($result);
+    }
+
+    public function test_closed_decision_rejects_unapproved_method_profile(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        CorsDecision::proceed('*', [], 'DELETE');
+    }
+
+    public function test_closed_decision_rejects_header_injection_origin(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        CorsDecision::proceed("https://client.example\r\nX-Poison: yes", [], 'POST, OPTIONS');
+    }
+
+    #[DataProvider('requestedHeadersProvider')]
+    public function test_preflight_requested_headers_are_canonical(
+        ?string $requestedHeaders,
+        bool $allowed,
+    ): void {
+        \WHMCS\Config\Setting::setValue('nt_mcp_cors_origins', 'https://client.example');
+        $_SERVER['REQUEST_METHOD'] = 'OPTIONS';
+        $_SERVER['HTTP_ORIGIN'] = 'https://client.example';
+        $_SERVER['HTTP_ACCESS_CONTROL_REQUEST_METHOD'] = 'POST';
+        if ($requestedHeaders !== null) {
+            $_SERVER['HTTP_ACCESS_CONTROL_REQUEST_HEADERS'] = $requestedHeaders;
+        }
+
+        $decision = CorsHandler::handle(['MCP-Session-Id'], 'POST, OPTIONS');
+        $terminal = $decision->terminalResponse();
+
+        $this->assertNotNull($terminal);
+        $this->assertSame($allowed ? 204 : 403, $terminal->status());
+        if ($allowed) {
+            $this->assertSame('https://client.example', $decision->headers()['Access-Control-Allow-Origin'] ?? null);
+        } else {
+            $this->assertSame([], $decision->headers());
+        }
+    }
+
+    public static function requestedHeadersProvider(): array
+    {
+        return [
+            'absent' => [null, true],
+            'empty' => ['', false],
+            'OWS only' => [" \t ", false],
+            'duplicate exact' => ['Content-Type, Content-Type', false],
+            'duplicate case-insensitive' => ['Content-Type, content-type', false],
+            'duplicate with OWS' => [" Content-Type\t,\t CONTENT-TYPE ", false],
+            'allowed case and OWS' => [" authorization ,\tCONTENT-type, McP-PrOtOcOl-VeRsIoN , mcp-session-ID ", true],
+            'Last-Event-ID remains denied' => ['Last-Event-ID', false],
+            'trailing comma' => ['Content-Type,', false],
+            'CRLF' => ["Content-Type\r\nX-Poison: yes", false],
+        ];
+    }
+
+    public function test_closed_decision_accepts_post_delete_options_profile(): void
+    {
+        $decision = CorsDecision::proceed('*', ['MCP-Session-Id'], 'POST, DELETE, OPTIONS');
+        $this->assertSame('POST, DELETE, OPTIONS', $decision->headers()['Access-Control-Allow-Methods']);
+    }
+
+    public function test_preflight_for_delete_is_allowed_under_mcp_profile_only(): void
+    {
+        \WHMCS\Config\Setting::setValue('nt_mcp_cors_origins', 'https://client.example');
+        $_SERVER['REQUEST_METHOD'] = 'OPTIONS';
+        $_SERVER['HTTP_ORIGIN'] = 'https://client.example';
+        $_SERVER['HTTP_ACCESS_CONTROL_REQUEST_METHOD'] = 'DELETE';
+        unset($_SERVER['HTTP_ACCESS_CONTROL_REQUEST_HEADERS']);
+
+        $mcp = CorsHandler::handle(['MCP-Session-Id'], 'POST, DELETE, OPTIONS');
+        $this->assertSame(204, $mcp->terminalResponse()?->status());
+        $this->assertSame('POST, DELETE, OPTIONS', $mcp->headers()['Access-Control-Allow-Methods']);
+
+        // Perfil OAuth continua sem DELETE.
+        $oauth = CorsHandler::handle([], 'POST, OPTIONS');
+        $this->assertSame(403, $oauth->terminalResponse()?->status());
     }
 }

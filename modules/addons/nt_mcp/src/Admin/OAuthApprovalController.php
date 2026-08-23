@@ -4,8 +4,12 @@ declare(strict_types=1);
 
 namespace NtMcp\Admin;
 
+use NtMcp\Whmcs\Diagnostics;
+use NtMcp\Whmcs\ActivityEvent;
+use NtMcp\Whmcs\ActivityLog;
+use NtMcp\Whmcs\AuditMetadata;
+
 use Illuminate\Database\Capsule\Manager as Capsule;
-use NtMcp\Http\IpResolver;
 use NtMcp\Security\CsrfProtection;
 use NtMcp\Whmcs\AdminSession;
 
@@ -20,7 +24,7 @@ use NtMcp\Whmcs\AdminSession;
  *  2. Explicit admin session verification via AdminSession::getAdminId() (belt-and-suspenders)
  *  3. CSRF token tied to admin session via HMAC (anti-forgery)
  *  4. Pending request expires in 10 minutes (temporal window)
- *  5. Admin ID + IP logged in WHMCS activity log (audit trail)
+ *  5. Evento fechado + admin ID numérico no Activity Log (audit trail)
  */
 final class OAuthApprovalController
 {
@@ -38,7 +42,7 @@ final class OAuthApprovalController
         }
 
         $requestId = $_GET['authorize'] ?? '';
-        if (!preg_match('/^[a-f0-9]{32}$/', $requestId)) {
+        if (!preg_match('/^[a-f0-9]{32}\z/', $requestId)) {
             echo '<div class="alert alert-danger">Request ID invalido.</div>';
             return;
         }
@@ -103,12 +107,9 @@ final class OAuthApprovalController
         $redirectUri = $pending->redirect_uri;
         $state       = $pending->state;
 
-        // SECURITY FIX (F3 -- audit): Use proxy-aware IP for forensic value
-        $clientIp = IpResolver::resolve();
-
         if ($_POST['authorize_action'] !== 'approve') {
             // DENIED
-            logActivity("NT MCP: OAuth authorization DENIED for client '{$clientName}' by admin ID {$adminId} from IP {$clientIp}");
+            ActivityLog::record(ActivityEvent::OAUTH_AUTH_DENIED, AuditMetadata::ids(['adminid' => $adminId]));
 
             $params = http_build_query(array_filter([
                 'error'             => 'access_denied',
@@ -130,7 +131,7 @@ final class OAuthApprovalController
         try {
             $adminUsername = Capsule::table('tbladmins')->where('id', $adminId)->value('username') ?? 'admin';
         } catch (\Throwable $ex) {
-            error_log('NT MCP OAuth: Failed to look up admin username for ID ' . $adminId . ': ' . $ex->getMessage());
+            Diagnostics::report(Diagnostics::CATEGORY_ADMIN_LOOKUP, 'tbladmins', $ex);
         }
 
         // SECURITY FIX (S2A-01): Store hash, not plaintext
@@ -151,13 +152,13 @@ final class OAuthApprovalController
             }
             Capsule::table('mod_nt_mcp_oauth_codes')->insert($codeData);
         } catch (\Throwable $dbEx) {
-            error_log('NT MCP: Failed to insert authorization code: ' . $dbEx->getMessage());
+            Diagnostics::report(Diagnostics::CATEGORY_OAUTH, 'authorization_code_insert', $dbEx);
             echo '<div class="alert alert-danger">Erro interno ao gerar codigo de autorizacao. Tente novamente.</div>';
             return;
         }
 
         // Layer 5: Audit trail
-        logActivity("NT MCP: OAuth authorization APPROVED for client '{$clientName}' (client_id: {$pending->client_id}) by admin ID {$adminId} from IP {$clientIp}");
+        ActivityLog::record(ActivityEvent::OAUTH_AUTH_APPROVED, AuditMetadata::ids(['adminid' => $adminId]));
 
         $params = http_build_query(array_filter([
             'code'  => $authCode,

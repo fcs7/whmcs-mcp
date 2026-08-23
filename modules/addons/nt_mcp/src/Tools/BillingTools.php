@@ -4,7 +4,8 @@ namespace NtMcp\Tools;
 
 use NtMcp\Whmcs\LocalApiClient;
 use NtMcp\Whmcs\ResponseRedactor;
-use PhpMcp\Server\Attributes\McpTool;
+use NtMcp\Whmcs\ToolJson;
+use Mcp\Capability\Attribute\McpTool;
 
 class BillingTools
 {
@@ -16,13 +17,13 @@ class BillingTools
         $params = ['limitstart' => $limitstart, 'limitnum' => $limitnum];
         if ($clientid > 0) $params['userid'] = $clientid;
         if ($status !== '') $params['status'] = $status;
-        return json_encode($this->api->call('GetInvoices', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('GetInvoices', $params));
     }
 
     #[McpTool(name: 'whmcs_get_invoice', description: 'Obtém detalhes de uma fatura')]
     public function getInvoice(int $invoiceid): string
     {
-        return json_encode($this->api->call('GetInvoice', ['invoiceid' => $invoiceid]), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('GetInvoice', ['invoiceid' => $invoiceid]));
     }
 
     #[McpTool(name: 'whmcs_get_transactions', description: 'Lista transações financeiras')]
@@ -31,13 +32,13 @@ class BillingTools
         $params = [];
         if ($clientid > 0) $params['clientid'] = $clientid;
         if ($transid !== '') $params['transid'] = $transid;
-        return json_encode($this->api->call('GetTransactions', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('GetTransactions', $params));
     }
 
     #[McpTool(name: 'whmcs_get_credits', description: 'Lista créditos de um cliente')]
     public function getCredits(int $clientid): string
     {
-        return json_encode($this->api->call('GetCredits', ['clientid' => $clientid]), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('GetCredits', ['clientid' => $clientid]));
     }
 
     #[McpTool(name: 'whmcs_get_pay_methods', description: 'Lista métodos de pagamento salvos de um cliente')]
@@ -45,6 +46,6 @@ class BillingTools
     {
         $result = $this->api->call('GetPayMethods', ['clientid' => $clientid]);
         ResponseRedactor::stripPayMethods($result);
-        return json_encode($result, JSON_PRETTY_PRINT);
+        return ToolJson::encode($result);
     }
 }

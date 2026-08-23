@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace NtMcp\Http;
 
+use NtMcp\Whmcs\Diagnostics;
+
 /**
  * SECURITY CONTROL (9.2 -- F13): TLS enforcement.
  * Reject plain HTTP requests to prevent credential exposure in transit.
@@ -11,27 +13,22 @@ namespace NtMcp\Http;
  */
 final class TlsEnforcer
 {
-    public static function enforce(): void
+    public static function enforce(): ?TerminalResponse
     {
         if (self::isRequestSecure()) {
-            return;
+            return null;
         }
 
         if (self::isHttpBypassAllowed()) {
-            return;
+            return null;
         }
 
-        http_response_code(421);
-        header('Content-Type: application/json');
-        echo json_encode([
-            'error' => 'TLS required. Plain HTTP requests are rejected for security.',
-        ]);
-        exit;
+        return TerminalResponse::tlsRequired();
     }
 
     /**
      * SECURITY FIX (WO-4): Pure decision logic, side-effect free, so it can be
-     * unit-tested without triggering enforce()'s exit.
+     * unit-tested without HTTP side effects.
      */
     public static function isRequestSecure(): bool
     {
@@ -71,7 +68,9 @@ final class TlsEnforcer
         $trusted = IpResolver::isTrustedProxy($remoteAddr) || self::isLoopbackOrPrivate($remoteAddr);
 
         if ($trusted) {
-            error_log('NT MCP: TLS enforcement bypassed via NT_MCP_ALLOW_HTTP from ' . $remoteAddr);
+            // O IP do cliente NÃO é registrado: é PII e o evento não precisa dele
+            // para ser acionável — o que importa é que o bypass foi usado.
+            Diagnostics::event(Diagnostics::CATEGORY_TLS, 'allow_http_bypass');
         }
 
         return $trusted;

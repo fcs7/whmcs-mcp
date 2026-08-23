@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace NtMcp\OAuth\Handlers;
 
+use NtMcp\Whmcs\Diagnostics;
+
 use Illuminate\Database\Capsule\Manager as Capsule;
 use NtMcp\OAuth\OAuthHelper;
 use NtMcp\Security\RateLimiter;
@@ -21,7 +23,11 @@ final class AuthorizationHandler
     public static function handleGet(): void
     {
         // SECURITY FIX (M-03 -- MEDIUM): Rate limit authorization endpoint
-        (new RateLimiter('nt_mcp_auth_rl_', 20, 60, 'auth_', 'Too many authorization requests. Maximum 20 per minute.'))->enforce();
+        $terminal = (new RateLimiter('nt_mcp_auth_rl_', 20, 60, 'auth_', 'Too many authorization requests. Maximum 20 per minute.'))->enforce();
+        if ($terminal !== null) {
+            $terminal->emit();
+            return;
+        }
 
         $clientId      = $_GET['client_id'] ?? '';
         $redirectUri   = $_GET['redirect_uri'] ?? '';
@@ -77,7 +83,7 @@ final class AuthorizationHandler
                 'created_at'     => date('Y-m-d H:i:s'),
             ]);
         } catch (\Throwable $e) {
-            error_log('NT MCP: Failed to create authorization request: ' . $e->getMessage());
+            Diagnostics::report(Diagnostics::CATEGORY_OAUTH, 'authorization_request', $e);
             OAuthHelper::error(500, 'server_error', 'Failed to create authorization request');
             return;
         }
