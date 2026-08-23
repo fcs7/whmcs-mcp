@@ -3,6 +3,7 @@
 namespace NtMcp\Tools;
 
 use NtMcp\Whmcs\LocalApiClient;
+use NtMcp\Whmcs\ToolJson;
 use Mcp\Capability\Attribute\McpTool;
 
 class TicketTools
@@ -17,13 +18,13 @@ class TicketTools
         if ($deptid > 0) $params['deptid'] = $deptid;
         if ($limitstart > 0) $params['limitstart'] = $limitstart;
         if ($subject !== '') $params['subject'] = $subject;
-        return json_encode($this->api->call('GetTickets', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('GetTickets', $params));
     }
 
     #[McpTool(name: 'whmcs_get_ticket', description: 'Obtém detalhes e histórico de um ticket')]
     public function getTicket(int $ticketid): string
     {
-        return json_encode($this->api->call('GetTicket', ['ticketid' => $ticketid]), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('GetTicket', ['ticketid' => $ticketid]));
     }
 
     /**
@@ -44,7 +45,7 @@ class TicketTools
         if ($domainid > 0) $params['domainid'] = $domainid;
         if ($markdown) $params['markdown'] = true;
         if (!$notify_client) $params['noemail'] = true;
-        return json_encode($this->api->call('OpenTicket', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('OpenTicket', $params));
     }
 
     /** Mesma política de notificação de openTicket — ver nota acima. */
@@ -60,7 +61,7 @@ class TicketTools
         if ($clientid > 0) $params['clientid'] = $clientid;
         if ($markdown) $params['markdown'] = true;
         if (!$notify_client) $params['noemail'] = true;
-        return json_encode($this->api->call('AddTicketReply', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('AddTicketReply', $params));
     }
 
     #[McpTool(name: 'whmcs_update_ticket', description: 'Atualiza status, prioridade ou departamento de um ticket')]
@@ -74,6 +75,6 @@ class TicketTools
         if ($flag !== null) $params['flag'] = $flag;
         if ($cc !== '') $params['cc'] = $cc;
         if ($message !== '') $params['message'] = $message;
-        return json_encode($this->api->call('UpdateTicket', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('UpdateTicket', $params));
     }
 }

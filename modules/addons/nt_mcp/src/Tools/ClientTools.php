@@ -4,6 +4,7 @@ namespace NtMcp\Tools;
 
 use NtMcp\Whmcs\LocalApiClient;
 use NtMcp\Whmcs\ResponseRedactor;
+use NtMcp\Whmcs\ToolJson;
 use Mcp\Capability\Attribute\McpTool;
 
 class ClientTools
@@ -28,7 +29,7 @@ class ClientTools
         if ($sorting !== '') $params['sorting'] = $sorting;
         if ($orderby !== '') $params['orderby'] = $orderby;
 
-        return json_encode($this->api->call('GetClients', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('GetClients', $params));
     }
 
     #[McpTool(
@@ -39,7 +40,7 @@ class ClientTools
     {
         $result = $this->api->call('GetClientsDetails', ['clientid' => $clientid, 'stats' => true]);
         ResponseRedactor::stripClientDetails($result);
-        return json_encode($result, JSON_PRETTY_PRINT);
+        return ToolJson::encode($result);
     }
 
     /**
@@ -83,7 +84,7 @@ class ClientTools
         if (!$notify_client) {
             $params['noemail'] = true;
         }
-        return json_encode($this->api->call('AddClient', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('AddClient', $params));
     }
 
     /**
@@ -132,7 +133,7 @@ class ClientTools
             $params['customfields'] = self::validateAndEncodeCustomFields($customfields);
         }
 
-        return json_encode($this->api->call('UpdateClient', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('UpdateClient', $params));
     }
 
     /**
@@ -166,13 +167,13 @@ class ClientTools
     {
         $result = $this->api->call('GetClientsProducts', ['clientid' => $clientid]);
         ResponseRedactor::stripProductPasswords($result);
-        return json_encode($result, JSON_PRETTY_PRINT);
+        return ToolJson::encode($result);
     }
 
     #[McpTool(name: 'whmcs_get_client_domains', description: 'Lista domínios de um cliente')]
     public function getClientDomains(int $clientid): string
     {
-        return json_encode($this->api->call('GetClientsDomains', ['clientid' => $clientid]), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('GetClientsDomains', ['clientid' => $clientid]));
     }
 
     #[McpTool(name: 'whmcs_get_client_invoices', description: 'Lista faturas de um cliente')]
@@ -180,14 +181,30 @@ class ClientTools
     {
         $params = ['userid' => $clientid];
         if ($status !== '') $params['status'] = $status;
-        return json_encode($this->api->call('GetInvoices', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('GetInvoices', $params));
     }
 
-    #[McpTool(name: 'whmcs_get_contacts', description: 'Lista contatos/sub-contas de um cliente')]
-    public function getContacts(int $userid, int $limitstart = 0, int $limitnum = 25): string
+    /**
+     * `userid` e `clientid` são o MESMO id — a LocalAPI chama de `userid`, e o
+     * resto desta superfície (e a UI do WHMCS) chama de `clientid`. Exigir
+     * `userid` fazia esta tool falhar para quem acabou de ler um `clientid` em
+     * qualquer outra tool. Os dois são aceitos; exatamente UM é obrigatório,
+     * porque aceitar ambos abriria a pergunta de qual vence quando divergem.
+     */
+    #[McpTool(name: 'whmcs_get_contacts', description: 'Lista contatos/sub-contas de um cliente. Aceita clientid ou userid (são o mesmo id) — informe exatamente um.')]
+    public function getContacts(int $userid = 0, int $clientid = 0, int $limitstart = 0, int $limitnum = 25): string
     {
-        $params = ['userid' => $userid, 'limitstart' => $limitstart, 'limitnum' => $limitnum];
-        return json_encode($this->api->call('GetContacts', $params), JSON_PRETTY_PRINT);
+        if (($userid > 0) === ($clientid > 0)) {
+            throw new \InvalidArgumentException(
+                'Provide exactly one of clientid or userid (they are the same WHMCS client id).'
+            );
+        }
+        $params = [
+            'userid'     => $userid > 0 ? $userid : $clientid,
+            'limitstart' => $limitstart,
+            'limitnum'   => $limitnum,
+        ];
+        return ToolJson::encode($this->api->call('GetContacts', $params));
     }
 
     #[McpTool(name: 'whmcs_add_contact', description: 'Adiciona um contato/sub-conta a um cliente')]
@@ -217,7 +234,7 @@ class ClientTools
         $params['invoiceemails'] = $invoiceemails ? 1 : 0;
         $params['productemails'] = $productemails ? 1 : 0;
         $params['supportemails'] = $supportemails ? 1 : 0;
-        return json_encode($this->api->call('AddContact', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('AddContact', $params));
     }
 
     #[McpTool(name: 'whmcs_update_contact', description: 'Atualiza um contato/sub-conta existente')]
@@ -239,13 +256,13 @@ class ClientTools
         foreach (['firstname', 'lastname', 'email', 'address1', 'address2', 'city', 'state', 'postcode', 'country', 'phonenumber', 'companyname'] as $field) {
             if ($$field !== '') $params[$field] = $$field;
         }
-        return json_encode($this->api->call('UpdateContact', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('UpdateContact', $params));
     }
 
     #[McpTool(name: 'whmcs_get_client_groups', description: 'Lista grupos de clientes configurados')]
     public function getClientGroups(): string
     {
-        return json_encode($this->api->call('GetClientGroups', []), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('GetClientGroups', []));
     }
 
     #[McpTool(name: 'whmcs_get_clients_addons', description: 'Lista addons contratados por clientes')]
@@ -255,6 +272,6 @@ class ClientTools
         if ($clientid > 0) $params['clientid'] = $clientid;
         if ($serviceid > 0) $params['serviceid'] = $serviceid;
         if ($addonid > 0) $params['addonid'] = $addonid;
-        return json_encode($this->api->call('GetClientsAddons', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('GetClientsAddons', $params));
     }
 }

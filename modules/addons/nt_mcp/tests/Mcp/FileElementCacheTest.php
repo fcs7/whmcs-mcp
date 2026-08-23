@@ -144,7 +144,9 @@ final class FileElementCacheTest extends TestCase
 
         $result = $cache->getMultiple(['key1', 'key2', 'missing']);
 
-        $arr = iterator_to_array($result);
+        // PSR-16 permite devolver array OU Traversable; `iterator_to_array()`
+        // só aceita array a partir do PHP 8.2, e desenv/prod rodam 8.1.
+        $arr = is_array($result) ? $result : iterator_to_array($result);
         $this->assertSame('value1', $arr['key1']);
         $this->assertSame('value2', $arr['key2']);
         $this->assertNull($arr['missing']);
@@ -354,7 +356,7 @@ final class FileElementCacheTest extends TestCase
         );
         $src = realpath(__DIR__ . '/../../src');
         $fresh = $discoverer->discover($src, ['Tools'], []);
-        $this->assertCount(66, $fresh->getTools());
+        $this->assertCount(68, $fresh->getTools());
         $this->assertFileExists($this->cacheFile);
 
         // Processo novo: relê do arquivo pela fronteira endurecida.
@@ -369,7 +371,7 @@ final class FileElementCacheTest extends TestCase
             $logger
         );
         $cached = $second->discover($src, ['Tools'], []);
-        $this->assertCount(66, $cached->getTools());
+        $this->assertCount(68, $cached->getTools());
     }
 
     #[Test]

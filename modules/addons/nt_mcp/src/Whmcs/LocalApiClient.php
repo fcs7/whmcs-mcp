@@ -6,15 +6,16 @@ class LocalApiClient
 {
     // ---------------------------------------------------------------
     // SECURITY FIX (F4 -- CVSS 9.1): Restrict callable WHMCS API
-    // commands to only those used by the 64 MCP tools.
+    // commands to only those used by the MCP tools of this surface.
     //
     // Before this fix, call() accepted ANY command string, meaning a
     // compromised or malicious MCP tool caller could invoke destructive
     // or data-exfiltrating API actions such as AddAdmin, EncryptPassword,
     // WhoAmI, DecryptPassword, CreateSsoToken, etc.
     //
-    // T1: reduzido de 73 para os 51 comandos efetivamente requeridos pela
-    // superfície canônica de 64 tools. Comandos de custo/provisionamento
+    // T1: reduzido de 73 para os comandos efetivamente requeridos pela
+    // superfície canônica (hoje 55 comandos para 68 tools — a contagem exata
+    // é travada por teste, não por este comentário). Comandos de custo/provisionamento
     // (ModuleSuspend, UpgradeProduct, DomainRegister, AcceptOrder, AddOrder...),
     // de comunicação (SendEmail, SendQuote) e lookups auxiliares saíram do
     // allowlist — não foram apenas desligados por gate.
@@ -54,6 +55,8 @@ class LocalApiClient
         'CancelOrder',
         'PendingOrder',
         'GetProducts',
+        'GetOrderStatuses',
+        'GetPromotions',
 
         // DomainTools
         'DomainGetNameservers',
@@ -118,7 +121,7 @@ class LocalApiClient
      * nenhuma ausência degrada para WRITE.
      */
     private const COMMAND_CLASS = [
-        // READ (38 tools de leitura mapeiam nestes comandos)
+        // READ
         'GetClients'=>'READ','GetClientsDetails'=>'READ','GetClientsProducts'=>'READ',
         'GetClientsDomains'=>'READ','GetContacts'=>'READ','GetClientGroups'=>'READ',
         'GetClientsAddons'=>'READ','GetInvoices'=>'READ','GetInvoice'=>'READ',
@@ -130,6 +133,7 @@ class LocalApiClient
         'GetToDoItems'=>'READ','GetProjects'=>'READ','GetProject'=>'READ','GetQuotes'=>'READ',
         'GetSupportDepartments'=>'READ','GetSupportStatuses'=>'READ','GetTicketCounts'=>'READ',
         'GetProducts'=>'READ','GetCurrencies'=>'READ',
+        'GetOrderStatuses'=>'READ','GetPromotions'=>'READ',
         // WRITE (mutação reversível)
         'AddClient'=>'WRITE','UpdateClient'=>'WRITE','AddContact'=>'WRITE','UpdateContact'=>'WRITE',
         'OpenTicket'=>'WRITE','AddTicketReply'=>'WRITE','UpdateTicket'=>'WRITE',
@@ -449,7 +453,7 @@ class LocalApiClient
                     'result'         => 'error',
                     'error_code'     => $classification['code'],
                     'error_category' => $classification['category'],
-                    'message'        => self::publicFailureMessage($command, $correlationId),
+                    'message'        => ErrorMessages::build($classification['code'], $command, $correlationId),
                     'correlation_id' => $correlationId,
                 ];
             }
@@ -488,8 +492,10 @@ class LocalApiClient
 
         if ($outcome === 'success') {
             self::auditLog(ActivityEvent::API_OK, null, $correlationId, $command);
-            ResponseRedactor::scrubSensitive($result);  // D defense-in-depth
-            ResponseRedactor::normalizeTypes($result);  // "" -> [] / 0000-00-00 -> null
+            // Pipeline ÚNICO de saída (objetos -> escalar, JSON-string -> array,
+            // tipos inconsistentes, listas vazias omitidas, scrub por último).
+            // A ORDEM é parte do contrato: ver ResponseRedactor::normalizeResponse().
+            ResponseRedactor::normalizeResponse($result, $command);
 
             return $result;
         }
@@ -519,26 +525,40 @@ class LocalApiClient
                 'result' => 'error',
                 'error_code' => $classification['code'],
                 'error_category' => $classification['category'],
-                'message' => self::publicFailureMessage($command, $correlationId),
+                'message' => ErrorMessages::build($classification['code'], $command, $correlationId),
                 'correlation_id' => $correlationId,
             ];
         }
 
         // Indeterminado: não-array, ou array sem `result` canônico.
+        //
+        // Continua FALHANDO FECHADO — o chamador recebe erro, nunca um `OK`
+        // falso —, mas em forma ESTRUTURADA em vez de exceção. Lançar aqui
+        // fazia o SDK devolver `-32603 "Error while executing tool"`, sem código
+        // nem correlação: `whmcs_get_project` de um projeto existente era
+        // indistinguível de "o WHMCS caiu". O formato é o mesmo dos outros dois
+        // ramos de erro, então quem já ramifica em `result === 'error'` (as
+        // tools de cotação, por exemplo) não muda.
         self::auditLog(ActivityEvent::API_MALFORMED, null, $correlationId, $command);
         Diagnostics::log($correlationId, Diagnostics::CATEGORY_API_MALFORMED, $command);
 
-        throw new DownstreamFailureException(
-            self::publicFailureMessage($command, $correlationId),
-            $correlationId
-        );
+        return [
+            'result'         => 'error',
+            'error_code'     => 'downstream_malformed',
+            'error_category' => ErrorClassifier::DOWNSTREAM,
+            'message'        => ErrorMessages::build('downstream_malformed', $command, $correlationId),
+            'correlation_id' => $correlationId,
+        ];
     }
 
-    /** Mensagem pública ESTÁVEL — nada aqui vem de fora. */
+    /**
+     * Mensagem pública ESTÁVEL do ramo de exceção downstream — nada aqui vem de
+     * fora. Os ramos classificáveis usam `ErrorMessages::build()`, que escolhe a
+     * frase pelo código do enum.
+     */
     private static function publicFailureMessage(string $command, string $correlationId): string
     {
-        return "The WHMCS API call '{$command}' did not complete successfully. "
-            . "Details were recorded in the operator log under correlation id {$correlationId}.";
+        return ErrorMessages::build('downstream_error', $command, $correlationId);
     }
 
     // ---------------------------------------------------------------

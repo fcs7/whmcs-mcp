@@ -204,4 +204,65 @@ class OrderToolsTest extends TestCase
         $this->assertSame('PendingOrder', $captured['cmd']);
         $this->assertSame(['orderid' => 12], $captured['params']);
     }
+
+    /**
+     * O catálogo real devolvia ~126 KB porque cada `description` é HTML de
+     * landing page. O default entrega texto truncado; o HTML continua
+     * disponível sob `full_description=true`.
+     */
+    public function test_get_products_summarises_descriptions_by_default(): void
+    {
+        $tools = $this->makeTools(fn() => ['result' => 'success', 'products' => ['product' => [
+            ['pid' => 1, 'name' => 'NT KVM', 'description' => '<p>Plano <b>rápido</b></p>'],
+        ]]]);
+
+        $data = json_decode($tools->getProducts(), true);
+        $product = $data['products']['product'][0];
+
+        $this->assertArrayNotHasKey('description', $product);
+        $this->assertSame('Plano rápido', $product['description_plain']);
+    }
+
+    public function test_get_products_returns_original_html_when_full_description_is_requested(): void
+    {
+        $tools = $this->makeTools(fn() => ['result' => 'success', 'products' => ['product' => [
+            ['pid' => 1, 'name' => 'NT KVM', 'description' => '<p>Plano <b>rápido</b></p>'],
+        ]]]);
+
+        $data = json_decode($tools->getProducts(full_description: true), true);
+        $product = $data['products']['product'][0];
+
+        $this->assertSame('<p>Plano <b>rápido</b></p>', $product['description']);
+        $this->assertArrayNotHasKey('description_plain', $product);
+    }
+
+    public function test_get_order_statuses_calls_the_read_command(): void
+    {
+        $seen = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$seen) {
+            $seen = [$cmd, $params];
+            return ['result' => 'success', 'statuses' => ['status' => []]];
+        });
+
+        $data = json_decode($tools->getOrderStatuses(), true);
+
+        $this->assertSame(['GetOrderStatuses', []], $seen);
+        $this->assertSame('success', $data['result']);
+    }
+
+    public function test_get_promotions_sends_the_code_filter_only_when_given(): void
+    {
+        $seen = [];
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$seen) {
+            $seen[] = [$cmd, $params];
+            return ['result' => 'success', 'promotions' => ['promotion' => []]];
+        });
+
+        $tools->getPromotions();
+        $tools->getPromotions('NATAL10');
+
+        $this->assertSame(['GetPromotions', []], $seen[0]);
+        $this->assertSame(['GetPromotions', ['code' => 'NATAL10']], $seen[1]);
+    }
+
 }

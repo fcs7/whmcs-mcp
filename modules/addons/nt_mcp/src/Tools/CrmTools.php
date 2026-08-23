@@ -7,6 +7,7 @@ use NtMcp\Crm\MgCrmRepository;
 use NtMcp\Whmcs\CapsuleClient;
 use NtMcp\Whmcs\DateNormalizer;
 use NtMcp\Whmcs\Diagnostics;
+use NtMcp\Whmcs\ToolJson;
 use Mcp\Capability\Attribute\McpTool;
 use Mcp\Capability\Attribute\Schema;
 use Mcp\Schema\Content\TextContent;
@@ -87,7 +88,7 @@ class CrmTools
     private function read(callable $operation): string|CallToolResult
     {
         try {
-            return json_encode($operation(), JSON_PRETTY_PRINT);
+            return ToolJson::encode($operation());
         } catch (CrmException $e) {
             return self::errorResult($e->toPublicArray());
         } catch (\Throwable $e) {
@@ -110,7 +111,7 @@ class CrmTools
      */
     private static function errorResult(array $envelope): CallToolResult
     {
-        return CallToolResult::error([new TextContent(json_encode($envelope, JSON_PRETTY_PRINT))]);
+        return CallToolResult::error([new TextContent(ToolJson::encode($envelope))]);
     }
 
     #[McpTool(
@@ -171,7 +172,7 @@ class CrmTools
             'notes'   => $notes,
             'created' => date('Y-m-d H:i:s'),
         ]);
-        return json_encode(['result' => 'success', 'id' => $id], JSON_PRETTY_PRINT);
+        return ToolJson::encode(['result' => 'success', 'id' => $id]);
     }
 
     /**
@@ -200,11 +201,11 @@ class CrmTools
         }
 
         if ($data === []) {
-            return json_encode(['result' => 'error', 'message' => 'No fields provided for update.'], JSON_PRETTY_PRINT);
+            return ToolJson::encode(['result' => 'error', 'message' => 'No fields provided for update.']);
         }
 
         $count = $this->capsule->update(self::TABLE_CONTACTS, ['id' => $id], $data);
-        return json_encode(['result' => 'success', 'rows_affected' => $count], JSON_PRETTY_PRINT);
+        return ToolJson::encode(['result' => 'success', 'rows_affected' => $count]);
     }
 
     #[McpTool(name: 'whmcs_crm_add_followup', description: 'Adiciona um follow-up a um contato CRM')]
@@ -228,7 +229,7 @@ class CrmTools
             'duedate'    => DateNormalizer::toWhmcsDate($duedate, 'duedate'),
             'created'    => date('Y-m-d H:i:s'),
         ]);
-        return json_encode(['result' => 'success', 'id' => $id], JSON_PRETTY_PRINT);
+        return ToolJson::encode(['result' => 'success', 'id' => $id]);
     }
 
     #[McpTool(name: 'whmcs_crm_add_note', description: 'Adiciona uma nota a um contato CRM')]
@@ -240,7 +241,7 @@ class CrmTools
             'note'       => $note,
             'created'    => date('Y-m-d H:i:s'),
         ]);
-        return json_encode(['result' => 'success', 'id' => $id], JSON_PRETTY_PRINT);
+        return ToolJson::encode(['result' => 'success', 'id' => $id]);
     }
 
     #[McpTool(

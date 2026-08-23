@@ -3,6 +3,7 @@
 namespace NtMcp\Tools;
 
 use NtMcp\Whmcs\LocalApiClient;
+use NtMcp\Whmcs\ToolJson;
 use Mcp\Capability\Attribute\McpTool;
 
 class SupportInfoTools
@@ -14,7 +15,7 @@ class SupportInfoTools
     {
         $params = [];
         if ($ignore_dept_assignments) $params['ignore_dept_assignments'] = true;
-        return json_encode($this->api->call('GetSupportDepartments', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('GetSupportDepartments', $params));
     }
 
     #[McpTool(name: 'whmcs_get_support_statuses', description: 'Lista status de tickets disponíveis')]
@@ -22,7 +23,7 @@ class SupportInfoTools
     {
         $params = [];
         if ($deptid > 0) $params['deptid'] = $deptid;
-        return json_encode($this->api->call('GetSupportStatuses', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('GetSupportStatuses', $params));
     }
 
     #[McpTool(name: 'whmcs_get_ticket_counts', description: 'Obtém contagem de tickets por status')]
@@ -30,6 +31,6 @@ class SupportInfoTools
     {
         $params = [];
         if ($includeCountsByStatus) $params['includeCountsByStatus'] = true;
-        return json_encode($this->api->call('GetTicketCounts', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('GetTicketCounts', $params));
     }
 }

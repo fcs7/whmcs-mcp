@@ -279,18 +279,19 @@ class LocalApiClientGateTest extends TestCase
             'SendEmail', 'SendQuote',
             // destrutivo fora da exceção decidida
             'DeleteProjectTask',
-            // lookups auxiliares retirados — `GetProducts` e `GetCurrencies`
-            // SAÍRAM desta lista em 2026-08-23: reintroduzidas como
-            // `whmcs_get_products`/`whmcs_get_currencies` (catálogo de
-            // produtos e moedas eram tools documentadas e nunca implementadas).
-            'GetOrderStatuses', 'GetPromotions',
+            // lookups auxiliares retirados — `GetProducts`, `GetCurrencies`,
+            // `GetOrderStatuses` e `GetPromotions` SAÍRAM desta lista em
+            // 2026-08-23: reintroduzidas como tools de leitura
+            // (`whmcs_get_products`, `whmcs_get_currencies`,
+            // `whmcs_get_order_statuses`, `whmcs_get_promotions`) — eram tools
+            // documentadas e nunca implementadas.
             'GetEmailTemplates', 'GetPaymentMethods',
             'GetToDoItemStatuses', 'LogActivity',
             'GetTicketNotes', 'GetTicketPredefinedCats',
             'GetTicketPredefinedReplies', 'GetTicketAttachment',
         ];
 
-        $this->assertCount(22, $removed);
+        $this->assertCount(20, $removed);
         $this->assertAllRejectedByAllowlist($removed);
     }
 

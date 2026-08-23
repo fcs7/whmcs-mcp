@@ -62,7 +62,7 @@ use Psr\Log\LoggerInterface;
 final class McpSdkAdapter implements ServerAdapterInterface
 {
     public const SERVER_NAME = 'NT Web WHMCS MCP Server';
-    public const SERVER_VERSION = '2.0.0';
+    public const SERVER_VERSION = '2.1.0';
     public const MAX_BODY_BYTES = 1048576;
     public const SESSION_TTL = 3600;
     public const ELEMENTS_CACHE_FILE = 'mcp_elements.json';
@@ -98,7 +98,47 @@ final class McpSdkAdapter implements ServerAdapterInterface
     public function handle(ServerRequestInterface $request): ResponseInterface
     {
         $logger = self::compatLogger();
+        $server = $this->buildServer($logger);
 
+        $psr17 = new Psr17Factory();
+        $transport = new StreamableHttpTransport(
+            $request,
+            $psr17,
+            $psr17,
+            $logger,
+            middleware: [new ProtocolVersionMiddleware(null, $psr17, $psr17)],
+            maxBodyBytes: self::MAX_BODY_BYTES,
+        );
+
+        return $server->run($transport);
+    }
+
+    /**
+     * Reconstrói o cache de discovery (`data/cache/mcp_elements.json`) fora do
+     * caminho de request.
+     *
+     * O cache é invalidado no upgrade do addon; sem este aquecimento, o PRIMEIRO
+     * request depois do deploy paga o scan de atributos inteiro — e paga
+     * segurando o `SessionLock`, o que aparece no cliente como
+     * `DeadlineExceeded` numa chamada que deveria ser trivial. `setLazyLoading(false)`
+     * força os loaders a rodarem no `build()`, que é o que grava o cache.
+     *
+     * Falha NUNCA propaga: aquecer é otimização, e derrubar a ativação do addon
+     * por causa dela seria trocar lentidão por indisponibilidade.
+     */
+    public function warmElementCache(): bool
+    {
+        try {
+            $this->buildServer(self::compatLogger(), eager: true);
+
+            return true;
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    private function buildServer(LoggerInterface $logger, bool $eager = false): McpServer
+    {
         $container = new CompatContainer();
         $container->set(LocalApiClient::class, $this->localApi);
         $container->set(CapsuleClient::class, $this->capsule);
@@ -131,19 +171,10 @@ final class McpSdkAdapter implements ServerAdapterInterface
                 gcDivisor: 20,
             )
             ->setPaginationLimit(200)
+            ->setLazyLoading(!$eager)
             ->build();
 
-        $psr17 = new Psr17Factory();
-        $transport = new StreamableHttpTransport(
-            $request,
-            $psr17,
-            $psr17,
-            $logger,
-            middleware: [new ProtocolVersionMiddleware(null, $psr17, $psr17)],
-            maxBodyBytes: self::MAX_BODY_BYTES,
-        );
-
-        return $server->run($transport);
+        return $server;
     }
 
     /**

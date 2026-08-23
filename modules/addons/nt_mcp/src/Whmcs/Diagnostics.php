@@ -58,6 +58,7 @@ final class Diagnostics
         'xff_without_trusted_proxies',
         'rate_limit_dir_create_failed',
         'rate_limit_file_open_failed',
+        'response_encoding_failed',
     ];
 
     private const EVENT_CATEGORIES = [

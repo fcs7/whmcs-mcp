@@ -6,6 +6,7 @@ use NtMcp\Whmcs\AuditMetadata;
 use NtMcp\Whmcs\ActivityEvent;
 use NtMcp\Whmcs\LocalApiClient;
 use NtMcp\Whmcs\ResponseRedactor;
+use NtMcp\Whmcs\ToolJson;
 use Mcp\Capability\Attribute\McpTool;
 
 class OrderTools
@@ -21,7 +22,7 @@ class OrderTools
         if ($clientid > 0) $params['userid'] = $clientid;
         $result = $this->api->call('GetOrders', $params);
         ResponseRedactor::stripOrderFraudDump($result);
-        return json_encode($result, JSON_PRETTY_PRINT);
+        return ToolJson::encode($result);
     }
 
     #[McpTool(name: 'whmcs_get_order', description: 'Obtém detalhes de um pedido específico')]
@@ -29,7 +30,7 @@ class OrderTools
     {
         $result = $this->api->call('GetOrders', ['id' => $orderid]);
         ResponseRedactor::stripOrderFraudDump($result);
-        return json_encode($result, JSON_PRETTY_PRINT);
+        return ToolJson::encode($result);
     }
 
     /**
@@ -50,11 +51,11 @@ class OrderTools
                 AuditMetadata::ids(['orderid' => $orderid])
             );
 
-            return json_encode([
+            return ToolJson::encode([
                 'result' => 'error',
                 'orderid' => $orderid,
                 'message' => 'Cancellation requires confirm=true',
-            ], JSON_PRETTY_PRINT);
+            ]);
         }
 
         $response = $this->api->call('CancelOrder', [
@@ -65,17 +66,23 @@ class OrderTools
             $response['orderid'] = $orderid;
         }
 
-        return json_encode($response, JSON_PRETTY_PRINT);
+        return ToolJson::encode($response);
     }
 
     #[McpTool(name: 'whmcs_pending_order', description: 'Coloca um pedido em status pendente')]
     public function pendingOrder(int $orderid): string
     {
-        return json_encode($this->api->call('PendingOrder', ['orderid' => $orderid]), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('PendingOrder', ['orderid' => $orderid]));
     }
 
-    #[McpTool(name: 'whmcs_get_products', description: 'Lista o catálogo de produtos/serviços do WHMCS, opcionalmente filtrado por grupo')]
-    public function getProducts(int $gid = 0, int $pid = 0, string $module = ''): string
+    /**
+     * O `description` de cada produto é HTML de landing page — o catálogo real
+     * devolvia ~126 KB por chamada, quase tudo markup. O default entrega
+     * `description_plain` (texto corrido truncado); `full_description=true`
+     * devolve o HTML original intacto, para quem realmente precisa dele.
+     */
+    #[McpTool(name: 'whmcs_get_products', description: 'Lista o catálogo de produtos/serviços do WHMCS, opcionalmente filtrado por grupo. Por padrão a descrição vem como texto truncado em description_plain; use full_description=true para o HTML completo.')]
+    public function getProducts(int $gid = 0, int $pid = 0, string $module = '', bool $full_description = false): string
     {
         $params = [];
         if ($gid > 0) $params['gid'] = $gid;
@@ -83,6 +90,28 @@ class OrderTools
         if ($module !== '') $params['module'] = $module;
         $result = $this->api->call('GetProducts', $params);
         ResponseRedactor::stripProductPasswords($result);
-        return json_encode($result, JSON_PRETTY_PRINT);
+        if (!$full_description) {
+            ResponseRedactor::summariseProductDescriptions($result);
+        }
+        return ToolJson::encode($result);
+    }
+
+    #[McpTool(name: 'whmcs_get_order_statuses', description: 'Lista os status de pedido configurados no WHMCS, com a contagem de pedidos em cada um')]
+    public function getOrderStatuses(): string
+    {
+        return ToolJson::encode($this->api->call('GetOrderStatuses', []));
+    }
+
+    /**
+     * `GetPromotions` sem filtro devolve o catálogo inteiro de promoções; o
+     * filtro por código existe para conferir uma promoção específica sem trazer
+     * o resto.
+     */
+    #[McpTool(name: 'whmcs_get_promotions', description: 'Lista as promoções/cupons configurados no WHMCS, opcionalmente filtrando por código')]
+    public function getPromotions(string $code = ''): string
+    {
+        $params = [];
+        if ($code !== '') $params['code'] = $code;
+        return ToolJson::encode($this->api->call('GetPromotions', $params));
     }
 }

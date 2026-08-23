@@ -11,6 +11,7 @@ use NtMcp\Whmcs\LocalApiClient;
 use NtMcp\Whmcs\LocalizedDate;
 use NtMcp\Whmcs\PaymentGatewayDirectory;
 use NtMcp\Whmcs\Diagnostics;
+use NtMcp\Whmcs\ToolJson;
 use Mcp\Capability\Attribute\McpTool;
 
 class QuoteTools
@@ -85,13 +86,13 @@ class QuoteTools
         // cru, então uma forma localizada atravessava sem erro — D9 estava
         // incompleta justamente no campo que ninguém olhou.
         if ($lastmodified !== '') $params['lastmodified'] = DateNormalizer::toWhmcsDate($lastmodified, 'lastmodified');
-        return json_encode($this->api->call('GetQuotes', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('GetQuotes', $params));
     }
 
     #[McpTool(name: 'whmcs_get_quote', description: 'Obtém detalhes de um orçamento')]
     public function getQuote(int $quoteid): string
     {
-        return json_encode($this->api->call('GetQuotes', ['quoteid' => $quoteid]), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('GetQuotes', ['quoteid' => $quoteid]));
     }
 
     /**
@@ -119,7 +120,7 @@ class QuoteTools
         if ($customernotes !== '') $params['customernotes'] = $customernotes;
         if ($adminnotes !== '') $params['adminnotes'] = $adminnotes;
         $this->addSerializedLineItems($params, $lineitems);
-        return json_encode($this->api->call('CreateQuote', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('CreateQuote', $params));
     }
 
     /**
@@ -147,7 +148,7 @@ class QuoteTools
         if ($customernotes !== '') $params['customernotes'] = $customernotes;
         if ($adminnotes !== '') $params['adminnotes'] = $adminnotes;
         $this->addSerializedLineItems($params, $lineitems);
-        return json_encode($this->api->call('UpdateQuote', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('UpdateQuote', $params));
     }
 
     /**
@@ -168,16 +169,16 @@ class QuoteTools
     ): string {
         $sourceResponse = $this->api->call('GetQuotes', ['quoteid' => $quoteid]);
         if (($sourceResponse['result'] ?? '') === 'error') {
-            return json_encode($sourceResponse, JSON_PRETTY_PRINT);
+            return ToolJson::encode($sourceResponse);
         }
 
         $source = $this->extractQuote($sourceResponse, $quoteid);
         if ($source === null) {
-            return json_encode([
+            return ToolJson::encode([
                 'result' => 'error',
                 'quoteid' => $quoteid,
                 'message' => 'Quote not found',
-            ], JSON_PRETTY_PRINT);
+            ]);
         }
 
         $newQuote = [
@@ -229,7 +230,7 @@ class QuoteTools
 
         $this->addSerializedLineItems($newQuote, $this->extractLineItems($source, includeIds: false));
 
-        return json_encode($this->api->call('CreateQuote', $newQuote), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('CreateQuote', $newQuote));
     }
 
     /**
@@ -279,27 +280,27 @@ class QuoteTools
             if (!isset($currentResponse['quoteid'])) {
                 $currentResponse['quoteid'] = $quoteid;
             }
-            return json_encode($currentResponse, JSON_PRETTY_PRINT);
+            return ToolJson::encode($currentResponse);
         }
 
         $current = $this->extractQuote($currentResponse, $quoteid);
         if ($current === null) {
-            return json_encode([
+            return ToolJson::encode([
                 'result' => 'error',
                 'quoteid' => $quoteid,
                 'message' => 'Quote not found',
-            ], JSON_PRETTY_PRINT);
+            ]);
         }
 
         $currentStage = (string)($current['stage'] ?? '');
         if (strcasecmp($currentStage, 'Accepted') === 0) {
-            return json_encode([
+            return ToolJson::encode([
                 'result' => 'error',
                 'quoteid' => $quoteid,
                 'stage' => $currentStage,
                 'message' => 'Quote is already in stage "Accepted" and was not converted again',
                 'warning' => 'Esta operação não é idempotente. A cotação já foi aceita — converter de novo geraria efeito financeiro duplicado. Verifique a fatura existente antes de agir.',
-            ], JSON_PRETTY_PRINT);
+            ]);
         }
 
         // --- Efeito 1: aceita a cotação e gera a fatura. ---
@@ -398,7 +399,7 @@ class QuoteTools
             $convertResponse['invoiceid'] = $invoiceId;
         }
 
-        return json_encode($convertResponse, JSON_PRETTY_PRINT);
+        return ToolJson::encode($convertResponse);
     }
 
     /** Aviso obrigatório quando um efeito parcial já foi persistido. */
@@ -484,7 +485,7 @@ class QuoteTools
             );
         }
 
-        return json_encode($payload, JSON_PRETTY_PRINT);
+        return ToolJson::encode($payload);
     }
 
     /**
@@ -502,11 +503,11 @@ class QuoteTools
                 AuditMetadata::ids(['quoteid' => $quoteid])
             );
 
-            return json_encode([
+            return ToolJson::encode([
                 'result' => 'error',
                 'quoteid' => $quoteid,
                 'message' => 'Deletion requires confirm=true',
-            ], JSON_PRETTY_PRINT);
+            ]);
         }
 
         $response = $this->api->call('DeleteQuote', ['quoteid' => $quoteid]);
@@ -514,7 +515,7 @@ class QuoteTools
             $response['quoteid'] = $quoteid;
         }
 
-        return json_encode($response, JSON_PRETTY_PRINT);
+        return ToolJson::encode($response);
     }
 
     // ---------------------------------------------------------------

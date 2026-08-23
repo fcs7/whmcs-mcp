@@ -158,7 +158,7 @@ final class ServerSessionLockTest extends TestCase
         $this->assertTrue($locked);
         $names = array_map('basename', glob($this->dataDir . '/session-locks/*'));
         $this->assertCount(1, $names);
-        $this->assertMatchesRegularExpression('/^bucket-\d{2}\.lock$/', $names[0]);
+        $this->assertMatchesRegularExpression('/^sess-[0-9a-f]{64}\.lock$/', $names[0]);
     }
 
     // ------------------------------------------------------------------

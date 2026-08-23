@@ -43,6 +43,12 @@ class LocalApiClientTest extends TestCase
      * m1.1 (P2): só `result === 'success'` é sucesso. Array malformado é
      * indeterminado e falha fechado — antes gerava um `OK` falso.
      *
+     * O desfecho é um ERRO ESTRUTURADO, não uma exceção: lançar aqui fazia o SDK
+     * devolver `-32603 "Error while executing tool"`, indistinguível de "o WHMCS
+     * caiu" e sem código nem correlação (foi o que `whmcs_get_project` mostrou
+     * no desenv). O formato é o mesmo dos outros ramos de erro, então continua
+     * fechado para quem ramifica em `result === 'error'`.
+     *
      * @param mixed $response
      */
     #[DataProvider('malformedResponseProvider')]
@@ -51,10 +57,14 @@ class LocalApiClientTest extends TestCase
         $client = new LocalApiClient('testadmin');
         $client->setCallable(fn() => $response);
 
-        $this->expectException(\NtMcp\Whmcs\DownstreamFailureException::class);
-        $this->expectExceptionMessage('did not complete successfully');
+        $result = $client->call('GetClients', []);
 
-        $client->call('GetClients', []);
+        $this->assertSame('error', $result['result']);
+        $this->assertSame('downstream_malformed', $result['error_code']);
+        $this->assertSame('downstream', $result['error_category']);
+        $this->assertMatchesRegularExpression('/^[0-9a-f]{8}$/', $result['correlation_id']);
+        $this->assertStringContainsString('could not interpret', $result['message']);
+        $this->assertStringContainsString($result['correlation_id'], $result['message']);
     }
 
     public static function malformedResponseProvider(): array
@@ -237,18 +247,21 @@ class LocalApiClientTest extends TestCase
             ->getReflectionConstant('COMMAND_CLASS')->getValue();
     }
 
-    public function test_allowed_commands_match_66_tool_profile(): void
+    public function test_allowed_commands_match_68_tool_profile(): void
     {
         $commands = self::allowedCommands();
 
-        $this->assertCount(53, $commands);
+        $this->assertCount(55, $commands);
         $this->assertSame($commands, array_values(array_unique($commands)), 'sem duplicatas');
         $this->assertContains('AcceptQuote', $commands);
         $this->assertContains('DeleteQuote', $commands);
         $this->assertContains('UpdateInvoice', $commands);
-        // Reintroduzidos em 2026-08-23: catálogo de produtos e moedas.
+        // Reintroduzidos em 2026-08-23: catálogo de produtos, moedas, status de
+        // pedido e promoções — eram tools documentadas e nunca implementadas.
         $this->assertContains('GetProducts', $commands);
         $this->assertContains('GetCurrencies', $commands);
+        $this->assertContains('GetOrderStatuses', $commands);
+        $this->assertContains('GetPromotions', $commands);
 
         foreach ([
             'ModuleSuspend',
@@ -256,8 +269,6 @@ class LocalApiClientTest extends TestCase
             'UpgradeProduct',
             'AcceptOrder',
             'AddOrder',
-            'GetOrderStatuses',
-            'GetPromotions',
             'DomainRegister',
             'DomainRenew',
             'DomainUpdateNameservers',
@@ -283,7 +294,7 @@ class LocalApiClientTest extends TestCase
         $commands = self::allowedCommands();
         $classes = self::commandClasses();
 
-        $this->assertCount(53, $classes, 'COMMAND_CLASS não pode ter entrada órfã');
+        $this->assertCount(55, $classes, 'COMMAND_CLASS não pode ter entrada órfã');
 
         foreach ($commands as $command) {
             $this->assertArrayHasKey($command, $classes, "'{$command}' sem classe explícita");
@@ -295,7 +306,7 @@ class LocalApiClientTest extends TestCase
 
     /**
      * Nenhum comando órfão e nenhuma tool chamando comando ausente: o allowlist
-     * é exatamente o conjunto de comandos que as 66 tools realmente invocam.
+     * é exatamente o conjunto de comandos que as 68 tools realmente invocam.
      */
     public function test_allowlist_matches_exactly_the_commands_the_tools_call(): void
     {
@@ -326,7 +337,7 @@ class LocalApiClientTest extends TestCase
     {
         $counts = array_count_values(self::commandClasses());
 
-        $this->assertSame(31, $counts['READ'] ?? 0);
+        $this->assertSame(33, $counts['READ'] ?? 0);
         $this->assertSame(18, $counts['WRITE'] ?? 0);
         $this->assertSame(2, $counts['FINANCIAL'] ?? 0);
         $this->assertSame(2, $counts['DESTRUCTIVE'] ?? 0);

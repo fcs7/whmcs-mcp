@@ -3,6 +3,7 @@
 namespace NtMcp\Tools;
 
 use NtMcp\Whmcs\LocalApiClient;
+use NtMcp\Whmcs\ToolJson;
 use Mcp\Capability\Attribute\McpTool;
 
 class DomainTools
@@ -17,25 +18,25 @@ class DomainTools
         if ($status !== '') $params['status'] = $status;
         if ($limitstart > 0) $params['limitstart'] = $limitstart;
         if ($domainid > 0) $params['domainid'] = $domainid;
-        return json_encode($this->api->call('GetClientsDomains', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('GetClientsDomains', $params));
     }
 
     #[McpTool(name: 'whmcs_domain_get_nameservers', description: 'Obtém nameservers atuais de um domínio')]
     public function domainGetNameservers(int $domainid): string
     {
-        return json_encode($this->api->call('DomainGetNameservers', ['domainid' => $domainid]), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('DomainGetNameservers', ['domainid' => $domainid]));
     }
 
     #[McpTool(name: 'whmcs_domain_get_locking_status', description: 'Verifica status de bloqueio de transferência de um domínio')]
     public function domainGetLockingStatus(int $domainid): string
     {
-        return json_encode($this->api->call('DomainGetLockingStatus', ['domainid' => $domainid]), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('DomainGetLockingStatus', ['domainid' => $domainid]));
     }
 
     #[McpTool(name: 'whmcs_domain_get_whois_info', description: 'Obtém informações WHOIS de um domínio registrado')]
     public function domainGetWhoisInfo(int $domainid): string
     {
-        return json_encode($this->api->call('DomainGetWhoisInfo', ['domainid' => $domainid]), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('DomainGetWhoisInfo', ['domainid' => $domainid]));
     }
 
     #[McpTool(name: 'whmcs_get_tld_pricing', description: 'Lista preços de TLDs disponíveis para registro')]
@@ -43,6 +44,6 @@ class DomainTools
     {
         $params = [];
         if ($currencyid > 0) $params['currencyid'] = $currencyid;
-        return json_encode($this->api->call('GetTLDPricing', $params), JSON_PRETTY_PRINT);
+        return ToolJson::encode($this->api->call('GetTLDPricing', $params));
     }
 }

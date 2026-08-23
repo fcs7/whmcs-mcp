@@ -23,25 +23,30 @@ final class SessionLockTest extends TestCase
         @rmdir($this->dir);
     }
 
-    /** Dois ids em faixas distintas — calculados, não chutados. */
-    private static function distinctBucketIds(): array
-    {
-        $first = 'aaaaaaaa-0000-4000-8000-000000000001';
-        $i = 2;
-        do {
-            $second = sprintf('aaaaaaaa-0000-4000-8000-%012d', $i++);
-        } while (SessionLock::bucketFor($second) === SessionLock::bucketFor($first));
-
-        return [$first, $second];
-    }
-
     #[Test]
-    public function bucket_is_deterministic_and_bounded(): void
+    public function file_name_is_deterministic_and_derived_from_a_hash(): void
     {
         $id = 'f1d2d2f9-24a8-4f1c-9f3e-0b1c2d3e4f50';
-        $this->assertSame(SessionLock::bucketFor($id), SessionLock::bucketFor($id));
-        $this->assertGreaterThanOrEqual(0, SessionLock::bucketFor($id));
-        $this->assertLessThan(SessionLock::BUCKETS, SessionLock::bucketFor($id));
+        $this->assertSame(SessionLock::fileFor($id), SessionLock::fileFor($id));
+        $this->assertMatchesRegularExpression('/^sess-[0-9a-f]{64}\\.lock$/', SessionLock::fileFor($id));
+        $this->assertNotSame(SessionLock::fileFor($id), SessionLock::fileFor($id . 'x'));
+    }
+
+    /**
+     * Regressão do modelo antigo: com 64 faixas (`crc32 % 64`), duas sessões
+     * DIFERENTES podiam cair na mesma faixa e se bloquear mutuamente — com o
+     * lock segurado pelo request inteiro, um cliente parado derrubava outro sem
+     * relação nenhuma com 503. Um arquivo por sessão não colide: qualquer par de
+     * ids distintos precisa ser concorrente.
+     */
+    #[Test]
+    public function no_pair_of_distinct_sessions_ever_shares_a_lock_file(): void
+    {
+        $names = [];
+        for ($i = 0; $i < 200; $i++) {
+            $names[] = SessionLock::fileFor(sprintf('aaaaaaaa-0000-4000-8000-%012d', $i));
+        }
+        $this->assertCount(200, array_unique($names));
     }
 
     #[Test]
@@ -62,7 +67,8 @@ final class SessionLockTest extends TestCase
     #[Test]
     public function different_sessions_stay_concurrent(): void
     {
-        [$first, $second] = self::distinctBucketIds();
+        $first = 'aaaaaaaa-0000-4000-8000-000000000001';
+        $second = 'aaaaaaaa-0000-4000-8000-000000000002';
         $a = new SessionLock($this->dir);
         $b = new SessionLock($this->dir);
 
@@ -81,7 +87,7 @@ final class SessionLockTest extends TestCase
 
         $files = array_map('basename', glob($this->dir . '/*'));
         $this->assertCount(1, $files);
-        $this->assertMatchesRegularExpression('/^bucket-\d{2}\.lock$/', $files[0]);
+        $this->assertMatchesRegularExpression('/^sess-[0-9a-f]{64}\\.lock$/', $files[0]);
     }
 
     #[Test]
@@ -99,19 +105,19 @@ final class SessionLockTest extends TestCase
     }
 
     /**
-     * Regressão (desenv, 2026-08-23): a PRIMEIRA request de cada faixa cria o
+     * Regressão (desenv, 2026-08-23): a PRIMEIRA request de cada sessão cria o
      * arquivo com 0644 (umask 022) e precisa corrigir o modo E prosseguir. A
      * verificação relia `fileperms()` sem `clearstatcache()`, recebia o valor
      * cacheado de ANTES do chmod e recusava o lock — o cliente MCP via 503
-     * "Session busy; retry" toda vez que uma sessão nova caía numa faixa ainda
+     * "Session busy; retry" toda vez que uma sessão nova caía num arquivo ainda
      * inexistente, sem nenhuma contenção real.
      */
     #[Test]
-    public function acquires_and_repairs_a_bucket_file_left_with_loose_permissions(): void
+    public function acquires_and_repairs_a_lock_file_left_with_loose_permissions(): void
     {
         $id = 'c0ffee00-0000-4000-8000-000000000042';
         @mkdir($this->dir, 0700, true);
-        $path = $this->dir . '/' . sprintf('bucket-%02d.lock', SessionLock::bucketFor($id));
+        $path = $this->dir . '/' . SessionLock::fileFor($id);
         file_put_contents($path, '');
         chmod($path, 0644);
         clearstatcache(true, $path);
@@ -171,5 +177,67 @@ final class SessionLockTest extends TestCase
         $this->assertTrue($lock->acquire($id, 200));
         $this->assertNull($lock->lastFailure());
         $lock->release();
+    }
+
+    /**
+     * O GC só pode remover arquivo de sessão EXPIRADA e que ninguém esteja
+     * segurando. Remover um arquivo em uso faria dois processos travarem inodes
+     * diferentes — ou seja, nenhuma exclusão mútua.
+     */
+    #[Test]
+    public function garbage_collection_removes_only_stale_and_unheld_files(): void
+    {
+        $stale = 'aaaaaaaa-0000-4000-8000-00000000dead';
+        $fresh = 'aaaaaaaa-0000-4000-8000-00000000beef';
+        $held  = 'aaaaaaaa-0000-4000-8000-00000000ca11';
+
+        $lock = new SessionLock($this->dir);
+        foreach ([$stale, $fresh, $held] as $id) {
+            $this->assertTrue($lock->acquire($id));
+            $lock->release();
+        }
+
+        $holder = new SessionLock($this->dir);
+        $this->assertTrue($holder->acquire($held));
+
+        // O envelhecimento vem DEPOIS do último `acquire()`. Antes ele vinha
+        // no meio, e o GC oportunista (1/20) de um acquire seguinte podia
+        // limpar o arquivo stale antes do GC forçado — teste falhava 1 em 20
+        // execuções. Envelhecer no fim torna a corrida impossível.
+        //
+        // O `held` também é envelhecido: assim ele passa no teste de idade e só
+        // o flock o protege — é essa proteção que este caso exercita.
+        $stalePath = $this->dir . '/' . SessionLock::fileFor($stale);
+        $heldPath = $this->dir . '/' . SessionLock::fileFor($held);
+        touch($stalePath, time() - SessionLock::STALE_AFTER_SECONDS - 60);
+        touch($heldPath, time() - SessionLock::STALE_AFTER_SECONDS - 60);
+
+        $removed = (new SessionLock($this->dir))->collectGarbage(force: true);
+        $holder->release();
+
+        $this->assertSame(1, $removed);
+        $this->assertFileDoesNotExist($stalePath);
+        $this->assertFileExists($heldPath, 'arquivo em uso nunca é removido');
+        $this->assertFileExists($this->dir . '/' . SessionLock::fileFor($fresh));
+    }
+
+    /** `acquire()` mantém a sessão viva para o GC — senão sessão longa se apaga sozinha. */
+    #[Test]
+    public function acquire_refreshes_mtime_so_active_sessions_survive_gc(): void
+    {
+        $id = 'aaaaaaaa-0000-4000-8000-0000000000f0';
+        $lock = new SessionLock($this->dir);
+        $this->assertTrue($lock->acquire($id));
+        $lock->release();
+
+        $path = $this->dir . '/' . SessionLock::fileFor($id);
+        touch($path, time() - SessionLock::STALE_AFTER_SECONDS - 60);
+
+        $this->assertTrue($lock->acquire($id));
+        $lock->release();
+
+        clearstatcache(true, $path);
+        $this->assertGreaterThan(time() - 60, filemtime($path));
+        $this->assertSame(0, (new SessionLock($this->dir))->collectGarbage(force: true));
     }
 }

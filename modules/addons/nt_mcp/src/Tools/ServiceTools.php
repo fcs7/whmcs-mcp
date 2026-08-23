@@ -4,6 +4,7 @@ namespace NtMcp\Tools;
 
 use NtMcp\Whmcs\LocalApiClient;
 use NtMcp\Whmcs\ResponseRedactor;
+use NtMcp\Whmcs\ToolJson;
 use Mcp\Capability\Attribute\McpTool;
 
 class ServiceTools
@@ -19,6 +20,6 @@ class ServiceTools
         if ($pid > 0) $params['pid'] = $pid;
         $result = $this->api->call('GetClientsProducts', $params);
         ResponseRedactor::stripProductPasswords($result);
-        return json_encode($result, JSON_PRETTY_PRINT);
+        return ToolJson::encode($result);
     }
 }

@@ -11,13 +11,16 @@ require_once __DIR__ . '/vendor/autoload.php';
 
 use NtMcp\Admin\AdminController;
 use NtMcp\Admin\OAuthApprovalController;
+use NtMcp\Mcp\McpSdkAdapter;
 use NtMcp\Mcp\RuntimeDirs;
 use NtMcp\OAuth\OAuthMigration;
 use NtMcp\Security\CsrfProtection;
 use NtMcp\Whmcs\ActivityEvent;
 use NtMcp\Whmcs\ActivityLog;
+use NtMcp\Whmcs\CapsuleClient;
 use NtMcp\Whmcs\Diagnostics;
 use NtMcp\Whmcs\DiagnosticsKeyStore;
+use NtMcp\Whmcs\LocalApiClient;
 
 /**
  * Metadados e configuracoes do addon
@@ -27,7 +30,7 @@ function nt_mcp_config(): array
     return [
         'name'        => 'NT MCP Server',
         'description' => 'Model Context Protocol server para integrar Claude Code ao WHMCS.',
-        'version'     => '2.0.0', // = McpSdkAdapter::SERVER_VERSION; mudar aqui dispara nt_mcp_upgrade()
+        'version'     => '2.1.0', // = McpSdkAdapter::SERVER_VERSION; mudar aqui dispara nt_mcp_upgrade()
         'author'      => 'NT Web',
         'language'    => 'english',
         'fields'      => [], // Configuracoes gerenciadas na tela _output
@@ -66,6 +69,8 @@ function nt_mcp_activate(): array
         ];
     }
 
+    nt_mcp_warm_element_cache();
+
     $token = bin2hex(random_bytes(32)); // 64 chars hex
     $hash  = hash('sha256', $token);
     \WHMCS\Config\Setting::setValue('nt_mcp_bearer_token', $hash);
@@ -81,6 +86,25 @@ function nt_mcp_activate(): array
         'status'      => 'success',
         'description' => 'NT MCP ativado. Bearer Token (copie agora, nao sera exibido novamente): ' . $token,
     ];
+}
+
+/**
+ * Constrói o registro de elementos uma vez, fora do caminho de request, para
+ * que `data/cache/mcp_elements.json` já exista quente.
+ *
+ * Nunca propaga falha: sem WHMCS bootstrapado, sem symfony/finder ou com
+ * qualquer erro de discovery, a ativação/upgrade seguem — o primeiro request
+ * apenas volta a pagar o scan, que é o comportamento anterior.
+ */
+function nt_mcp_warm_element_cache(): bool
+{
+    try {
+        $adapter = new McpSdkAdapter(new LocalApiClient(), new CapsuleClient(), __DIR__ . '/src');
+
+        return $adapter->warmElementCache();
+    } catch (\Throwable) {
+        return false;
+    }
 }
 
 /**
@@ -151,6 +175,11 @@ function nt_mcp_upgrade(array $vars): array
     if ($dirError !== null) {
         return ['status' => 'error', 'description' => 'NT MCP: ' . $dirError . '.'];
     }
+
+    // Reaquece o cache que acabou de ser apagado, AQUI e não no primeiro
+    // request: o discovery roda segurando o SessionLock, e pagá-lo em request
+    // aparece no cliente MCP como DeadlineExceeded numa chamada trivial.
+    nt_mcp_warm_element_cache();
 
     // D10: instalações que já existiam antes desta versão não têm a chave;
     // provisiona no upgrade também. Chave válida existente é preservada.

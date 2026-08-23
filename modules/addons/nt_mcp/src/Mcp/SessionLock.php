@@ -11,21 +11,35 @@ namespace NtMcp\Mcp;
  * dois requests simultâneos na mesma sessão hidratam o mesmo estado, cada um
  * grava a sua fila de saída e o último `save()` vence — a resposta do outro é
  * perdida e, pior, `consumeOutgoingMessages()` entrega ao cliente A a resposta
- * de B (reproduzido em docker, ver go/no-go). A lib anterior tinha lock global;
- * este é por faixa de sessão, preservando paralelismo entre sessões distintas.
+ * de B (reproduzido em docker, ver go/no-go). A lib anterior tinha lock global.
  *
- *  - Faixas fixas (`BUCKETS` arquivos em data/session-locks) — sem crescimento
- *    ilimitado e sem a corrida clássica de apagar lock file em uso.
- *  - O valor do header NUNCA vira nome de arquivo: só o índice da faixa.
+ *  - UM arquivo por sessão. A implementação anterior usava 64 faixas
+ *    (`crc32($id) % 64`), o que serializava sessões DIFERENTES que caíssem na
+ *    mesma faixa: com o lock segurado pelo request inteiro (incluindo chamadas
+ *    à LocalAPI, que levam segundos), um cliente parado bloqueava outro sem
+ *    nenhuma relação, até estourar o timeout e devolver 503. Um arquivo por
+ *    sessão elimina a colisão sem mudar mais nada do protocolo.
+ *  - O valor do header NUNCA vira nome de arquivo: o nome é o SHA-256 hex do
+ *    id, então nem `../`, nem byte nulo, nem tamanho arbitrário atravessam.
  *  - `LOCK_NB` em loop com timeout curto: flock bloqueante empilharia workers.
  *    Timeout ou falha de abertura → chamador responde 503 + Retry-After.
  *  - Diretório 0700, arquivos 0600; chmod verificado (fail-closed).
+ *  - GC oportunista de arquivos de sessão já expirada (ver `collectGarbage()`).
+ *
+ * ACEITO por design: requests concorrentes da MESMA sessão continuam
+ * serializados pelo request inteiro. É inerente ao store read-modify-write do
+ * SDK — é justamente o bug que este lock existe para evitar.
  */
 final class SessionLock
 {
-    public const BUCKETS = 64;
     public const ACQUIRE_TIMEOUT_MS = 5000;
     private const POLL_US = 10000;
+
+    /** Idade mínima para um arquivo de lock ser considerado abandonado. */
+    public const STALE_AFTER_SECONDS = 3600;
+
+    /** Probabilidade do GC: 1 em GC_DIVISOR acquires. */
+    private const GC_DIVISOR = 20;
 
     /** @var resource|null */
     private $handle = null;
@@ -49,9 +63,13 @@ final class SessionLock
         return $this->failureReason;
     }
 
-    public static function bucketFor(string $sessionId): int
+    /**
+     * Nome de arquivo derivado do id da sessão. SHA-256 e não o valor cru: o id
+     * vem de um header controlado pelo cliente e não pode tocar no filesystem.
+     */
+    public static function fileFor(string $sessionId): string
     {
-        return crc32($sessionId) % self::BUCKETS;
+        return 'sess-' . hash('sha256', $sessionId) . '.lock';
     }
 
     public function acquire(string $sessionId, int $timeoutMs = self::ACQUIRE_TIMEOUT_MS): bool
@@ -67,19 +85,19 @@ final class SessionLock
             return false;
         }
 
-        $path = $this->directory . '/' . sprintf('bucket-%02d.lock', self::bucketFor($sessionId));
+        $path = $this->directory . '/' . self::fileFor($sessionId);
         $handle = @fopen($path, 'c');
         if ($handle === false) {
             $this->failureReason = 'open_failed';
             return false;
         }
         // `fopen('c')` cria o arquivo com 0666 & ~umask (0644 no Plesk), então a
-        // PRIMEIRA request de cada faixa precisa corrigir o modo. O
+        // PRIMEIRA request de cada sessão precisa corrigir o modo. O
         // `clearstatcache()` entre o chmod e a releitura não é zelo: sem ele o
         // `fileperms()` devolve o valor CACHEADO do stat anterior (0644), a
         // verificação falha mesmo com o chmod bem-sucedido, e o request morre
         // com 503 "Session busy" — falso-positivo que aparecia sempre que uma
-        // sessão nova caía numa faixa ainda inexistente.
+        // sessão nova caía num arquivo ainda inexistente.
         if (!self::ensureMode($path, 0600)) {
             fclose($handle);
             $this->failureReason = 'open_failed';
@@ -90,6 +108,12 @@ final class SessionLock
         do {
             if (flock($handle, LOCK_EX | LOCK_NB)) {
                 $this->handle = $handle;
+                // Marca a sessão como VIVA para o GC. Sem isto, `flock` e
+                // `fopen('c')` não mexem no mtime e uma sessão de longa duração
+                // teria o próprio arquivo de lock apagado embaixo dela.
+                @touch($path);
+                $this->collectGarbage();
+
                 return true;
             }
             usleep(self::POLL_US);
@@ -113,6 +137,54 @@ final class SessionLock
     public function __destruct()
     {
         $this->release();
+    }
+
+    /**
+     * Remove arquivos de lock de sessões já expiradas, com probabilidade
+     * 1/GC_DIVISOR — mesma disciplina do GC de sessões do SDK.
+     *
+     * Duas condições, ambas necessárias: mtime mais velho que
+     * STALE_AFTER_SECONDS (o `touch()` de `acquire()` mantém sessão ativa fora
+     * do alcance) E `flock` exclusivo não-bloqueante bem-sucedido (ninguém
+     * segurando). Sem a segunda, o unlink poderia derrubar o arquivo de um
+     * request em andamento e dois processos passariam a "segurar" inodes
+     * diferentes — ou seja, nenhuma exclusão mútua.
+     *
+     * @return int quantidade removida (usado em teste)
+     */
+    public function collectGarbage(bool $force = false): int
+    {
+        if (!$force && random_int(1, self::GC_DIVISOR) !== 1) {
+            return 0;
+        }
+
+        $files = @glob($this->directory . '/sess-*.lock');
+        if ($files === false) {
+            return 0;
+        }
+
+        $cutoff = time() - self::STALE_AFTER_SECONDS;
+        $removed = 0;
+        foreach ($files as $file) {
+            clearstatcache(true, $file);
+            $mtime = @filemtime($file);
+            if ($mtime === false || $mtime > $cutoff) {
+                continue;
+            }
+            $handle = @fopen($file, 'c');
+            if ($handle === false) {
+                continue;
+            }
+            if (flock($handle, LOCK_EX | LOCK_NB)) {
+                if (@unlink($file)) {
+                    $removed++;
+                }
+                flock($handle, LOCK_UN);
+            }
+            fclose($handle);
+        }
+
+        return $removed;
     }
 
     /**
