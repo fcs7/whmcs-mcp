@@ -83,6 +83,25 @@ final class AdminController
                         $flashClass   = 'danger';
                     }
                 }
+            } elseif (isset($_POST['clean_expired_oauth_tokens'])) {
+                try {
+                    $deleted = (new ExpiredOAuthTokenCleaner())->clean(time());
+                    if ($deleted > 0) {
+                        $flashMessage = $deleted . ' token(s) OAuth expirado(s) removido(s).';
+                        $flashClass   = 'success';
+                        ActivityLog::record(
+                            ActivityEvent::ADMIN_OAUTH_EXPIRED_CLEANED,
+                            AuditMetadata::ids(['adminid' => $currentAdminId])
+                        );
+                    } else {
+                        $flashMessage = 'Nenhum token OAuth expirado encontrado.';
+                        $flashClass   = 'info';
+                    }
+                } catch (\Throwable $ex) {
+                    Diagnostics::report(Diagnostics::CATEGORY_ADMIN_UI, 'oauth_token_clean_expired', $ex);
+                    $flashMessage = 'Erro ao limpar tokens expirados. Verifique o log de erros.';
+                    $flashClass   = 'danger';
+                }
             } elseif (isset($_POST['revoke_all_oauth_tokens'])) {
                 try {
                     $deleted = Capsule::table('mod_nt_mcp_oauth_tokens')->delete();

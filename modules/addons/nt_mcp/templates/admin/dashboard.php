@@ -41,9 +41,12 @@ if ($flashMessage !== '') {
 $tokensRows = '';
 $now = time();
 $activeCount = 0;
+$expiredCount = 0;
 foreach ($oauthTokens as $tok) {
-    $isExpired = $tok->expires_at < $now;
-    if (!$isExpired) {
+    $isExpired = $tok->expires_at <= $now;
+    if ($isExpired) {
+        $expiredCount++;
+    } else {
         $activeCount++;
     }
     $statusLabel = $isExpired
@@ -98,6 +101,14 @@ $revokeAllBtn = $activeCount > 0
       . '<input type="hidden" name="_csrf_token" value="' . $escapedCsrf . '">'
       . '<button type="submit" name="revoke_all_oauth_tokens" class="btn btn-xs btn-danger"'
       . ' onclick="return confirm(\'Revogar TODOS os tokens OAuth?\');">Revogar Todos</button></form>'
+    : '';
+$cleanExpiredBtn = $expiredCount > 0
+    ? '<form method="post" style="display:inline; margin-left:10px;">'
+      . '<input type="hidden" name="_csrf_token" value="' . $escapedCsrf . '">'
+      . '<button type="submit" name="clean_expired_oauth_tokens" class="btn btn-xs btn-warning"'
+      . ' title="Remover permanentemente somente tokens OAuth expirados"'
+      . ' onclick="return confirm(\'Remover permanentemente todos os tokens OAuth expirados?\');">'
+      . 'Limpar expirados (' . $expiredCount . ')</button></form>'
     : '';
 ?>
 <div class="panel panel-default">
@@ -159,7 +170,7 @@ $revokeAllBtn = $activeCount > 0
         </table>
 
         <hr>
-        <h4>Tokens OAuth Ativos <span class="badge"><?= $activeCount ?></span> <?= $revokeAllBtn ?></h4>
+        <h4>Tokens OAuth Ativos <span class="badge"><?= $activeCount ?></span> <?= $revokeAllBtn ?><?= $cleanExpiredBtn ?></h4>
         <table class="table table-bordered table-striped table-condensed">
             <thead>
                 <tr>

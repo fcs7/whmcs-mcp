@@ -449,6 +449,23 @@ final class FakeCapsuleQuery
         return count($this->matchingRows());
     }
 
+    public function delete(): int
+    {
+        FakeCapsule::$calls[] = 'delete()';
+        $matchingIds = array_fill_keys(
+            array_map(static fn(object $row): int => spl_object_id($row), $this->matchingRows()),
+            true
+        );
+        $deleted = count($matchingIds);
+        FakeCapsule::$rows[$this->table] = array_values(array_filter(
+            FakeCapsule::$rows[$this->table] ?? [],
+            static fn(object $row): bool => !isset($matchingIds[spl_object_id($row)])
+        ));
+        FakeCapsule::$mutations[] = ['verb' => 'DELETE', 'table' => $this->table, 'values' => []];
+
+        return $deleted;
+    }
+
     /** @return array<int, object> linhas com APENAS as colunas projetadas */
     public function get(): array
     {
