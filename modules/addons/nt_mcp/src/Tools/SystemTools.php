@@ -124,31 +124,18 @@ class SystemTools
     }
 
     /**
-     * `duedate` foi REMOVIDO temporariamente desta assinatura.
-     *
-     * Motivo: o contrato de entrada não pôde ser provado. A documentação oficial
-     * tipa `UpdateToDoItem.duedate` como `int` sem formato; a introspecção do
-     * WHMCS 8.11.2 de desenvolvimento mostrou que `tbltodolist.duedate` é uma
-     * coluna `date NOT NULL` — logo o `int` da doc está errado —, mas o parser
-     * que decide o formato ACEITO está em `includes/api/updatetodoitem.php`,
-     * ionCube-encoded. E o tipo da coluna não desambigua: nesta mesma instalação
-     * `tblquotes.validuntil` também é `date` e a API pede formato LOCALIZADO,
-     * enquanto o `duedate` de projeto/tarefa também é `date` e a API pede
-     * `Y-m-d`. Sem prova, enviar qualquer um dos dois é chute com efeito de
-     * escrita.
-     *
-     * A tool e o comando `UpdateToDoItem` continuam disponíveis para
-     * `status`/`title`/`description`. Reintroduzir `duedate` depende de provar o
-     * formato aceito (chamada real controlada em dev ou confirmação da WHMCS).
+     * `duedate` aceita `Y-m-d` ou ISO-8601 — ver `DateNormalizer`. Formato
+     * localizado é rejeitado (mesma regra de ProjectManagerTools).
      */
-    #[McpTool(name: 'whmcs_update_todo_item', description: 'Atualiza um item To-Do existente (status, título e descrição). O campo duedate está temporariamente indisponível: o formato aceito pela API do WHMCS não pôde ser comprovado.')]
-    public function updateToDoItem(int $itemid, string $status = '', string $title = '', string $description = '', int $adminid = 0): string
+    #[McpTool(name: 'whmcs_update_todo_item', description: 'Atualiza um item To-Do existente (status, título, descrição e duedate). `duedate` aceita YYYY-MM-DD ou ISO-8601 date-time; formato localizado é rejeitado.')]
+    public function updateToDoItem(int $itemid, string $status = '', string $title = '', string $description = '', int $adminid = 0, string $duedate = ''): string
     {
         $params = ['itemid' => $itemid];
         if ($status !== '') $params['status'] = $status;
         if ($title !== '') $params['title'] = $title;
         if ($description !== '') $params['description'] = $description;
         if ($adminid > 0) $params['adminid'] = $adminid;
+        if ($duedate !== '') $params['duedate'] = DateNormalizer::toWhmcsDate($duedate, 'duedate');
         return ToolJson::encode($this->api->call('UpdateToDoItem', $params));
     }
 

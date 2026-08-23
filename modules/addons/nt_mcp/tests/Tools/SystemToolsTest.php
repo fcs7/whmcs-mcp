@@ -17,6 +17,8 @@ class SystemToolsTest extends TestCase
         $api->setCallable($callable ?? function (string $cmd, array $params) {
             return ['result' => 'success'];
         });
+        // Pour les tests, résoudre testadmin à un ID arbitraire
+        $api->setAdminIdResolver(fn(string $username) => $username === 'testadmin' ? 42 : null);
 
         return new SystemTools($api);
     }
@@ -128,6 +130,48 @@ class SystemToolsTest extends TestCase
         $this->assertSame([], $data['activity']['entry']);
         $this->assertSame(20, $data['pages_scanned']);
         $this->assertTrue($data['scan_capped']);
+    }
+
+    // ---------------------------------------------------------------
+    // #22: updateToDoItem accepts duedate
+    // ---------------------------------------------------------------
+
+    /** #22 — duedate normalizado pelo DateNormalizer. */
+    public function test_update_todo_item_accepts_duedate_ymd(): void
+    {
+        $captured = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$captured) {
+            $captured = ['cmd' => $cmd, 'params' => $params];
+            return ['result' => 'success'];
+        }, ['write' => true]);
+
+        $tools->updateToDoItem(42, duedate: '2026-12-25');
+
+        $this->assertSame('UpdateToDoItem', $captured['cmd']);
+        $this->assertSame('2026-12-25', $captured['params']['duedate']);
+    }
+
+    /** #22 — duedate vazio é omitido. */
+    public function test_update_todo_item_omits_empty_duedate(): void
+    {
+        $captured = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$captured) {
+            $captured = ['cmd' => $cmd, 'params' => $params];
+            return ['result' => 'success'];
+        }, ['write' => true]);
+
+        $tools->updateToDoItem(42, duedate: '');
+
+        $this->assertArrayNotHasKey('duedate', $captured['params']);
+    }
+
+    /** #22 — duedate localizado é rejeitado. */
+    public function test_update_todo_item_rejects_localized_duedate(): void
+    {
+        $tools = $this->makeTools(fn() => ['result' => 'success']);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $tools->updateToDoItem(42, duedate: '31/12/2026');
     }
 
 }
