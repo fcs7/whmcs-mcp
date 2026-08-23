@@ -12,10 +12,13 @@ use Mcp\Capability\Attribute\McpTool;
 class SystemTools
 {
     private ?LocalizedDate $localizedDate;
+    /** @var callable|null */
+    private $crmProbe;
 
-    public function __construct(private readonly LocalApiClient $api, ?LocalizedDate $localizedDate = null)
+    public function __construct(private readonly LocalApiClient $api, ?LocalizedDate $localizedDate = null, $crmProbe = null)
     {
         $this->localizedDate = $localizedDate;
+        $this->crmProbe = $crmProbe;
     }
 
     private function localizedDate(): LocalizedDate
@@ -112,7 +115,28 @@ class SystemTools
     #[McpTool(name: 'whmcs_get_admin_details', description: 'Obtém detalhes do administrador autenticado')]
     public function getAdminDetails(): string
     {
-        return ToolJson::encode($this->api->call('GetAdminDetails', []));
+        $result = $this->api->call('GetAdminDetails', []);
+
+        // Adiciona capabilidades disponíveis
+        $result['capabilities'] = [
+            'crm' => $this->getCrmCapability(),
+        ];
+
+        return ToolJson::encode($result);
+    }
+
+    private function getCrmCapability(): string
+    {
+        if ($this->crmProbe === null) {
+            return 'unknown';
+        }
+
+        try {
+            $available = ($this->crmProbe)();
+            return $available ? 'available' : 'unavailable';
+        } catch (\Throwable) {
+            return 'unavailable';
+        }
     }
 
     #[McpTool(name: 'whmcs_get_todo_items', description: 'Lista itens de tarefas administrativas (To-Do)')]

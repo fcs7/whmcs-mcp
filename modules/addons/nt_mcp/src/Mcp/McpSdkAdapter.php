@@ -14,6 +14,7 @@ use Nyholm\Psr7\Factory\Psr17Factory;
 use NtMcp\Crm\CapsuleAdminIdentityResolver;
 use NtMcp\Crm\CapsuleQueryPort;
 use NtMcp\Crm\CapsuleSchemaProbe;
+use NtMcp\Crm\CrmSchema;
 use NtMcp\Crm\CrmSchemaGuard;
 use NtMcp\Crm\MgCrmRepository;
 use NtMcp\Tools\BillingTools;
@@ -145,11 +146,17 @@ final class McpSdkAdapter implements ServerAdapterInterface
         foreach ([
             BillingTools::class, ClientTools::class, DomainTools::class,
             OrderTools::class, ProjectManagerTools::class, QuoteTools::class,
-            ServiceTools::class, SupportInfoTools::class, SystemTools::class,
+            ServiceTools::class, SupportInfoTools::class,
             TicketTools::class,
         ] as $toolClass) {
             $container->set($toolClass, new $toolClass($this->localApi));
         }
+        // SystemTools needs CRM probe capability
+        $container->set(SystemTools::class, new SystemTools(
+            $this->localApi,
+            null,
+            static fn(): bool => \WHMCS\Database\Capsule::schema()->hasTable(\NtMcp\Crm\CrmSchema::TABLE_RESOURCES)
+        ));
         $container->set(CrmTools::class, new CrmTools($this->capsule, $this->crm));
         $container->set(LoggerInterface::class, $logger);
 

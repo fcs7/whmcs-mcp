@@ -174,4 +174,66 @@ class SystemToolsTest extends TestCase
         $tools->updateToDoItem(42, duedate: '31/12/2026');
     }
 
+    // ---------------------------------------------------------------
+    // #23: getAdminDetails exposes CRM capability
+    // ---------------------------------------------------------------
+
+    /** #23 — probe true → available */
+    public function test_get_admin_details_shows_crm_available_when_probe_true(): void
+    {
+        $api = new LocalApiClient('testadmin');
+        $api->setCallable(fn() => ['result' => 'success', 'id' => 1, 'username' => 'admin']);
+        $api->setAdminIdResolver(fn(string $username) => $username === 'testadmin' ? 42 : null);
+
+        $tools = new \NtMcp\Tools\SystemTools($api, null, fn() => true);
+
+        $result = json_decode($tools->getAdminDetails(), true);
+
+        $this->assertSame('available', $result['capabilities']['crm']);
+    }
+
+    /** #23 — probe false → unavailable */
+    public function test_get_admin_details_shows_crm_unavailable_when_probe_false(): void
+    {
+        $api = new LocalApiClient('testadmin');
+        $api->setCallable(fn() => ['result' => 'success', 'id' => 1, 'username' => 'admin']);
+        $api->setAdminIdResolver(fn(string $username) => $username === 'testadmin' ? 42 : null);
+
+        $tools = new \NtMcp\Tools\SystemTools($api, null, fn() => false);
+
+        $result = json_decode($tools->getAdminDetails(), true);
+
+        $this->assertSame('unavailable', $result['capabilities']['crm']);
+    }
+
+    /** #23 — probe exception → unavailable */
+    public function test_get_admin_details_shows_crm_unavailable_when_probe_throws(): void
+    {
+        $api = new LocalApiClient('testadmin');
+        $api->setCallable(fn() => ['result' => 'success', 'id' => 1, 'username' => 'admin']);
+        $api->setAdminIdResolver(fn(string $username) => $username === 'testadmin' ? 42 : null);
+
+        $tools = new \NtMcp\Tools\SystemTools($api, null, function () {
+            throw new \RuntimeException('probe failed');
+        });
+
+        $result = json_decode($tools->getAdminDetails(), true);
+
+        $this->assertSame('unavailable', $result['capabilities']['crm']);
+    }
+
+    /** #23 — no probe → unknown */
+    public function test_get_admin_details_shows_crm_unknown_when_no_probe(): void
+    {
+        $api = new LocalApiClient('testadmin');
+        $api->setCallable(fn() => ['result' => 'success', 'id' => 1, 'username' => 'admin']);
+        $api->setAdminIdResolver(fn(string $username) => $username === 'testadmin' ? 42 : null);
+
+        $tools = new \NtMcp\Tools\SystemTools($api);
+
+        $result = json_decode($tools->getAdminDetails(), true);
+
+        $this->assertSame('unknown', $result['capabilities']['crm']);
+    }
+
 }

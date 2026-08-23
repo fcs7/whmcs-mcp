@@ -116,7 +116,7 @@ class CrmTools
 
     #[McpTool(
         name: 'whmcs_crm_list_contacts',
-        description: 'Lista recursos (contatos/leads) do CRM mgCRM2, com paginacao. '
+        description: 'Requer ModulesGarden CRM (mgCRM). Lista recursos (contatos/leads) do CRM mgCRM2, com paginacao. '
             . 'Filtros opcionais type_id e status_id vem dos catalogos ativos publicados por '
             . 'whmcs_crm_get_kanban; um id inexistente ou inativo devolve crm_catalog_invalid. '
             . 'Retorna items (projecao core), count (total sob o mesmo filtro), limit, offset e has_more. '
@@ -141,7 +141,7 @@ class CrmTools
 
     #[McpTool(
         name: 'whmcs_crm_get_contact',
-        description: 'Obtem um recurso (contato/lead) do CRM mgCRM2 por resource_id. '
+        description: 'Requer ModulesGarden CRM (mgCRM). Obtem um recurso (contato/lead) do CRM mgCRM2 por resource_id. '
             . 'Retorna a projecao core em resource e os custom_fields normalizados '
             . '({field_id, name, value}), somente leitura e completos: todos os valores do '
             . 'recurso sao devolvidos, e acima de 5000 valores a leitura falha fechado em vez '
@@ -154,7 +154,7 @@ class CrmTools
         return $this->read(fn(): array => $this->crm->getResource($resource_id));
     }
 
-    #[McpTool(name: 'whmcs_crm_create_lead', description: 'Cria um novo lead no CRM ModulesGarden')]
+    #[McpTool(name: 'whmcs_crm_create_lead', description: 'Requer ModulesGarden CRM (mgCRM). Cria um novo lead no CRM ModulesGarden')]
     public function createLead(
         string $name,
         string $email,
@@ -181,7 +181,7 @@ class CrmTools
      * write to arbitrary database columns (e.g. id, created, type) that
      * should not be mutable through the MCP interface.
      */
-    #[McpTool(name: 'whmcs_crm_update_contact', description: 'Atualiza dados de um contato CRM')]
+    #[McpTool(name: 'whmcs_crm_update_contact', description: 'Requer ModulesGarden CRM (mgCRM). Atualiza dados de um contato CRM')]
     public function updateContact(
         int $id,
         string $name = '',
@@ -208,7 +208,7 @@ class CrmTools
         return ToolJson::encode(['result' => 'success', 'rows_affected' => $count]);
     }
 
-    #[McpTool(name: 'whmcs_crm_add_followup', description: 'Adiciona um follow-up a um contato CRM')]
+    #[McpTool(name: 'whmcs_crm_add_followup', description: 'Requer ModulesGarden CRM (mgCRM). Adiciona um follow-up a um contato CRM')]
     public function addFollowup(int $contactId, string $note, string $duedate): string
     {
         $this->ensureCrmAvailable();
@@ -232,7 +232,7 @@ class CrmTools
         return ToolJson::encode(['result' => 'success', 'id' => $id]);
     }
 
-    #[McpTool(name: 'whmcs_crm_add_note', description: 'Adiciona uma nota a um contato CRM')]
+    #[McpTool(name: 'whmcs_crm_add_note', description: 'Requer ModulesGarden CRM (mgCRM). Adiciona uma nota a um contato CRM')]
     public function addNote(int $contactId, string $note): string
     {
         $this->ensureCrmAvailable();
@@ -246,7 +246,7 @@ class CrmTools
 
     #[McpTool(
         name: 'whmcs_crm_list_followups',
-        description: 'Lista follow-ups de um recurso do CRM mgCRM2, com paginacao. '
+        description: 'Requer ModulesGarden CRM (mgCRM). Lista follow-ups de um recurso do CRM mgCRM2, com paginacao. '
             . 'resource_id e obrigatorio; filtros opcionais type_id e status_id vem dos catalogos '
             . 'de follow-up publicados por whmcs_crm_get_kanban. Cada item traz type_name e '
             . 'status_name sempre resolvidos: um tipo/status desativado mantem o nome historico, '
@@ -275,7 +275,7 @@ class CrmTools
 
     #[McpTool(
         name: 'whmcs_crm_get_kanban',
-        description: 'Visao Kanban do CRM mgCRM2 e FONTE DOS CATALOGOS de id. '
+        description: 'Requer ModulesGarden CRM (mgCRM). Visao Kanban do CRM mgCRM2 e FONTE DOS CATALOGOS de id. '
             . 'Publica em catalogs os quatro catalogos ativos (resource_types, resource_statuses, '
             . 'followup_types, followup_statuses) mesmo quando nao ha nenhum recurso, e em lanes '
             . 'a PAGINA de raias pedida, cada uma com total exato, items limitados e has_more. '

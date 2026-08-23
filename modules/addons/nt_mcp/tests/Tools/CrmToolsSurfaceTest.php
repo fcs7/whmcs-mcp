@@ -212,4 +212,36 @@ class CrmToolsSurfaceTest extends TestCase
             $this->assertStringNotContainsString('adminId', $body, "{$method}() menciona autoria");
         }
     }
+
+    // ---------------------------------------------------------------
+    // #23: All CRM tool descriptions declare mgCRM dependency
+    // ---------------------------------------------------------------
+
+    /** #23 — todas as 8 tools de CRM começam com "Requer ModulesGarden CRM". */
+    public function test_all_crm_tool_descriptions_declare_mgcrm_requirement(): void
+    {
+        $reflection = new \ReflectionClass(CrmTools::class);
+        $methods = $reflection->getMethods(\ReflectionMethod::IS_PUBLIC);
+
+        $crmMethods = [];
+        foreach ($methods as $method) {
+            $attrs = $method->getAttributes(McpTool::class);
+            if (!$attrs) continue;
+
+            $attr = $attrs[0]->newInstance();
+            $crmMethods[$method->getName()] = $attr->description;
+        }
+
+        // Devem haver exatamente 8 tools de CRM
+        $this->assertCount(8, $crmMethods, 'CrmTools deve ter 8 tools');
+
+        // Todas devem começar com a declaração de dependência
+        foreach ($crmMethods as $method => $description) {
+            $this->assertStringStartsWith(
+                'Requer ModulesGarden CRM (mgCRM).',
+                $description,
+                "{$method}() description não começa com 'Requer ModulesGarden CRM (mgCRM).'"
+            );
+        }
+    }
 }
