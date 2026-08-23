@@ -236,4 +236,18 @@ class SystemToolsTest extends TestCase
         $this->assertSame('unknown', $result['capabilities']['crm']);
     }
 
+    // ---------------------------------------------------------------
+    // #24: getStats returns snapshot note
+    // ---------------------------------------------------------------
+
+    /** #24 — getStats inclui nota de snapshot. */
+    public function test_get_stats_includes_snapshot_note(): void
+    {
+        $tools = $this->makeTools(fn() => ['result' => 'success', 'ticketsstatus' => ['open' => 5]]);
+
+        $result = json_decode($tools->getStats(), true);
+
+        $this->assertSame('snapshot; não é histórico', $result['note']);
+    }
+
 }

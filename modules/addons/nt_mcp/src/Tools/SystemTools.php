@@ -26,10 +26,12 @@ class SystemTools
         return $this->localizedDate ??= new LocalizedDate();
     }
 
-    #[McpTool(name: 'whmcs_get_stats', description: 'Retorna estatísticas gerais do WHMCS (receita, clientes, tickets)')]
+    #[McpTool(name: 'whmcs_get_stats', description: 'Snapshot do momento: contagens de tickets por status atual e agregados de receita do WHMCS — NÃO é série histórica; não usar como KPI de período.')]
     public function getStats(): string
     {
-        return ToolJson::encode($this->api->call('GetStats', []));
+        $result = $this->api->call('GetStats', []);
+        $result['note'] = 'snapshot; não é histórico';
+        return ToolJson::encode($result);
     }
 
     /**

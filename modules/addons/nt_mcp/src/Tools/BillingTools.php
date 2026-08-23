@@ -11,7 +11,7 @@ class BillingTools
 {
     public function __construct(private readonly LocalApiClient $api) {}
 
-    #[McpTool(name: 'whmcs_list_invoices', description: 'Lista faturas com filtros')]
+    #[McpTool(name: 'whmcs_list_invoices', description: 'Lista faturas com filtros. invoicenum vazio = numeração sequencial desligada; datepaid é o dado gravado no WHMCS (pode ser incoerente em bases de teste).')]
     public function listInvoices(int $clientid = 0, string $status = '', int $limitstart = 0, int $limitnum = 25): string
     {
         $params = ['limitstart' => $limitstart, 'limitnum' => $limitnum];
@@ -20,7 +20,7 @@ class BillingTools
         return ToolJson::encode($this->api->call('GetInvoices', $params));
     }
 
-    #[McpTool(name: 'whmcs_get_invoice', description: 'Obtém detalhes de uma fatura')]
+    #[McpTool(name: 'whmcs_get_invoice', description: 'Obtém detalhes de uma fatura. invoicenum vazio = numeração sequencial desligada; datepaid é o dado gravado no WHMCS (pode ser incoerente em bases de teste).')]
     public function getInvoice(int $invoiceid): string
     {
         return ToolJson::encode($this->api->call('GetInvoice', ['invoiceid' => $invoiceid]));
