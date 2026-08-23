@@ -164,8 +164,8 @@ Legenda de risco:
 |---|------|---------|------|---------|-------|-----------|
 | 64 | `whmcs_list_tickets` | GetTickets | READ | on | 🟢 | Lista tickets; default une Open+Customer-Reply; hide_sample remove amostra; flag = id do admin |
 | 65 | `whmcs_get_ticket` | GetTicket | READ | on | 🟢 | Detalhes e histórico; use ticketid (id interno) OU tid (número exibido) |
-| 66 | `whmcs_open_ticket` | OpenTicket | WRITE | on | 🟡 | Abre novo ticket; notify_client=true requer COMMS |
-| 67 | `whmcs_reply_ticket` | AddTicketReply | WRITE | on | 🟡 | Responde ticket; notify_client=true requer COMMS |
+| 66 | `whmcs_open_ticket` | OpenTicket | WRITE | on | 🟡 | Abre novo ticket; sem clientid exige `allow_guest=true`; notify_client=true requer COMMS |
+| 67 | `whmcs_reply_ticket` | AddTicketReply | WRITE | on | 🟡 | Responde ticket; name/email/clientid só em ticket guest; notify_client=true requer COMMS |
 | 68 | `whmcs_update_ticket` | UpdateTicket | WRITE | on | 🟡 | Atualiza status/prioridade/dept |
 
 ---
@@ -222,6 +222,33 @@ O default é `notify_client=false` (sem notificação):
 
 A verificação ocorre centralmente em `LocalApiClient` (não na tool), então nenhuma
 refatoração consegue contornar o gate.
+
+### Gate por alvo — allowlist de ids de teste (#14)
+
+Duas configs opcionais em `tblconfiguration` (CSV de inteiros):
+
+| Chave | Alvo checado | Params cobertos |
+|-------|--------------|-----------------|
+| `nt_mcp_write_allowlist_clientids` | cliente | `clientid`, `userid`; ou `ticketid` resolvido via `GetTicket` antes do gate |
+| `nt_mcp_write_allowlist_ticketids` | ticket | `ticketid` |
+
+Regras (aplicadas em `LocalApiClient::assertTargetAllowed`, só para comandos não-READ):
+
+- Vazia/ausente = sem restrição (comportamento anterior). As duas listas são independentes (AND).
+- Alvo fora da lista → `AuthorizationException` com `write_target_not_allowed` + Activity Log
+  `MCP API BLOCKED BY TARGET ALLOWLIST`. O write nunca chega à LocalAPI.
+- `ticketid` sem `clientid`: o cliente do ticket é resolvido via `GetTicket` (READ, auditado).
+  Ticket inexistente/não resolvível → negado. Ticket **guest** (userid 0) não tem cliente a
+  checar — para cobrir guests, configure também a allowlist de tickets.
+- Falha de leitura da config ou token não numérico → lista vazia = nega todo alvo (fail-closed, auditado).
+- **Não cobertos**: comandos sem `clientid`/`userid`/`ticketid` (`CancelOrder/orderid`,
+  `DeleteQuote/quoteid`, `AddClient`, tarefas/projetos). Esses seguem só pelo gate de classe.
+
+Complementos na camada de tool (não substituem o gate central):
+
+- `whmcs_open_ticket` sem `clientid` exige `allow_guest=true` explícito (senão `InvalidArgumentException`).
+- `whmcs_reply_ticket` só aceita `name`/`email`/`clientid` quando o ticket ainda é guest
+  (checado via `GetTicket`); em ticket com cliente vinculado é erro — evita reatribuir a resposta.
 
 ### CRM não-funcional (CRM-2 → CRM-3)
 

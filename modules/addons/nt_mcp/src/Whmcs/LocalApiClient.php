@@ -168,7 +168,20 @@ class LocalApiClient
     /** @var callable|null Para injecao em testes */
     private $callable = null;
 
-    private ?array $gatesOverride = null; // teste: ['write'=>bool,'destructive'=>bool,...,'readonly'=>bool]
+    // teste: ['write'=>bool,'destructive'=>bool,...,'readonly'=>bool,
+    //         'allowlist_clientids'=>?int[], 'allowlist_ticketids'=>?int[]]
+    private ?array $gatesOverride = null;
+
+    /**
+     * Gate por ALVO (#14): allowlists opcionais de ids de teste. Quando
+     * configuradas, qualquer comando não-READ cujo alvo (clientid/userid,
+     * ticketid) esteja fora da lista é negado com `write_target_not_allowed`.
+     * Vazias/ausentes = sem restrição por alvo (comportamento anterior).
+     */
+    private const ALLOWLIST_CLIENT_KEY = 'nt_mcp_write_allowlist_clientids';
+    private const ALLOWLIST_TICKET_KEY = 'nt_mcp_write_allowlist_ticketids';
+    private const CLIENT_TARGET_PARAMS = ['clientid', 'userid'];
+    private const TICKET_TARGET_PARAMS = ['ticketid'];
     private const IMPERSONATION_COMMANDS = [
         'AddTicketReply','CreateProject','UpdateProject','AddProjectTask',
         'UpdateProjectTask','StartTaskTimer','EndTaskTimer','AddProjectMessage',
@@ -310,6 +323,138 @@ class LocalApiClient
                 "LocalApiClient: command '{$command}' is blocked (client notification requires the COMMS gate)."
             );
         }
+
+        if ($class !== 'READ') {
+            $this->assertTargetAllowed($command, $params);
+        }
+    }
+
+    /**
+     * Gate por ALVO (#14). Cada allowlist configurada é aplicada de forma
+     * independente (AND):
+     *  - ticket allowlist: `ticketid` presente deve estar na lista;
+     *  - client allowlist: `clientid`/`userid` presente deve estar na lista;
+     *    sem id de cliente mas com `ticketid`, o cliente é resolvido via
+     *    GetTicket ANTES do gate (ticket guest = sem cliente a checar — para
+     *    cobrir guests, configure também a allowlist de tickets).
+     * Comandos sem nenhum desses params (CancelOrder/orderid, DeleteQuote/
+     * quoteid, AddClient...) não têm alvo checável e seguem só pelo gate de
+     * classe. Falha de leitura de config, lista inválida ou ticket não
+     * resolvível = NEGA (fail-closed).
+     */
+    private function assertTargetAllowed(string $command, array $params): void
+    {
+        $clientList = $this->targetAllowlist(self::ALLOWLIST_CLIENT_KEY, 'allowlist_clientids');
+        $ticketList = $this->targetAllowlist(self::ALLOWLIST_TICKET_KEY, 'allowlist_ticketids');
+        if ($clientList === null && $ticketList === null) {
+            return;
+        }
+
+        $ticketId = self::firstIntParam($params, self::TICKET_TARGET_PARAMS);
+        $clientId = self::firstIntParam($params, self::CLIENT_TARGET_PARAMS);
+
+        if ($ticketList !== null && $ticketId !== null && !in_array($ticketId, $ticketList, true)) {
+            $this->denyTarget($command, $params, 'ticketid');
+        }
+
+        if ($clientList !== null) {
+            if ($clientId === null && $ticketId !== null) {
+                $clientId = $this->resolveTicketClientId($ticketId);
+                if ($clientId === null) {
+                    // Não resolvido (GetTicket falhou / ticket inexistente): nega.
+                    $this->denyTarget($command, $params, 'ticketid→clientid');
+                }
+                if ($clientId === 0) {
+                    $clientId = null; // guest: sem cliente a checar
+                }
+            }
+            if ($clientId !== null && !in_array($clientId, $clientList, true)) {
+                $this->denyTarget($command, $params, 'clientid');
+            }
+        }
+    }
+
+    private function denyTarget(string $command, array $params, string $target): never
+    {
+        self::auditLog(ActivityEvent::API_BLOCKED_TARGET, AuditMetadata::forParams($params), command: $command);
+        throw new AuthorizationException(
+            "LocalApiClient: command '{$command}' is blocked (write_target_not_allowed: {$target} fora da allowlist de escrita)."
+        );
+    }
+
+    /** @return ?int null quando nenhum dos params está presente/é inteiro positivo */
+    private static function firstIntParam(array $params, array $keys): ?int
+    {
+        foreach ($keys as $k) {
+            if (!isset($params[$k])) continue;
+            $v = $params[$k];
+            if (is_int($v) && $v > 0) return $v;
+            if (is_string($v) && ctype_digit($v) && (int) $v > 0) return (int) $v;
+        }
+        return null;
+    }
+
+    /**
+     * `userid` do ticket via GetTicket (READ — passa pelo pipeline normal e é
+     * auditado). 0 = guest; null = não resolvível.
+     */
+    private function resolveTicketClientId(int $ticketId): ?int
+    {
+        try {
+            $ticket = $this->call('GetTicket', ['ticketid' => $ticketId]);
+        } catch (\Throwable) {
+            return null;
+        }
+        if (($ticket['result'] ?? null) !== 'success') {
+            return null;
+        }
+        $uid = $ticket['userid'] ?? 0;
+        return is_numeric($uid) ? (int) $uid : null;
+    }
+
+    /**
+     * Lê uma allowlist CSV de ids. null = não configurada (sem restrição).
+     * Lista presente com token inválido, ou falha de leitura, vira lista
+     * VAZIA (nega todo alvo) e é auditada — config inválida nunca libera.
+     *
+     * @return ?int[]
+     */
+    private function targetAllowlist(string $key, string $overrideKey): ?array
+    {
+        if ($this->gatesOverride !== null) {
+            $raw = $this->gatesOverride[$overrideKey] ?? null;
+            if ($raw === null) return null;
+            return is_array($raw) ? array_values(array_map('intval', $raw)) : self::parseIdCsv((string) $raw, $key);
+        }
+        if (!class_exists('\WHMCS\Config\Setting')) {
+            return null;
+        }
+        try {
+            $raw = \WHMCS\Config\Setting::getValue($key);
+        } catch (\Throwable $e) {
+            self::auditConfig('LocalApiClient: target allowlist read failed — failing closed', $e);
+            return [];
+        }
+        if ($raw === null || trim((string) $raw) === '') {
+            return null;
+        }
+        return self::parseIdCsv((string) $raw, $key);
+    }
+
+    /** @return int[] */
+    private static function parseIdCsv(string $raw, string $key): array
+    {
+        $ids = [];
+        foreach (explode(',', $raw) as $tok) {
+            $tok = trim($tok);
+            if ($tok === '') continue;
+            if (!ctype_digit($tok) || (int) $tok <= 0) {
+                self::auditConfig("LocalApiClient: invalid id in {$key} — failing closed");
+                return [];
+            }
+            $ids[] = (int) $tok;
+        }
+        return $ids;
     }
 
     /**

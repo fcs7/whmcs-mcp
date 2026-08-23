@@ -133,9 +133,14 @@ class TicketTools
      * LocalApiClient, não aqui, para que nenhuma refatoração (ou chamada
      * direta ao cliente local) contorne a autorização.
      */
-    #[McpTool(name: 'whmcs_open_ticket', description: 'Abre um novo ticket de suporte. notify_client=true envia e-mail ao cliente e exige o gate COMMS; o default não notifica.')]
-    public function openTicket(int $deptid, string $subject, string $message, int $clientid = 0, string $name = '', string $email = '', string $priority = 'Medium', int $serviceid = 0, int $domainid = 0, bool $markdown = false, bool $notify_client = false): string
+    #[McpTool(name: 'whmcs_open_ticket', description: 'Abre um novo ticket de suporte. Sem clientid o ticket é GUEST (polui a fila): exige allow_guest=true explícito. notify_client=true envia e-mail ao cliente e exige o gate COMMS; o default não notifica.')]
+    public function openTicket(int $deptid, string $subject, string $message, int $clientid = 0, string $name = '', string $email = '', string $priority = 'Medium', int $serviceid = 0, int $domainid = 0, bool $markdown = false, bool $notify_client = false, bool $allow_guest = false): string
     {
+        if ($clientid <= 0 && !$allow_guest) {
+            throw new \InvalidArgumentException(
+                'open_ticket: sem clientid o ticket é criado como guest; informe clientid ou passe allow_guest=true explicitamente.'
+            );
+        }
         $params = ['deptid' => $deptid, 'subject' => $subject, 'message' => $message, 'priority' => $priority];
         if ($clientid > 0) $params['clientid'] = $clientid;
         if ($name !== '') $params['name'] = $name;
@@ -147,10 +152,26 @@ class TicketTools
         return ToolJson::encode($this->api->call('OpenTicket', $params));
     }
 
-    /** Mesma política de notificação de openTicket — ver nota acima. */
-    #[McpTool(name: 'whmcs_reply_ticket', description: 'Adiciona resposta a um ticket existente. ticketid = id interno (campo id/ticketid da lista), NÃO o número #NNNNNN (tid). notify_client=true envia e-mail ao cliente e exige o gate COMMS; o default não notifica.')]
+    /**
+     * Mesma política de notificação de openTicket — ver nota acima.
+     *
+     * `name`/`email`/`clientid` reatribuem a autoria da resposta; só são
+     * aceitos quando o ticket ainda é GUEST (sem userid). Num ticket já
+     * vinculado a cliente, passá-los é erro (#14 — evita amarrar resposta ao
+     * cliente errado).
+     */
+    #[McpTool(name: 'whmcs_reply_ticket', description: 'Adiciona resposta a um ticket existente. ticketid = id interno (campo id/ticketid da lista), NÃO o número #NNNNNN (tid). name/email/clientid só são aceitos em ticket guest (sem cliente vinculado). notify_client=true envia e-mail ao cliente e exige o gate COMMS; o default não notifica.')]
     public function replyTicket(int $ticketid, string $message, string $status = '', int $adminid = 0, string $adminusername = '', string $name = '', string $email = '', int $clientid = 0, bool $markdown = false, bool $notify_client = false): string
     {
+        if ($name !== '' || $email !== '' || $clientid > 0) {
+            $ticket = $this->api->call('GetTicket', ['ticketid' => $ticketid]);
+            $owner = (int) ($ticket['userid'] ?? 0);
+            if ($owner > 0) {
+                throw new \InvalidArgumentException(
+                    "reply_ticket: ticket {$ticketid} já pertence ao cliente {$owner}; name/email/clientid só são aceitos em ticket guest."
+                );
+            }
+        }
         $params = compact('ticketid', 'message');
         if ($status !== '') $params['status'] = $status;
         if ($adminid > 0) $params['adminid'] = $adminid;

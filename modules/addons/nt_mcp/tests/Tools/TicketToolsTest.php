@@ -75,7 +75,7 @@ class TicketToolsTest extends TestCase
             return ['result' => 'success'];
         });
 
-        $tools->openTicket(1, 'Subject', 'Body');
+        $tools->openTicket(1, 'Subject', 'Body', allow_guest: true);
 
         $this->assertTrue($capturedParams['noemail'], 'default é NÃO notificar o cliente');
     }
@@ -109,7 +109,7 @@ class TicketToolsTest extends TestCase
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('COMMS gate');
 
-        $tools->openTicket(1, 'Subject', 'Body', notify_client: true);
+        $tools->openTicket(1, 'Subject', 'Body', notify_client: true, allow_guest: true);
     }
 
     public function test_reply_ticket_with_notify_client_allowed_when_write_and_comms_on(): void
@@ -163,7 +163,7 @@ class TicketToolsTest extends TestCase
             return ['result' => 'success', 'ticketid' => 1];
         });
 
-        $tools->openTicket(deptid: 1, subject: 'Test', message: 'Msg', name: 'John', email: 'john@test.com');
+        $tools->openTicket(deptid: 1, subject: 'Test', message: 'Msg', name: 'John', email: 'john@test.com', allow_guest: true);
 
         $this->assertSame('John', $capturedParams['name']);
         $this->assertSame('john@test.com', $capturedParams['email']);
@@ -558,5 +558,74 @@ class TicketToolsTest extends TestCase
 
         $this->assertArrayHasKey('hidden_sample_count', $result);
         $this->assertSame(0, $result['hidden_sample_count']);
+    }
+
+    // ---------------------------------------------------------------
+    // #14 — allow_guest e reatribuição em reply_ticket
+    // ---------------------------------------------------------------
+
+    public function test_open_ticket_without_clientid_requires_allow_guest(): void
+    {
+        $called = false;
+        $tools = $this->makeTools(function () use (&$called) { $called = true; return ['result' => 'success']; });
+
+        try {
+            $tools->openTicket(1, 'Subject', 'Body');
+            $this->fail('deveria rejeitar guest sem allow_guest');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertStringContainsString('allow_guest', $e->getMessage());
+        }
+        $this->assertFalse($called, 'API não pode ser chamada');
+    }
+
+    public function test_open_ticket_with_clientid_does_not_need_allow_guest_and_omits_flag(): void
+    {
+        $captured = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$captured) {
+            $captured = $params; return ['result' => 'success'];
+        });
+        $tools->openTicket(1, 'Subject', 'Body', clientid: 7);
+        $this->assertSame(7, $captured['clientid']);
+        $this->assertArrayNotHasKey('allow_guest', $captured);
+    }
+
+    public function test_reply_ticket_rejects_name_email_clientid_on_owned_ticket(): void
+    {
+        $cmds = [];
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$cmds) {
+            $cmds[] = $cmd;
+            return $cmd === 'GetTicket'
+                ? ['result' => 'success', 'ticketid' => 5, 'userid' => 42]
+                : ['result' => 'success'];
+        });
+
+        foreach ([['name' => 'X'], ['email' => 'x@y.z'], ['clientid' => 9]] as $extra) {
+            try {
+                $tools->replyTicket(5, 'msg', ...$extra);
+                $this->fail('deveria rejeitar reatribuição');
+            } catch (\InvalidArgumentException $e) {
+                $this->assertStringContainsString('cliente 42', $e->getMessage());
+            }
+        }
+        $this->assertNotContains('AddTicketReply', $cmds);
+    }
+
+    public function test_reply_ticket_accepts_name_email_on_guest_ticket(): void
+    {
+        $captured = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$captured) {
+            if ($cmd === 'GetTicket') return ['result' => 'success', 'ticketid' => 5, 'userid' => 0];
+            $captured = $params; return ['result' => 'success'];
+        });
+        $tools->replyTicket(5, 'msg', name: 'Guest', email: 'g@x.y');
+        $this->assertSame('Guest', $captured['name']);
+    }
+
+    public function test_reply_ticket_without_identity_params_skips_lookup(): void
+    {
+        $cmds = [];
+        $tools = $this->makeTools(function (string $cmd) use (&$cmds) { $cmds[] = $cmd; return ['result' => 'success']; });
+        $tools->replyTicket(5, 'msg');
+        $this->assertSame(['AddTicketReply'], $cmds);
     }
 }

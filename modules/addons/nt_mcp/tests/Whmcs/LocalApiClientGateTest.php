@@ -403,4 +403,126 @@ class LocalApiClientGateTest extends TestCase
         $this->assertArrayNotHasKey('password', $result);
         $this->assertArrayNotHasKey('securityqans', $result['a']);
     }
+
+    // ---------------------------------------------------------------
+    // #14) Gate por alvo — allowlist de clientid/ticketid
+    // ---------------------------------------------------------------
+
+    /** @param array<string,mixed> $lists */
+    private function targetClient(array $lists, ?callable $fn = null, array &$cmds = []): LocalApiClient
+    {
+        $client = new LocalApiClient('testadmin');
+        $client->setGates(['write' => true, 'destructive' => true] + $lists);
+        $client->setCallable(function (string $cmd, array $params) use ($fn, &$cmds) {
+            $cmds[] = $cmd;
+            return $fn ? $fn($cmd, $params) : ['result' => 'success'];
+        });
+        return $client;
+    }
+
+    private function assertTargetDenied(callable $fn, string $target): void
+    {
+        try {
+            $fn();
+            $this->fail('deveria negar por alvo');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('write_target_not_allowed', $e->getMessage());
+            $this->assertStringContainsString($target, $e->getMessage());
+        }
+    }
+
+    public function test_target_allowlist_unconfigured_keeps_current_behaviour(): void
+    {
+        $c = $this->targetClient([]);
+        $this->assertSame('success', $c->call('UpdateClient', ['clientid' => 999])['result']);
+        $this->assertSame('success', $c->call('UpdateTicket', ['ticketid' => 999])['result']);
+    }
+
+    public function test_client_allowlist_allows_inside_and_denies_outside(): void
+    {
+        $c = $this->targetClient(['allowlist_clientids' => [5, 7]]);
+        $this->assertSame('success', $c->call('UpdateClient', ['clientid' => 5])['result']);
+        $this->assertSame('success', $c->call('UpdateClient', ['clientid' => '7'])['result']);
+        $this->assertTargetDenied(fn() => $c->call('UpdateClient', ['clientid' => 6]), 'clientid');
+        // `userid` também é alvo de cliente
+        $this->assertTargetDenied(fn() => $c->call('UpdateClient', ['userid' => 6]), 'clientid');
+    }
+
+    public function test_client_allowlist_accepts_csv_string_override(): void
+    {
+        $c = $this->targetClient(['allowlist_clientids' => ' 5, 7 ']);
+        $this->assertSame('success', $c->call('UpdateClient', ['clientid' => 7])['result']);
+        $this->assertTargetDenied(fn() => $c->call('UpdateClient', ['clientid' => 8]), 'clientid');
+    }
+
+    public function test_invalid_csv_token_fails_closed_for_every_target(): void
+    {
+        $c = $this->targetClient(['allowlist_clientids' => '5,abc']);
+        $this->assertTargetDenied(fn() => $c->call('UpdateClient', ['clientid' => 5]), 'clientid');
+    }
+
+    public function test_ticket_allowlist_allows_inside_and_denies_outside(): void
+    {
+        $c = $this->targetClient(['allowlist_ticketids' => [10]]);
+        $this->assertSame('success', $c->call('AddTicketReply', ['ticketid' => 10, 'message' => 'x', 'noemail' => true])['result']);
+        $this->assertTargetDenied(fn() => $c->call('UpdateTicket', ['ticketid' => 11]), 'ticketid');
+    }
+
+    public function test_client_allowlist_resolves_ticket_to_client_before_gate(): void
+    {
+        $cmds = [];
+        $fn = fn(string $cmd, array $p) => $cmd === 'GetTicket'
+            ? ['result' => 'success', 'ticketid' => $p['ticketid'], 'userid' => $p['ticketid'] === 10 ? 5 : 99]
+            : ['result' => 'success'];
+        $c = $this->targetClient(['allowlist_clientids' => [5]], $fn, $cmds);
+
+        $this->assertSame('success', $c->call('UpdateTicket', ['ticketid' => 10])['result']);
+        $this->assertSame(['GetTicket', 'UpdateTicket'], $cmds, 'GetTicket precede o write');
+
+        $cmds = [];
+        $this->assertTargetDenied(fn() => $c->call('UpdateTicket', ['ticketid' => 11]), 'clientid');
+        $this->assertSame(['GetTicket'], $cmds, 'write nunca chegou à API');
+    }
+
+    public function test_client_allowlist_denies_when_ticket_cannot_be_resolved(): void
+    {
+        $fn = fn(string $cmd) => $cmd === 'GetTicket'
+            ? ['result' => 'error', 'message' => 'Ticket ID Not Found']
+            : ['result' => 'success'];
+        $c = $this->targetClient(['allowlist_clientids' => [5]], $fn);
+        $this->assertTargetDenied(fn() => $c->call('UpdateTicket', ['ticketid' => 404]), 'ticketid');
+    }
+
+    public function test_client_allowlist_skips_client_check_for_guest_ticket_but_ticket_list_still_applies(): void
+    {
+        $fn = fn(string $cmd) => $cmd === 'GetTicket'
+            ? ['result' => 'success', 'userid' => 0]
+            : ['result' => 'success'];
+        $c = $this->targetClient(['allowlist_clientids' => [5]], $fn);
+        $this->assertSame('success', $c->call('UpdateTicket', ['ticketid' => 3])['result']);
+
+        $both = $this->targetClient(['allowlist_clientids' => [5], 'allowlist_ticketids' => [1]], $fn);
+        $this->assertTargetDenied(fn() => $both->call('UpdateTicket', ['ticketid' => 3]), 'ticketid');
+    }
+
+    public function test_explicit_clientid_param_wins_over_ticket_lookup(): void
+    {
+        $cmds = [];
+        $c = $this->targetClient(['allowlist_clientids' => [5]], null, $cmds);
+        $this->assertTargetDenied(fn() => $c->call('AddTicketReply', ['ticketid' => 1, 'clientid' => 9, 'noemail' => true]), 'clientid');
+        $this->assertSame([], $cmds, 'sem lookup quando clientid já veio');
+    }
+
+    public function test_read_commands_ignore_target_allowlists(): void
+    {
+        $c = $this->targetClient(['allowlist_clientids' => [5], 'allowlist_ticketids' => [1]]);
+        $this->assertSame('success', $c->call('GetClientsDetails', ['clientid' => 999])['result']);
+        $this->assertSame('success', $c->call('GetTicket', ['ticketid' => 999])['result']);
+    }
+
+    public function test_commands_without_target_params_are_not_covered(): void
+    {
+        $c = $this->targetClient(['allowlist_clientids' => [5], 'allowlist_ticketids' => [1]]);
+        $this->assertSame('success', $c->call('DeleteQuote', ['quoteid' => 77])['result']);
+    }
 }
