@@ -264,4 +264,111 @@ class TicketToolsTest extends TestCase
         $this->assertSame(2, $capturedParams['deptid']);
         $this->assertSame(50, $capturedParams['limitstart']);
     }
+
+    public function test_get_ticket_with_tid_sends_ticketnum(): void
+    {
+        $capturedParams = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$capturedParams) {
+            $capturedParams = $params;
+            return ['result' => 'success', 'ticketid' => 1, 'tid' => '084535'];
+        });
+
+        $tools->getTicket(tid: '084535');
+
+        $this->assertArrayHasKey('ticketnum', $capturedParams);
+        $this->assertSame('084535', $capturedParams['ticketnum']);
+        $this->assertArrayNotHasKey('ticketid', $capturedParams);
+    }
+
+    public function test_get_ticket_with_ticketid_sends_ticketid(): void
+    {
+        $capturedParams = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$capturedParams) {
+            $capturedParams = $params;
+            return ['result' => 'success', 'ticketid' => 30];
+        });
+
+        $tools->getTicket(ticketid: 30);
+
+        $this->assertArrayHasKey('ticketid', $capturedParams);
+        $this->assertSame(30, $capturedParams['ticketid']);
+        $this->assertArrayNotHasKey('ticketnum', $capturedParams);
+    }
+
+    public function test_get_ticket_throws_when_neither_ticketid_nor_tid_provided(): void
+    {
+        $tools = $this->makeTools();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('exatamente um');
+
+        $tools->getTicket();
+    }
+
+    public function test_get_ticket_throws_when_both_ticketid_and_tid_provided(): void
+    {
+        $tools = $this->makeTools();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('exatamente um');
+
+        $tools->getTicket(ticketid: 30, tid: '084535');
+    }
+
+    public function test_list_tickets_adds_display_id_from_tid(): void
+    {
+        $tools = $this->makeTools(function () {
+            return [
+                'result' => 'success',
+                'tickets' => [
+                    'ticket' => [
+                        ['id' => 1, 'tid' => '001234', 'subject' => 'Test 1'],
+                        ['id' => 2, 'tid' => '001235', 'subject' => 'Test 2'],
+                    ]
+                ]
+            ];
+        });
+
+        $json = $tools->listTickets();
+        $result = json_decode($json, true);
+
+        $this->assertSame('001234', $result['tickets']['ticket'][0]['display_id']);
+        $this->assertSame('001235', $result['tickets']['ticket'][1]['display_id']);
+    }
+
+    public function test_get_ticket_adds_display_id_from_tid(): void
+    {
+        $tools = $this->makeTools(function () {
+            return [
+                'result' => 'success',
+                'ticketid' => 30,
+                'tid' => '084535',
+                'subject' => 'Test ticket'
+            ];
+        });
+
+        $json = $tools->getTicket(ticketid: 30);
+        $result = json_decode($json, true);
+
+        $this->assertSame('084535', $result['display_id']);
+    }
+
+    public function test_list_tickets_omits_display_id_when_tid_missing(): void
+    {
+        $tools = $this->makeTools(function () {
+            return [
+                'result' => 'success',
+                'tickets' => [
+                    'ticket' => [
+                        ['id' => 1, 'subject' => 'Test without tid'],
+                    ]
+                ]
+            ];
+        });
+
+        $json = $tools->listTickets();
+        $result = json_decode($json, true);
+
+        $this->assertArrayNotHasKey('display_id', $result['tickets']['ticket'][0]);
+    }
 }

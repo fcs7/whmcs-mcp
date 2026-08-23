@@ -162,11 +162,30 @@ Legenda de risco:
 
 | # | Tool | Comando | Gate | Default | Risco | Descrição |
 |---|------|---------|------|---------|-------|-----------|
-| 64 | `whmcs_list_tickets` | GetTickets | READ | on | 🟢 | Lista tickets de suporte |
-| 65 | `whmcs_get_ticket` | GetTicket | READ | on | 🟢 | Ticket + histórico |
+| 64 | `whmcs_list_tickets` | GetTickets | READ | on | 🟢 | Lista tickets de suporte; userid de cada ticket = clientid de whmcs_get_client |
+| 65 | `whmcs_get_ticket` | GetTicket | READ | on | 🟢 | Detalhes e histórico; use ticketid (id interno) OU tid (número exibido) |
 | 66 | `whmcs_open_ticket` | OpenTicket | WRITE | on | 🟡 | Abre novo ticket; notify_client=true requer COMMS |
 | 67 | `whmcs_reply_ticket` | AddTicketReply | WRITE | on | 🟡 | Responde ticket; notify_client=true requer COMMS |
 | 68 | `whmcs_update_ticket` | UpdateTicket | WRITE | on | 🟡 | Atualiza status/prioridade/dept |
+
+---
+
+## Qual ID usar
+
+Guia rápido para evitar confundir IDs:
+
+| Campo | Fonte | Exemplo | Usar quando | Nunca |
+|-------|-------|---------|-----------|-------|
+| `clientid` | `tblclients.id` | `5` | Referencing clientes, contatos, invoices | Usar como owner_user_id ou userid |
+| `userid` (ticket) | `tblclients.id` (cliente do ticket) | `5` (ou `0` = guest) | Filtrando tickets por cliente | Usar como ticketid ou adminid |
+| `id` / `ticketid` | Internal ticket ID | `30` | Chamando `whmcs_get_ticket`, `whmcs_reply_ticket`, `whmcs_update_ticket` | Usar como tid (número exibido) |
+| `tid` / `display_id` | Ticket display number | `084535` | Filtrando/referenciando por número visível (#084535) | Usar como ticketid (ID interno) |
+| `owner_user_id` / `users[].id` | `tblusers` (admin/staff login) | `3` | Referencing staff/admins em projetos | Nunca usar como clientid ou userid de ticket |
+
+**Em resumo:**
+- Tickets usam **dois IDs distintos**: `ticketid` (interno, 30) e `tid` (número, 084535)
+- Sempre que uma tool pedir `ticketid`, use o ID interno — nunca o número exibido
+- `userid` num ticket **é sempre um `clientid`** (cliente proprietário)
 
 ---
 
