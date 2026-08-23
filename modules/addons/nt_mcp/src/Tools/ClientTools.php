@@ -34,12 +34,21 @@ class ClientTools
 
     #[McpTool(
         name: 'whmcs_get_client',
-        description: 'Obtém detalhes completos de um cliente por ID'
+        description: 'Obtém detalhes de um cliente por ID. Default fields=lite (identificação, status, moeda, contagens) sem PII de endereço/telefone/login/cartão/custom fields; fields=full devolve tudo exceto IP/host de login e cartão.'
     )]
-    public function getClient(int $clientid): string
+    public function getClient(int $clientid, string $fields = 'lite'): string
     {
+        if ($fields !== 'lite' && $fields !== 'full') {
+            throw new \InvalidArgumentException(
+                "fields deve ser 'lite' ou 'full', recebido: " . var_export($fields, true)
+            );
+        }
+
         $result = $this->api->call('GetClientsDetails', ['clientid' => $clientid, 'stats' => true]);
         ResponseRedactor::stripClientDetails($result);
+        if ($fields === 'lite') {
+            ResponseRedactor::clientLiteView($result);
+        }
         return ToolJson::encode($result);
     }
 

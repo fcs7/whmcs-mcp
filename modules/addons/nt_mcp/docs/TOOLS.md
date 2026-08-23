@@ -55,7 +55,7 @@ Legenda de risco:
 | # | Tool | Comando | Gate | Default | Risco | Descrição |
 |---|------|---------|------|---------|-------|-----------|
 | 6 | `whmcs_list_clients` | GetClients | READ | on | 🟢 | Lista clientes |
-| 7 | `whmcs_get_client` | GetClientsDetails | READ | on | 🟢 | Detalhes de um cliente |
+| 7 | `whmcs_get_client` | GetClientsDetails | READ | on | 🟢 | Detalhes de cliente (fields=lite/full; lite: identif. só; full: sem IP/host/card) |
 | 8 | `whmcs_create_client` | AddClient | WRITE | on | 🟡 | Cria cliente (customfields JSON); notify_client=true requer COMMS |
 | 9 | `whmcs_update_client` | UpdateClient | WRITE | on | 🟡 | Atualiza cliente |
 | 10 | `whmcs_get_client_products` | GetClientsProducts | READ | on | 🟢 | Produtos/serviços do cliente |
@@ -264,3 +264,21 @@ diff <(grep "'" src/Whmcs/LocalApiClient.php | grep -o "'[A-Z][A-Za-z]*'" | sort
 
 Se contagem mismatch: adicionar/remover tool no arquivo correspondente (`src/Tools/*.php`,
 `src/Whmcs/LocalApiClient.php`, `docs/TOOLS.md`).
+
+---
+
+## Configurações por tool (Geral)
+
+### `whmcs_get_client` — custom fields visíveis
+
+| Setting | Tipo | Default | Descrição |
+|---------|------|---------|-----------|
+| `nt_mcp_client_customfields_visible` | CSV de ints | vazio | IDs de custom fields cliente visíveis em view **full**. Se vazio: nenhum custom field é exposto em full (apenas estrutura vazia `[]`). Format: `"5,9,12,134"` — vírgulas e espaços tolerados, IDs ≤ 0 ignorados. View **lite** sempre omite customfields completamente. |
+
+Exemplo: autorizar custom fields 5 (CPF/CNPJ) e 134 (Inscrição Estadual) em full:
+```
+nt_mcp_client_customfields_visible = 5,134
+```
+
+Resultado: `whmcs_get_client(clientid=123, fields="full")` devolve apenas os customfields com id 5 e 134,
+rotulados com nome e tipo do campo. Ids não autorizados são silenciosamente omitidos.

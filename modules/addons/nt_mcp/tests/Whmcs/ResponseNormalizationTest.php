@@ -219,7 +219,7 @@ class ResponseNormalizationTest extends TestCase
             ],
         ];
 
-        ResponseRedactor::stripClientDetails($result, $directory);
+        ResponseRedactor::stripClientDetails($result, $directory, [4, 99]);
 
         $this->assertSame('CPF/CNPJ', $result['customfields'][0]['name']);
         $this->assertSame('text', $result['customfields'][0]['type']);

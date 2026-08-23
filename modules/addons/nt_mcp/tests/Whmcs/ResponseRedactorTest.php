@@ -237,7 +237,7 @@ class ResponseRedactorTest extends TestCase
             'customfields15' => '',
         ];
 
-        ResponseRedactor::stripClientDetails($result);
+        ResponseRedactor::stripClientDetails($result, null, [171]);
 
         for ($i = 1; $i <= 15; $i++) {
             $this->assertArrayNotHasKey('customfields' . $i, $result);
@@ -253,11 +253,13 @@ class ResponseRedactorTest extends TestCase
 
         ResponseRedactor::stripClientDetails($result);
 
+        // Convertido de HTML para text plano, e truncado ao primeiro '; '
         $this->assertSame(
-            'Date: 17/08/2026 10:19; IP Address: 189.6.10.214; Host: bd060ad6.virtua.com.br',
+            'Date: 17/08/2026 10:19',
             $result['lastlogin']
         );
         $this->assertStringNotContainsString('<br>', $result['lastlogin']);
+        $this->assertStringNotContainsString('IP Address', $result['lastlogin']);
     }
 
     public function test_strip_client_details_preserves_lastlogin_when_format_is_unexpected(): void
@@ -267,5 +269,97 @@ class ResponseRedactorTest extends TestCase
         ResponseRedactor::stripClientDetails($result);
 
         $this->assertSame('Never', $result['lastlogin']);
+    }
+
+    public function test_strip_client_details_truncates_lastlogin_at_first_semicolon(): void
+    {
+        $result = [
+            'lastlogin' => 'Date: 17/08/2026 10:19<br>IP Address: 1.2.3.4<br>Host: example.com',
+        ];
+
+        ResponseRedactor::stripClientDetails($result);
+
+        // Esperado: HTML convertido + truncado ao primeiro '; '
+        $this->assertSame('Date: 17/08/2026 10:19', $result['lastlogin']);
+        $this->assertStringNotContainsString('IP', $result['lastlogin']);
+        $this->assertStringNotContainsString('Host', $result['lastlogin']);
+    }
+
+    public function test_strip_client_details_always_removes_cclastfour_and_cardlastfour(): void
+    {
+        $result = [
+            'clientid' => 1,
+            'cclastfour' => '4242',
+            'cardlastfour' => '1111',
+        ];
+
+        ResponseRedactor::stripClientDetails($result);
+
+        $this->assertArrayNotHasKey('cclastfour', $result);
+        $this->assertArrayNotHasKey('cardlastfour', $result);
+        $this->assertSame(1, $result['clientid']);
+    }
+
+    public function test_strip_client_details_filters_customfields_to_visible_ids(): void
+    {
+        $result = [
+            'customfields' => [
+                ['id' => 5, 'value' => 'field5'],
+                ['id' => 9, 'value' => 'field9'],
+                ['id' => 12, 'value' => 'field12'],
+            ],
+        ];
+
+        ResponseRedactor::stripClientDetails($result, null, [5, 9]);
+
+        $this->assertCount(2, $result['customfields']);
+        $this->assertSame(5, $result['customfields'][0]['id']);
+        $this->assertSame(9, $result['customfields'][1]['id']);
+    }
+
+    public function test_strip_client_details_with_no_visible_ids_empties_customfields(): void
+    {
+        $result = [
+            'customfields' => [
+                ['id' => 5, 'value' => 'field5'],
+                ['id' => 9, 'value' => 'field9'],
+            ],
+        ];
+
+        ResponseRedactor::stripClientDetails($result, null, []);
+
+        $this->assertSame([], $result['customfields']);
+    }
+
+    public function test_client_lite_view_removes_sensitive_fields(): void
+    {
+        $result = [
+            'clientid' => 1,
+            'firstname' => 'John',
+            'lastname' => 'Doe',
+            'email' => 'john@example.com',
+            'status' => 'active',
+            'address1' => '123 Main St',
+            'address2' => 'Apt 4B',
+            'phonenumber' => '555-1234',
+            'customfields' => [['id' => 5, 'value' => 'test']],
+            'notes' => 'Important notes',
+            'currency' => 'USD',
+        ];
+
+        ResponseRedactor::clientLiteView($result);
+
+        // Deve remover todos os campos em CLIENT_LITE_DROP
+        foreach (ResponseRedactor::CLIENT_LITE_DROP as $key) {
+            $this->assertArrayNotHasKey($key, $result, "Campo $key deve ter sido removido");
+        }
+
+        // Deve manter os campos de identificação
+        $this->assertSame(1, $result['clientid']);
+        $this->assertSame('John', $result['firstname']);
+        $this->assertSame('Doe', $result['lastname']);
+        $this->assertSame('john@example.com', $result['email']);
+        $this->assertSame('active', $result['status']);
+        $this->assertSame('USD', $result['currency']);
     }
 }

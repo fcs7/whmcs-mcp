@@ -133,4 +133,71 @@ class ClientToolsTest extends TestCase
         $this->assertSame([], $data['contacts']);
     }
 
+    public function test_get_client_defaults_to_lite_view(): void
+    {
+        $tools = $this->makeTools(function () {
+            return [
+                'result' => 'success',
+                'clientid' => 1,
+                'firstname' => 'John',
+                'lastname' => 'Doe',
+                'email' => 'john@example.com',
+                'status' => 'active',
+                'address1' => '123 Main St',
+                'phonenumber' => '555-1234',
+                'customfields' => [['id' => 5, 'value' => 'test']],
+                'lastlogin' => 'Date: 17/08/2026 10:19<br>IP Address: 1.2.3.4<br>Host: x',
+            ];
+        });
+
+        $data = json_decode($tools->getClient(1), true);
+
+        // Lite view drops address, phone, customfields, etc.
+        $this->assertArrayNotHasKey('address1', $data);
+        $this->assertArrayNotHasKey('phonenumber', $data);
+        $this->assertArrayNotHasKey('customfields', $data);
+        $this->assertArrayNotHasKey('lastlogin', $data);
+        // But keeps identification fields
+        $this->assertSame('John', $data['firstname']);
+        $this->assertSame('Doe', $data['lastname']);
+        $this->assertSame('john@example.com', $data['email']);
+        $this->assertSame('active', $data['status']);
+    }
+
+    public function test_get_client_full_view_keeps_address_and_customfields(): void
+    {
+        $tools = $this->makeTools(function () {
+            return [
+                'result' => 'success',
+                'clientid' => 1,
+                'firstname' => 'John',
+                'address1' => '123 Main St',
+                'phonenumber' => '555-1234',
+                'customfields' => [['id' => 5, 'value' => 'test']],
+                'cclastfour' => '4242',
+                'cardlastfour' => '1111',
+            ];
+        });
+
+        $data = json_decode($tools->getClient(1, 'full'), true);
+
+        // Full view keeps address and phone
+        $this->assertSame('123 Main St', $data['address1']);
+        $this->assertSame('555-1234', $data['phonenumber']);
+        // But strips cclastfour and cardlastfour
+        $this->assertArrayNotHasKey('cclastfour', $data);
+        $this->assertArrayNotHasKey('cardlastfour', $data);
+        // Customfields kept (as empty or filtered list based on config)
+        $this->assertArrayHasKey('customfields', $data);
+    }
+
+    public function test_get_client_rejects_invalid_fields_parameter(): void
+    {
+        $tools = $this->makeTools();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage("fields deve ser 'lite' ou 'full'");
+        $tools->getClient(1, 'invalid');
+    }
+
 }

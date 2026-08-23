@@ -7,6 +7,19 @@ final class ResponseRedactor
     /** Teto de profundidade de recursão, compartilhado por todas as passadas. */
     private const MAX_DEPTH = 8;
 
+    /** Chaves de cliente a omitir na view lite (identificação apenas, sem PII). */
+    public const CLIENT_LITE_DROP = [
+        'address1', 'address2', 'city', 'state', 'fullstate', 'postcode',
+        'phonenumber', 'phonenumberformatted', 'phonecc', 'tax_id', 'lastlogin',
+        'cctype', 'cclastfour', 'gatewayid', 'defaultgateway', 'allowSingleSignOn',
+        'marketing_emails_opt_in', 'email_verified', 'customfields', 'notes',
+        'users', 'securityqid', 'cardnum', 'startdate', 'issuenumber', 'expdate',
+        'bankname', 'banktype', 'bankcode', 'bankacct',
+    ];
+
+    /** Chave de configuração WHMCS para lista de field IDs visíveis em view full. */
+    private const CUSTOMFIELDS_VISIBLE_SETTING = 'nt_mcp_client_customfields_visible';
+
     /**
      * Chaves nunca legítimas numa resposta — removidas em qualquer
      * profundidade. `c` é o código de acesso público a um ticket em
@@ -341,16 +354,24 @@ final class ResponseRedactor
      *  2. `lastlogin` vem pré-formatado em HTML pelo WHMCS
      *     (`"Date: 17/08/2026 10:19<br>IP Address: 1.2.3.4<br>Host: x"`),
      *     útil pra renderizar numa página, ruim pra um agente ler. Vira
-     *     texto plano com `; ` no lugar de `<br>`; se o formato mudar e não
+     *     texto plano com `; ` no lugar de `<br>`, e depois truncado no
+     *     primeiro `; ` (mantém só a data); se o formato mudar e não
      *     bater no padrão esperado, o valor ORIGINAL é preservado — nunca
      *     inventa dado.
      *  3. `customfields1`..`customfields15` são a MESMA informação de
      *     `customfields` (array `{id, value}`), só que achatada em chaves
      *     numeradas sem id — confirmado campo a campo contra o mesmo
-     *     cliente. `customfields` continua, agora rotulado por `name`
+     *     cliente. `customfields` continua, agora filtrado aos ids visíveis
+     *     (via allowlist de configuração ou explícito), e rotulado por `name`
      *     (ver `labelCustomFields()`).
+     *  4. `cclastfour` e `cardlastfour` são removidos sempre, mesmo em full
+     *     (redundante com `cclastfour` do campo de card).
+     *
+     * @param array &$result Resposta do WHMCS, modificada in-place.
+     * @param CustomFieldDirectory|null $fields Diretório de labels (default: novo).
+     * @param array<int>|null $visibleIds IDs de custom fields visíveis (default: carrega de setting).
      */
-    public static function stripClientDetails(array &$result, ?CustomFieldDirectory $fields = null): void
+    public static function stripClientDetails(array &$result, ?CustomFieldDirectory $fields = null, ?array $visibleIds = null): void
     {
         self::scrubSensitive($result);
         unset($result['client']);
@@ -359,11 +380,95 @@ final class ResponseRedactor
         }
         if (isset($result['lastlogin']) && is_string($result['lastlogin']) && $result['lastlogin'] !== '') {
             $plain = trim(str_ireplace('<br>', '; ', $result['lastlogin']), '; ');
+            // Trunca no primeiro '; ' para manter só a data
+            if (strpos($plain, '; ') !== false) {
+                $plain = explode('; ', $plain)[0];
+            }
             if ($plain !== '') {
                 $result['lastlogin'] = $plain;
             }
         }
+        // Remove campos de cartão em qualquer view
+        unset($result['cclastfour'], $result['cardlastfour']);
+
+        // Filtra custom fields aos ids visíveis
+        if ($visibleIds === null) {
+            $visibleIds = self::visibleCustomFieldIds();
+        }
+        self::filterCustomFields($result, $visibleIds);
+
         self::labelCustomFields($result, $fields ?? new CustomFieldDirectory());
+    }
+
+    /**
+     * Carrega os IDs de custom fields que devem ficar visíveis em view full,
+     * a partir da configuração WHMCS. Se a configuração não existe ou falha,
+     * retorna array vazio (nenhum campo visível além do que cair no lite).
+     *
+     * @return array<int>
+     */
+    private static function visibleCustomFieldIds(): array
+    {
+        try {
+            $raw = \WHMCS\Config\Setting::getValue(self::CUSTOMFIELDS_VISIBLE_SETTING) ?? '';
+        } catch (\Throwable) {
+            // Classe não existe ou leitura falhou — fail-safe: nenhum visível
+            return [];
+        }
+
+        $raw = trim($raw);
+        if ($raw === '') {
+            return [];
+        }
+
+        $ids = [];
+        foreach (array_filter(array_map('trim', explode(',', $raw))) as $item) {
+            $id = (int) $item;
+            if ($id > 0) {
+                $ids[] = $id;
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
+     * Filtra `customfields` para manter apenas os IDs na allowlist.
+     * Lista vazia mantém `customfields` como `[]`.
+     *
+     * @param array &$result
+     * @param array<int> $visibleIds
+     */
+    private static function filterCustomFields(array &$result, array $visibleIds): void
+    {
+        if (!isset($result['customfields']) || !is_array($result['customfields'])) {
+            return;
+        }
+
+        $filtered = [];
+        foreach ($result['customfields'] as $field) {
+            if (!is_array($field) || !isset($field['id'])) {
+                continue;
+            }
+            $id = (int) ($field['id'] ?? 0);
+            if ($id > 0 && in_array($id, $visibleIds, true)) {
+                $filtered[] = $field;
+            }
+        }
+
+        $result['customfields'] = $filtered;
+    }
+
+    /**
+     * Remove campos sensíveis de cliente para view lite.
+     * Chamada APÓS stripClientDetails (que faz o scrub comum).
+     * Remove apenas chaves de nível raiz — não é recursiva.
+     */
+    public static function clientLiteView(array &$result): void
+    {
+        foreach (self::CLIENT_LITE_DROP as $key) {
+            unset($result[$key]);
+        }
     }
 
     /**
