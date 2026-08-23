@@ -484,6 +484,9 @@ final class ResponseRedactor
     /** Teto do resumo de descrição de produto, em caracteres. */
     public const DESCRIPTION_SUMMARY_LIMIT = 300;
 
+    /** Chaves mantidas em produtos no modo lite. */
+    private const PRODUCT_LITE_KEEP = ['pid', 'gid', 'name', 'type', 'module', 'paytype', 'description_plain', 'pricing'];
+
     /**
      * `GetProducts` devolve o `description` de cada produto como HTML COMPLETO
      * de landing page. Medido no catálogo real: 54 produtos, ~126 KB de
@@ -547,5 +550,108 @@ final class ResponseRedactor
             return;
         }
         unset($result['fraudoutput']);
+    }
+
+    /**
+     * Remove ciclos de preço com valor negativo (WHMCS usa -1.00 = ciclo
+     * desativado). Aplicável a GetProducts em ambos os modos (lite e full).
+     */
+    public static function removeNegativePrices(array &$result): void
+    {
+        if (!isset($result['products']['product']) || !is_array($result['products']['product'])) {
+            return;
+        }
+
+        foreach ($result['products']['product'] as &$product) {
+            if (!is_array($product) || !isset($product['pricing']) || !is_array($product['pricing'])) {
+                continue;
+            }
+
+            foreach ($product['pricing'] as &$pricing) {
+                if (!is_array($pricing)) {
+                    continue;
+                }
+
+                foreach ($pricing as $currency => &$cycles) {
+                    if (!is_array($cycles)) {
+                        continue;
+                    }
+
+                    $filtered = [];
+                    foreach ($cycles as $cycle => $price) {
+                        $numPrice = is_numeric($price) ? (float)$price : null;
+                        if ($numPrice !== null && $numPrice >= 0) {
+                            $filtered[$cycle] = $price;
+                        }
+                    }
+                    $cycles = $filtered;
+                }
+                unset($cycles);
+            }
+            unset($pricing);
+        }
+        unset($product);
+    }
+
+    /**
+     * Reduz produtos ao modo lite: mantém apenas chaves essenciais
+     * (pid, gid, name, type, module, paytype, description_plain, pricing).
+     * Remove customfields, configoptions, product_url e outras chaves volumosas.
+     */
+    public static function productLiteView(array &$result): void
+    {
+        if (!isset($result['products']['product']) || !is_array($result['products']['product'])) {
+            return;
+        }
+
+        foreach ($result['products']['product'] as &$product) {
+            if (!is_array($product)) {
+                continue;
+            }
+
+            $lite = [];
+            foreach (self::PRODUCT_LITE_KEEP as $key) {
+                if (array_key_exists($key, $product)) {
+                    $lite[$key] = $product[$key];
+                }
+            }
+            $product = $lite;
+        }
+        unset($product);
+    }
+
+    /**
+     * Pagina produtos localmente: corta `products.product[]` na faixa
+     * [$limitstart, $limit], adiciona `totalresults` (contagem antes do corte),
+     * `limit` e `limitstart` no topo. Quando nenhum filtro (gid=0, pid=0,
+     * module=''), adiciona `warning` alertando para reduzir contexto.
+     */
+    public static function paginateProducts(array &$result, int $limit, int $limitstart, bool $noFilter): void
+    {
+        if (!isset($result['products']['product']) || !is_array($result['products']['product'])) {
+            $result['totalresults'] = 0;
+            $result['limit'] = $limit;
+            $result['limitstart'] = $limitstart;
+            if ($noFilter) {
+                $result['warning'] = 'catálogo inteiro; filtre por gid/pid para reduzir contexto';
+            }
+            return;
+        }
+
+        $products = &$result['products']['product'];
+        if (!array_is_list($products)) {
+            $products = [$products];
+        }
+
+        $total = count($products);
+        $result['totalresults'] = $total;
+        $result['limit'] = $limit;
+        $result['limitstart'] = $limitstart;
+
+        if ($noFilter) {
+            $result['warning'] = 'catálogo inteiro; filtre por gid/pid para reduzir contexto';
+        }
+
+        $products = array_slice($products, $limitstart, $limit);
     }
 }

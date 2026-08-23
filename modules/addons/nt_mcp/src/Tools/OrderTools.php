@@ -80,10 +80,32 @@ class OrderTools
      * devolvia ~126 KB por chamada, quase tudo markup. O default entrega
      * `description_plain` (texto corrido truncado); `full_description=true`
      * devolve o HTML original intacto, para quem realmente precisa dele.
+     *
+     * `fields=lite` reduz o payload removendo customfields, configoptions, product_url
+     * e mantendo apenas chaves essenciais (pid, gid, name, type, module, paytype,
+     * description_plain, pricing reduzido). Ciclos com preço negativo são sempre
+     * removidos (ambos os modes).
      */
-    #[McpTool(name: 'whmcs_get_products', description: 'Lista o catálogo de produtos/serviços do WHMCS, opcionalmente filtrado por grupo. Por padrão a descrição vem como texto truncado em description_plain; use full_description=true para o HTML completo.')]
-    public function getProducts(int $gid = 0, int $pid = 0, string $module = '', bool $full_description = false): string
-    {
+    #[McpTool(name: 'whmcs_get_products', description: 'Lista o catálogo de produtos/serviços com opções de filtro, paginação local e modo lite. Por padrão a descrição vem como texto truncado em description_plain; use full_description=true para o HTML completo. Use fields=lite para reduzir payload (sem customfields, configoptions, product_url).')]
+    public function getProducts(
+        int $gid = 0,
+        int $pid = 0,
+        string $module = '',
+        bool $full_description = false,
+        string $fields = 'full',
+        int $limit = 20,
+        int $limitstart = 0
+    ): string {
+        if (!in_array($fields, ['lite', 'full'], true)) {
+            throw new \InvalidArgumentException('fields must be "lite" or "full"');
+        }
+        if ($limit < 1 || $limit > 100) {
+            $limit = \max(1, \min(100, $limit));
+        }
+        if ($limitstart < 0) {
+            $limitstart = 0;
+        }
+
         $params = [];
         if ($gid > 0) $params['gid'] = $gid;
         if ($pid > 0) $params['pid'] = $pid;
@@ -93,6 +115,11 @@ class OrderTools
         if (!$full_description) {
             ResponseRedactor::summariseProductDescriptions($result);
         }
+        ResponseRedactor::removeNegativePrices($result);
+        if ($fields === 'lite') {
+            ResponseRedactor::productLiteView($result);
+        }
+        ResponseRedactor::paginateProducts($result, $limit, $limitstart, $gid === 0 && $pid === 0 && $module === '');
         return ToolJson::encode($result);
     }
 

@@ -103,7 +103,7 @@ Legenda de risco:
 | 32 | `whmcs_get_order` | GetOrders | READ | on | 🟢 | Detalhes de pedido |
 | 33 | `whmcs_cancel_order` | CancelOrder | DESTRUCTIVE | ⛔ off | 🟠 | **Cancela pedido — irreversível, exige confirm=true** |
 | 34 | `whmcs_pending_order` | PendingOrder | WRITE | on | 🟡 | Coloca pedido em status pendente |
-| 35 | `whmcs_get_products` | GetProducts | READ | on | 🟢 | Lista produtos/serviços |
+| 35 | `whmcs_get_products` | GetProducts | READ | on | 🟢 | Lista produtos com fields=lite, paginação local e sem ciclos desativados |
 | 36 | `whmcs_get_order_statuses` | GetOrderStatuses | READ | on | 🟢 | Status de pedido configurados + contagem |
 | 37 | `whmcs_get_promotions` | GetPromotions | READ | on | 🟢 | Promoções/cupons; filtro opcional por código |
 
