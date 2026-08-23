@@ -11,6 +11,9 @@ use Mcp\Capability\Attribute\McpTool;
 
 class OrderTools
 {
+    /** 39 KB deixa margem para o framing HTTP/JSON-RPC e garante corpo < 40 KB. */
+    private const PRODUCT_LITE_MCP_BUDGET_BYTES = 39000;
+
     public function __construct(private readonly LocalApiClient $api) {}
 
     #[McpTool(name: 'whmcs_list_orders', description: 'Lista pedidos com filtros opcionais')]
@@ -86,10 +89,12 @@ class OrderTools
      * description_plain, pricing reduzido). Ciclos com preço negativo são sempre
      * removidos (ambos os modes).
      *
-     * `product_url` só é retornado quando `include_urls=true` (e `fields=full`);
-     * por padrão é removido para reduzir tamanho do payload.
+     * `product_url` só é retornado quando `include_urls=true` (e `fields=full`),
+     * sempre origin-relative; por padrão é removido. No modo lite, a página
+     * pode devolver menos itens que `limit` para manter o envelope MCP abaixo
+     * de 40 KB; `numreturned` e `next_limitstart` permitem continuar sem gaps.
      */
-    #[McpTool(name: 'whmcs_get_products', description: 'Lista o catálogo de produtos/serviços com opções de filtro, paginação local e modo lite. Por padrão a descrição vem como texto truncado em description_plain; use full_description=true para o HTML completo. Use fields=lite para reduzir payload (sem customfields, configoptions, product_url). product_url só aparece com fields=full e include_urls=true.')]
+    #[McpTool(name: 'whmcs_get_products', description: 'Lista o catálogo de produtos/serviços com paginação local e modo lite. O default traz description_plain e limita o envelope MCP a 40 KB, podendo retornar menos itens que limit; continue por next_limitstart. Use full_description=true para HTML completo. product_url só aparece com fields=full e include_urls=true, sempre como URL relativa.')]
     public function getProducts(
         int $gid = 0,
         int $pid = 0,
@@ -128,9 +133,96 @@ class OrderTools
             ResponseRedactor::productLiteView($result);
         } elseif (!$include_urls) {
             $this->stripProductUrls($result);
+        } else {
+            ResponseRedactor::relativizeProductUrls($result);
         }
         ResponseRedactor::paginateProducts($result, $limit, $limitstart, $gid === 0 && $pid === 0 && $module === '');
+
+        if ($fields === 'lite') {
+            return $this->encodeLiteProductsWithinBudget($result);
+        }
+
         return ToolJson::encode($result);
+    }
+
+    /**
+     * O SDK envolve o JSON retornado pela tool como string em
+     * `result.content[0].text`; portanto quotes/unicode são escapados uma
+     * segunda vez. Mede exatamente esse envelope, usando id inteiro máximo
+     * como margem, e encurta a página pelo fim até caber.
+     */
+    private function encodeLiteProductsWithinBudget(array &$result): string
+    {
+        $canTrim = isset($result['products']['product'])
+            && is_array($result['products']['product'])
+            && array_is_list($result['products']['product']);
+        $capped = false;
+
+        while (true) {
+            $this->syncProductPageMetadata($result);
+            if ($capped) {
+                $result['payload_capped'] = true;
+            } else {
+                unset($result['payload_capped']);
+            }
+
+            $json = ToolJson::encodeCompact($result);
+            if (self::estimatedMcpBodyBytes($json) <= self::PRODUCT_LITE_MCP_BUDGET_BYTES) {
+                return $json;
+            }
+
+            if ($canTrim && count($result['products']['product']) > 1) {
+                array_pop($result['products']['product']);
+                $capped = true;
+                continue;
+            }
+
+            // Caso patológico: um único pricing multimoeda ainda estoura o
+            // teto. Mantém o produto e sinaliza a única informação omitida.
+            if ($canTrim && count($result['products']['product']) === 1 && isset($result['products']['product'][0]['pricing'])) {
+                unset($result['products']['product'][0]['pricing']);
+                $result['products']['product'][0]['pricing_omitted_for_size'] = true;
+                $capped = true;
+                continue;
+            }
+
+            // Strings anormais fora dos campos já limitados não podem furar o
+            // contrato de tamanho. Full+pid continua disponível como opt-in.
+            return ToolJson::encodeCompact([
+                'result' => 'error',
+                'error_code' => 'product_payload_too_large',
+                'message' => 'Produto excede o limite do modo lite; filtre por pid e use fields=full.',
+            ]);
+        }
+    }
+
+    private function syncProductPageMetadata(array &$result): void
+    {
+        $products = $result['products']['product'] ?? [];
+        $returned = is_array($products) && array_is_list($products) ? count($products) : 0;
+        $start = max(0, (int) ($result['limitstart'] ?? 0));
+        $total = max(0, (int) ($result['totalresults'] ?? 0));
+
+        $result['numreturned'] = $returned;
+        if ($start + $returned < $total) {
+            $result['next_limitstart'] = $start + $returned;
+        } else {
+            unset($result['next_limitstart']);
+        }
+    }
+
+    private static function estimatedMcpBodyBytes(string $toolJson): int
+    {
+        $body = json_encode([
+            'jsonrpc' => '2.0',
+            'id' => PHP_INT_MAX,
+            'result' => [
+                'content' => [['type' => 'text', 'text' => $toolJson]],
+                'isError' => false,
+            ],
+        ], JSON_INVALID_UTF8_SUBSTITUTE);
+
+        return is_string($body) ? strlen($body) : PHP_INT_MAX;
     }
 
     /**

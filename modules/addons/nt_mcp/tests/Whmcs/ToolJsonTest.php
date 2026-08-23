@@ -16,6 +16,17 @@ class ToolJsonTest extends TestCase
         $this->assertSame(['nome' => 'José', 'url' => 'https://nt.example/a'], json_decode($json, true));
     }
 
+    public function test_compact_encoding_preserves_data_without_presentation_whitespace(): void
+    {
+        $data = ['nome' => 'José', 'nested' => ['value' => 7]];
+
+        $compact = ToolJson::encodeCompact($data);
+
+        $this->assertSame($data, json_decode($compact, true));
+        $this->assertStringNotContainsString("\n", $compact);
+        $this->assertLessThan(strlen(ToolJson::encode($data)), strlen($compact));
+    }
+
     /**
      * Dado legado gravado em latin1 fazia `json_encode` devolver `false`, que
      * batia no tipo de retorno `: string` da tool, virava `TypeError` e chegava

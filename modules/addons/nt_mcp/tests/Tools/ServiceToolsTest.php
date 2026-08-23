@@ -72,6 +72,18 @@ class ServiceToolsTest extends TestCase
         $this->assertSame('success', $data['result']);
     }
 
+    /** Regressão do payload real: WHMCS usa string vazia para a coleção. */
+    public function test_list_services_normalizes_empty_product_string_to_list(): void
+    {
+        $tools = $this->makeTools(function (string $cmd, array $params) {
+            return ['result' => 'success', 'products' => ''];
+        });
+
+        $data = json_decode($tools->listServices(42), true);
+
+        $this->assertSame([], $data['products']);
+    }
+
     public function test_list_services_sends_clientid_and_limitnum(): void
     {
         $capturedParams = null;

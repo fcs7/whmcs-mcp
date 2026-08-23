@@ -11,11 +11,13 @@ class ResponseRedactorTest extends TestCase
     {
         $data = [
             'result' => 'success',
+            'system_host' => 'desenv.ntweb.com.br',
             'client' => [
                 'firstname' => 'Jane',
                 'password' => 'hash-should-not-leak',
                 'nested' => [
                     'securityqans' => 'my-answer',
+                    'ipaddress' => '203.0.113.42',
                     'deeper' => [
                         'password2' => 'still-here',
                         'ok' => 'keep-me',
@@ -28,9 +30,11 @@ class ResponseRedactorTest extends TestCase
 
         $this->assertArrayNotHasKey('password', $data['client']);
         $this->assertArrayNotHasKey('securityqans', $data['client']['nested']);
+        $this->assertArrayNotHasKey('ipaddress', $data['client']['nested']);
         $this->assertArrayNotHasKey('password2', $data['client']['nested']['deeper']);
         $this->assertSame('keep-me', $data['client']['nested']['deeper']['ok']);
         $this->assertSame('Jane', $data['client']['firstname']);
+        $this->assertSame('desenv.ntweb.com.br', $data['system_host'], 'host explícito do boot-check é intencional');
     }
 
     public function test_strip_pay_methods_keeps_only_allowlisted_keys(): void
@@ -111,7 +115,7 @@ class ResponseRedactorTest extends TestCase
     /**
      * Regressão (2026-08-23, desenv): `GetInvoice`/`GetOrders` devolvem
      * `""` para lista vazia em vez de `[]`/`array()` — reproduzido em
-     * `transactions`, `nameservers`, `renewals`. Só as chaves da allowlist
+     * `transactions`, `nameservers`, `renewals`, `products`. Só as chaves da allowlist
      * convertem; um campo de texto legitimamente vazio (`notes`) tem que
      * continuar string.
      */
@@ -121,6 +125,7 @@ class ResponseRedactorTest extends TestCase
             'transactions' => '',
             'nameservers' => '',
             'renewals' => '',
+            'products' => '',
             'notes' => '',
             'nested' => ['domains' => '', 'services' => '', 'addons' => ''],
         ];
@@ -130,6 +135,7 @@ class ResponseRedactorTest extends TestCase
         $this->assertSame([], $data['transactions']);
         $this->assertSame([], $data['nameservers']);
         $this->assertSame([], $data['renewals']);
+        $this->assertSame([], $data['products']);
         $this->assertSame('', $data['notes'], 'campo de texto livre nao pode virar lista');
         $this->assertSame([], $data['nested']['domains']);
         $this->assertSame([], $data['nested']['services']);

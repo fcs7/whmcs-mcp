@@ -27,10 +27,11 @@ namespace NtMcp\Whmcs;
  */
 final class ToolJson
 {
-    private const FLAGS = JSON_PRETTY_PRINT
-        | JSON_UNESCAPED_UNICODE
+    private const BASE_FLAGS = JSON_UNESCAPED_UNICODE
         | JSON_UNESCAPED_SLASHES
         | JSON_INVALID_UTF8_SUBSTITUTE;
+
+    private const PRETTY_FLAGS = self::BASE_FLAGS | JSON_PRETTY_PRINT;
 
     /** Última barreira: payload mínimo garantidamente serializável. */
     private const HARD_FALLBACK =
@@ -38,7 +39,22 @@ final class ToolJson
 
     public static function encode(mixed $data): string
     {
-        $json = json_encode($data, self::FLAGS);
+        return self::encodeWithFlags($data, self::PRETTY_FLAGS);
+    }
+
+    /**
+     * Variante compacta para respostas com orçamento explícito de bytes.
+     * O conteúdo continua sendo o mesmo JSON; só o whitespace de apresentação
+     * é removido antes de o SDK escapá-lo dentro de `content[0].text`.
+     */
+    public static function encodeCompact(mixed $data): string
+    {
+        return self::encodeWithFlags($data, self::BASE_FLAGS);
+    }
+
+    private static function encodeWithFlags(mixed $data, int $flags): string
+    {
+        $json = json_encode($data, $flags);
         if (is_string($json)) {
             return $json;
         }

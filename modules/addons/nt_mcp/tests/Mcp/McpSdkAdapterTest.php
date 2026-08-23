@@ -488,6 +488,51 @@ final class McpSdkAdapterTest extends TestCase
         $this->assertSame('crm_resource_not_found', $envelope['error_code'] ?? null);
     }
 
+    #[Test]
+    public function products_lite_caps_the_real_json_rpc_body_below_40kb(): void
+    {
+        $products = [];
+        for ($i = 1; $i <= 20; $i++) {
+            $pricing = [];
+            foreach (['BRL', 'USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'CHF'] as $currency) {
+                $pricing[$currency] = [
+                    'prefix' => $currency . ' ', 'suffix' => '',
+                    'msetupfee' => '0.00', 'qsetupfee' => '0.00', 'ssetupfee' => '0.00',
+                    'asetupfee' => '0.00', 'bsetupfee' => '0.00', 'tsetupfee' => '0.00',
+                    'monthly' => '19.90', 'quarterly' => '55.00', 'semiannually' => '105.00',
+                    'annually' => '199.00', 'biennially' => '379.00', 'triennially' => '539.00',
+                ];
+            }
+            $products[] = [
+                'pid' => $i,
+                'gid' => 2,
+                'type' => 'hostingaccount',
+                'name' => "Plano {$i}",
+                'description' => '<p>' . str_repeat('Descrição ampla ', 30) . '</p>',
+                'module' => 'plesk',
+                'paytype' => 'recurring',
+                'pricing' => $pricing,
+            ];
+        }
+
+        $this->api->setCallable(static fn(string $cmd) => $cmd === 'GetProducts'
+            ? ['result' => 'success', 'totalresults' => 20, 'products' => ['product' => $products]]
+            : ['result' => 'success']);
+
+        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $sessionId = $this->initialize($adapter);
+        $response = $adapter->handle($this->call($sessionId, 3, 'whmcs_get_products', []));
+        $body = (string) $response->getBody();
+        $decoded = json_decode($body, true);
+        $toolResult = json_decode((string) ($decoded['result']['content'][0]['text'] ?? ''), true);
+
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertLessThanOrEqual(40000, strlen($body));
+        $this->assertTrue($toolResult['payload_capped'] ?? false);
+        $this->assertLessThan(20, $toolResult['numreturned'] ?? 20);
+        $this->assertSame($toolResult['numreturned'], $toolResult['next_limitstart']);
+    }
+
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------

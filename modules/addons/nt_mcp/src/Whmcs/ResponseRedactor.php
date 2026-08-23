@@ -21,13 +21,14 @@ final class ResponseRedactor
     private const CUSTOMFIELDS_VISIBLE_SETTING = 'nt_mcp_client_customfields_visible';
 
     /**
-     * Chaves nunca legítimas numa resposta — removidas em qualquer
-     * profundidade. `c` é o código de acesso público a um ticket em
+     * Chaves nunca legítimas numa resposta MCP — removidas em qualquer
+     * profundidade. `ipaddress` é PII de cliente (confirmado em GetOrders).
+     * `c` é o código de acesso público a um ticket em
      * `GetTickets`/`GetTicket` (dispensa autenticação — mesma classe de
      * `password`); nome curto, mas WHMCS não usa `c` como chave em nenhum
      * outro payload conhecido do addon.
      */
-    private const ALWAYS_STRIP = ['password', 'password2', 'securityqans', 'c'];
+    private const ALWAYS_STRIP = ['password', 'password2', 'securityqans', 'c', 'ipaddress'];
 
     /**
      * Chaves cujo valor vazio o WHMCS serializa como `""` (string) quando a
@@ -38,7 +39,7 @@ final class ResponseRedactor
      */
     private const EMPTY_STRING_MEANS_EMPTY_LIST = [
         'transactions', 'nameservers', 'renewals', 'frauddata', 'validationdata',
-        'domains', 'services', 'addons', 'attachments',
+        'domains', 'services', 'addons', 'attachments', 'products',
     ];
 
     /**
@@ -719,6 +720,70 @@ final class ResponseRedactor
             $product = $lite;
         }
         unset($product);
+    }
+
+    /**
+     * Remove scheme e autoridade de `product_url`, preservando somente uma
+     * referência origin-relative (`/path?query#fragment`). O host do WHMCS é
+     * contexto operacional e não deve viajar escondido em cada produto.
+     * Valores inválidos ou esquemas não web são removidos fail-closed.
+     */
+    public static function relativizeProductUrls(array &$result): void
+    {
+        if (!isset($result['products']['product']) || !is_array($result['products']['product'])) {
+            return;
+        }
+
+        foreach ($result['products']['product'] as &$product) {
+            if (!is_array($product) || !array_key_exists('product_url', $product)) {
+                continue;
+            }
+
+            $relative = self::relativeWebUrl($product['product_url']);
+            if ($relative === null) {
+                unset($product['product_url']);
+                continue;
+            }
+
+            $product['product_url'] = $relative;
+        }
+        unset($product);
+    }
+
+    private static function relativeWebUrl(mixed $url): ?string
+    {
+        if (!is_string($url) || trim($url) === '') {
+            return null;
+        }
+
+        $parts = parse_url(trim($url));
+        if ($parts === false) {
+            return null;
+        }
+
+        $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+        if ($scheme !== '' && !in_array($scheme, ['http', 'https'], true)) {
+            return null;
+        }
+        if ($scheme !== '' && empty($parts['host'])) {
+            return null;
+        }
+
+        $path = (string) ($parts['path'] ?? '');
+        if ($path === '') {
+            $path = '/';
+        } elseif ($path[0] !== '/') {
+            $path = '/' . $path;
+        }
+
+        if (array_key_exists('query', $parts)) {
+            $path .= '?' . $parts['query'];
+        }
+        if (array_key_exists('fragment', $parts)) {
+            $path .= '#' . $parts['fragment'];
+        }
+
+        return $path;
     }
 
     /**

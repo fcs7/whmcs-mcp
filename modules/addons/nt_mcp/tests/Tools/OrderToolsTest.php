@@ -46,6 +46,7 @@ class OrderToolsTest extends TestCase
             return [
                 'result' => 'success',
                 'id' => 70,
+                'ipaddress' => '203.0.113.70',
                 'fraudmodule' => 'maxmind',
                 'fraudoutput' => '{"billing_address":{"latitude":-15.7783}}',
             ];
@@ -54,7 +55,25 @@ class OrderToolsTest extends TestCase
         $result = json_decode($tools->getOrder(orderid: 70), true);
 
         $this->assertArrayNotHasKey('fraudoutput', $result);
+        $this->assertArrayNotHasKey('ipaddress', $result);
         $this->assertSame('maxmind', $result['fraudmodule']);
+    }
+
+    public function test_list_orders_strips_client_ip_from_every_order(): void
+    {
+        $tools = $this->makeTools(fn() => [
+            'result' => 'success',
+            'orders' => ['order' => [
+                ['id' => 70, 'ipaddress' => '203.0.113.70', 'status' => 'Pending'],
+                ['id' => 71, 'ipaddress' => '203.0.113.71', 'status' => 'Active'],
+            ]],
+        ], ['readonly' => true]);
+
+        $result = json_decode($tools->listOrders(), true);
+
+        foreach ($result['orders']['order'] as $order) {
+            $this->assertArrayNotHasKey('ipaddress', $order);
+        }
     }
 
     // ---------------------------------------------------------------
@@ -329,6 +348,8 @@ class OrderToolsTest extends TestCase
         $this->assertCount(2, $data['products']['product']);
         $this->assertSame(2, $data['products']['product'][0]['pid']);
         $this->assertSame(5, $data['totalresults']);
+        $this->assertSame(2, $data['numreturned']);
+        $this->assertSame(3, $data['next_limitstart']);
         $this->assertArrayHasKey('warning', $data);
 
         $filtered = json_decode($tools->getProducts(gid: 2), true);
@@ -359,18 +380,76 @@ class OrderToolsTest extends TestCase
         $this->assertSame('NT VPS', $product['name']);
     }
 
-    /** product_url é preservado quando include_urls=true. */
-    public function test_get_products_keeps_product_url_when_include_urls_true(): void
+    /** product_url perde scheme/host, mas preserva path/query/fragment. */
+    public function test_get_products_relativizes_product_url_when_include_urls_true(): void
     {
         $tools = $this->makeTools(fn() => ['result' => 'success', 'products' => ['product' => [
-            ['pid' => 1, 'name' => 'NT VPS', 'product_url' => 'https://example.com/vps'],
+            ['pid' => 1, 'name' => 'NT VPS', 'product_url' => 'https://desenv.example:8443/vps?cycle=annual#buy'],
         ]]]);
 
         $data = json_decode($tools->getProducts(fields: 'full', include_urls: true), true);
         $product = $data['products']['product'][0];
 
         $this->assertArrayHasKey('product_url', $product, 'product_url deve estar presente com include_urls=true');
-        $this->assertSame('https://example.com/vps', $product['product_url']);
+        $this->assertSame('/vps?cycle=annual#buy', $product['product_url']);
+        $this->assertStringNotContainsString('desenv.example', $product['product_url']);
+    }
+
+    public function test_get_products_keeps_relative_url_and_drops_non_web_scheme(): void
+    {
+        $tools = $this->makeTools(fn() => ['result' => 'success', 'products' => ['product' => [
+            ['pid' => 1, 'name' => 'Relativo', 'product_url' => 'index.php?rp=/store/vps'],
+            ['pid' => 2, 'name' => 'Inválido', 'product_url' => 'javascript:alert(1)'],
+        ]]]);
+
+        $data = json_decode($tools->getProducts(fields: 'full', include_urls: true), true);
+
+        $this->assertSame('/index.php?rp=/store/vps', $data['products']['product'][0]['product_url']);
+        $this->assertArrayNotHasKey('product_url', $data['products']['product'][1]);
+    }
+
+    public function test_get_products_lite_caps_mcp_envelope_without_skipping_cursor(): void
+    {
+        $tools = $this->makeTools(fn() => $this->bulkyCatalogFixture());
+
+        $firstJson = $tools->getProducts();
+        $first = json_decode($firstJson, true);
+        $firstBody = json_encode([
+            'jsonrpc' => '2.0',
+            'id' => 1,
+            'result' => ['content' => [['type' => 'text', 'text' => $firstJson]], 'isError' => false],
+        ]);
+
+        $this->assertLessThanOrEqual(40000, strlen($firstBody));
+        $this->assertTrue($first['payload_capped']);
+        $this->assertLessThan(20, $first['numreturned']);
+        $this->assertSame($first['numreturned'], $first['next_limitstart']);
+        foreach ($first['products']['product'] as $product) {
+            $this->assertArrayHasKey('pricing', $product);
+        }
+
+        $next = json_decode($tools->getProducts(limitstart: $first['next_limitstart']), true);
+        $this->assertSame(
+            $first['products']['product'][$first['numreturned'] - 1]['pid'] + 1,
+            $next['products']['product'][0]['pid']
+        );
+    }
+
+    public function test_get_products_lite_omits_only_pricing_when_one_product_exceeds_budget(): void
+    {
+        $tools = $this->makeTools(fn() => ['result' => 'success', 'products' => ['product' => [[
+            'pid' => 1,
+            'name' => 'Preço patológico',
+            'description' => 'Produto único',
+            'pricing' => ['BRL' => ['monthly' => str_repeat('9', 50000)]],
+        ]]]]);
+
+        $data = json_decode($tools->getProducts(pid: 1), true);
+
+        $this->assertCount(1, $data['products']['product']);
+        $this->assertArrayNotHasKey('pricing', $data['products']['product'][0]);
+        $this->assertTrue($data['products']['product'][0]['pricing_omitted_for_size']);
+        $this->assertTrue($data['payload_capped']);
     }
 
     /** Guarda contra is_array, elementos não-array e keys ausentes. */
@@ -390,6 +469,35 @@ class OrderToolsTest extends TestCase
         $tools = $this->makeTools(fn() => ['result' => 'success']);
         $data = json_decode($tools->getProducts(), true);
         $this->assertArrayNotHasKey('products', $data);
+    }
+
+    private function bulkyCatalogFixture(int $count = 20): array
+    {
+        $products = [];
+        for ($i = 1; $i <= $count; $i++) {
+            $pricing = [];
+            foreach (['BRL', 'USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'CHF'] as $currency) {
+                $pricing[$currency] = [
+                    'prefix' => $currency . ' ', 'suffix' => '',
+                    'msetupfee' => '0.00', 'qsetupfee' => '0.00', 'ssetupfee' => '0.00',
+                    'asetupfee' => '0.00', 'bsetupfee' => '0.00', 'tsetupfee' => '0.00',
+                    'monthly' => '19.90', 'quarterly' => '55.00', 'semiannually' => '105.00',
+                    'annually' => '199.00', 'biennially' => '379.00', 'triennially' => '539.00',
+                ];
+            }
+            $products[] = [
+                'pid' => $i,
+                'gid' => 2,
+                'type' => 'hostingaccount',
+                'name' => "Plano {$i}",
+                'description' => '<p>' . str_repeat('Descrição ampla ', 30) . '</p>',
+                'module' => 'plesk',
+                'paytype' => 'recurring',
+                'pricing' => $pricing,
+            ];
+        }
+
+        return ['result' => 'success', 'totalresults' => $count, 'products' => ['product' => $products]];
     }
 
 }
