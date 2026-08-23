@@ -47,8 +47,9 @@ class SystemTools
      * WHMCS (inclui o ruído).
      *
      * @param string $date Filtro de data. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY não são aceitos por serem ambíguos.
+     * @param int $limitnum Linhas ÚTEIS desejadas (a paginação do WHMCS é anterior ao filtro; pages_scanned/scan_capped mostram o custo real da varredura).
      */
-    #[McpTool(name: 'whmcs_get_activity_log', description: 'Obtém log de atividades do sistema. Por padrão descarta as linhas de "Hooks Debug" (ruído de depuração), avançando páginas automaticamente até reunir limitnum linhas reais; filtered_out soma o ruído de todas as páginas varridas; scan_capped:true avisa quando o teto de chamadas bateu antes de encontrar linhas suficientes.')]
+    #[McpTool(name: 'whmcs_get_activity_log', description: 'Obtém log de atividades do sistema. Por padrão descarta as linhas de "Hooks Debug" (ruído de depuração), avançando páginas automaticamente até reunir limitnum linhas reais; filtered_out soma o ruído de todas as páginas varridas; scan_capped:true avisa quando o teto de chamadas bateu antes de encontrar linhas suficientes. Leituras deste log não são auditadas no próprio log.')]
     public function getActivityLog(int $limitnum = 25, int $limitstart = 0, string $user = '', string $description = '', string $date = '', bool $hide_hook_debug = true): string
     {
         $params = compact('limitnum', 'limitstart');

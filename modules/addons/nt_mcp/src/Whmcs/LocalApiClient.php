@@ -21,6 +21,9 @@ class LocalApiClient
     // allowlist — não foram apenas desligados por gate.
     // ---------------------------------------------------------------
 
+    /** Commands whose API_CALL and API_OK audit entries are suppressed. */
+    private const AUDIT_SILENT_COMMANDS = ['GetActivityLog'];
+
     /** Exhaustive allowlist of WHMCS API commands used by the addon tools. */
     private const ALLOWED_COMMANDS = [
         // ClientTools
@@ -414,7 +417,10 @@ class LocalApiClient
         // ---------------------------------------------------------------
         // Identificador de correlação: liga a linha de início, a de desfecho e o
         // diagnóstico detalhado do error_log sem repetir dado nenhum entre eles.
-        $correlationId = self::auditLog(ActivityEvent::API_CALL, AuditMetadata::forParams($params), command: $command);
+        $audited = !in_array($command, self::AUDIT_SILENT_COMMANDS, true);
+        $correlationId = $audited
+            ? self::auditLog(ActivityEvent::API_CALL, AuditMetadata::forParams($params), command: $command)
+            : null;
 
         // ---------------------------------------------------------------
         // m1.1: TODO desfecho é registrado — sucesso, erro em array, retorno
@@ -436,6 +442,9 @@ class LocalApiClient
                 throw $e;
             }
 
+            if ($correlationId === null) {
+                $correlationId = Diagnostics::newCorrelationId();
+            }
             self::auditLog(ActivityEvent::API_EXCEPTION, null, $correlationId, $command);
             Diagnostics::log($correlationId, Diagnostics::CATEGORY_API_EXCEPTION, $command, $e);
 
@@ -499,7 +508,9 @@ class LocalApiClient
         }
 
         if ($outcome === 'success') {
-            self::auditLog(ActivityEvent::API_OK, null, $correlationId, $command);
+            if ($audited) {
+                self::auditLog(ActivityEvent::API_OK, null, $correlationId, $command);
+            }
             // Pipeline ÚNICO de saída (objetos -> escalar, JSON-string -> array,
             // tipos inconsistentes, listas vazias omitidas, scrub por último).
             // A ORDEM é parte do contrato: ver ResponseRedactor::normalizeResponse().
@@ -517,6 +528,9 @@ class LocalApiClient
             // valor deles sai da classificação.
             $classification = ErrorClassifier::classify($command, $downstreamMessage, $params);
 
+            if ($correlationId === null) {
+                $correlationId = Diagnostics::newCorrelationId();
+            }
             self::auditLog(ActivityEvent::API_ERROR, null, $correlationId, $command);
             Diagnostics::log(
                 $correlationId,
@@ -547,6 +561,9 @@ class LocalApiClient
         // indistinguível de "o WHMCS caiu". O formato é o mesmo dos outros dois
         // ramos de erro, então quem já ramifica em `result === 'error'` (as
         // tools de cotação, por exemplo) não muda.
+        if ($correlationId === null) {
+            $correlationId = Diagnostics::newCorrelationId();
+        }
         self::auditLog(ActivityEvent::API_MALFORMED, null, $correlationId, $command);
         Diagnostics::log($correlationId, Diagnostics::CATEGORY_API_MALFORMED, $command);
 

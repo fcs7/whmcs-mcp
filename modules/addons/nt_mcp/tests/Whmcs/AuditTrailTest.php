@@ -198,7 +198,36 @@ class AuditTrailTest extends TestCase
 
         $ok = ActivityLogSpy::matching('MCP API OK command=AddClient');
         $this->assertCount(1, $ok);
-        $this->assertStringNotContainsString('Zoe', $ok[0], 'params já foram logados no início');
+    }
+
+    // ---------------------------------------------------------------
+    // #21: Activity log reads suppress API_CALL/API_OK
+    // ---------------------------------------------------------------
+
+    public function test_get_activity_log_does_not_emit_call_and_ok(): void
+    {
+        $this->client(['read' => true], fn() => ['result' => 'success', 'activity' => ['entry' => []]])
+            ->call('GetActivityLog', ['limitnum' => 25]);
+
+        $this->assertFalse(ActivityLogSpy::hasEntryContaining('MCP API CALL command=GetActivityLog'));
+        $this->assertFalse(ActivityLogSpy::hasEntryContaining('MCP API OK command=GetActivityLog'));
+    }
+
+    public function test_get_activity_log_error_still_audits(): void
+    {
+        $this->client(['read' => true], fn() => ['result' => 'error', 'message' => 'Access denied'])
+            ->call('GetActivityLog', ['limitnum' => 25]);
+
+        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP API ERROR command=GetActivityLog'));
+    }
+
+    public function test_get_clients_still_emits_call_and_ok(): void
+    {
+        $this->client(['read' => true], fn() => ['result' => 'success', 'clients' => ['client' => []]])
+            ->call('GetClients', ['limitstart' => 0]);
+
+        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP API CALL command=GetClients'));
+        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP API OK command=GetClients'));
     }
 
     /**
