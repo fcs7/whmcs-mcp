@@ -362,4 +362,55 @@ class ResponseRedactorTest extends TestCase
         $this->assertSame('active', $result['status']);
         $this->assertSame('USD', $result['currency']);
     }
+
+    // ---------------------------------------------------------------
+    // #17 — GUARANTEED_LIST_KEYS: uma asserção por chave confirmada
+    // ---------------------------------------------------------------
+
+    /** @return array<string, array{string, string}> */
+    public static function guaranteedListKeys(): array
+    {
+        return [
+            'GetContacts'      => ['GetContacts', 'contacts'],
+            'GetToDoItems'     => ['GetToDoItems', 'todoitems'],
+            'GetClientGroups'  => ['GetClientGroups', 'groups'],
+            'GetClientsAddons' => ['GetClientsAddons', 'addons'],
+            'GetPromotions'    => ['GetPromotions', 'promotions'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('guaranteedListKeys')]
+    public function test_guaranteed_list_key_is_reinserted_as_empty_array(string $command, string $key): void
+    {
+        $data = ['result' => 'success', 'totalresults' => 0];
+        ResponseRedactor::normalizeResponse($data, $command);
+        $this->assertSame([], $data[$key], "$command deve garantir $key=[]");
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('guaranteedListKeys')]
+    public function test_guaranteed_list_key_is_not_overwritten_when_present(string $command, string $key): void
+    {
+        $data = ['result' => 'success', $key => [['id' => 1]]];
+        ResponseRedactor::normalizeResponse($data, $command);
+        $this->assertSame([['id' => 1]], $data[$key]);
+    }
+
+    public function test_guaranteed_list_keys_are_command_scoped(): void
+    {
+        $data = ['result' => 'success'];
+        ResponseRedactor::normalizeResponse($data, 'GetClientsDetails');
+        foreach (['contacts', 'todoitems', 'groups', 'addons', 'promotions'] as $k) {
+            $this->assertArrayNotHasKey($k, $data, 'chave garantida de outro comando não pode virar campo fantasma');
+        }
+    }
+
+    public function test_guaranteed_list_keys_constant_matches_provider(): void
+    {
+        $const = (new \ReflectionClass(ResponseRedactor::class))->getReflectionConstant('GUARANTEED_LIST_KEYS')->getValue();
+        $expected = [];
+        foreach (self::guaranteedListKeys() as [$cmd, $key]) {
+            $expected[$cmd][] = $key;
+        }
+        $this->assertSame($expected, $const, 'nova chave na constante exige caso no provider (e confirmação no payload real)');
+    }
 }

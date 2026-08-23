@@ -259,6 +259,33 @@ da mudança de efeito colateral. A migração segue ticket CRM-3.
 
 ---
 
+## Listas vazias — chaves garantidas (#17)
+
+O WHMCS omite a chave da coleção inteira em alguns comandos quando não há resultado
+(em outros vem `""`). `ResponseRedactor::GUARANTEED_LIST_KEYS` reinsere como `[]` —
+**só** para chaves confirmadas em payload real (chave errada = campo fantasma).
+
+| Comando | Chave garantida | Evidência |
+|---------|-----------------|-----------|
+| `GetContacts` | `contacts` | payload real desenv (gotcha CLAUDE.md, 2026-08-23) |
+| `GetToDoItems` | `todoitems` | payload real desenv (gotcha CLAUDE.md, 2026-08-23) |
+| `GetClientGroups` | `groups` | payload real desenv (gotcha CLAUDE.md, 2026-08-23) |
+| `GetClientsAddons` | `addons` | payload real desenv (gotcha CLAUDE.md, 2026-08-23) |
+| `GetPromotions` | `promotions` | já na constante; reconfirmar no reteste #27 |
+
+Cada linha tem teste próprio em `ResponseRedactorTest` (data provider
+`guaranteedListKeys`); a constante e o provider são comparados por reflexão, então
+adicionar uma chave sem caso de teste falha a suite.
+
+**Inventário pendente** (comando a comando do `ALLOWED_COMMANDS`, rodando cada um no
+desenv com filtro que devolva zero): `GetInvoices`, `GetOrders`, `GetQuotes`,
+`GetTransactions`, `GetTickets`, `GetClients`, `GetClientsProducts`, `GetClientsDomains`,
+`GetProducts`, `GetProjects`, `GetAnnouncements`, `GetSupportDepartments`,
+`GetSupportStatuses`, `GetTicketPredefinedCats`, `GetTicketPredefinedReplies`,
+`GetCurrencies`, `GetPaymentMethods`, `GetOrderStatuses`, `GetActivityLog`,
+`GetTLDPricing`. Inventário live é gate do reteste #27; resultado entra na tabela acima com data. Até lá o cliente trata
+`!key` e `key.length === 0` como equivalentes.
+
 ## Risco identificado
 
 Nenhuma tool de impacto crítico está desprotegida pela gate no código atual.
