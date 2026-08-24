@@ -10,7 +10,7 @@ use NtMcp\Tests\Support\FakeAdminIdentityResolver;
 use NtMcp\Tests\Support\FakeCapsule;
 use NtMcp\Tests\Support\FakeCrmQueryPort;
 use NtMcp\Tests\Support\FakeCrmSchemaProbe;
-use NtMcp\Whmcs\CapsuleClient;
+use NtMcp\Whmcs\AuthorizationException;
 use NtMcp\Whmcs\LocalApiClient;
 use Nyholm\Psr7\Factory\Psr17Factory;
 use PHPUnit\Framework\Attributes\Test;
@@ -20,7 +20,6 @@ final class McpSdkAdapterTest extends TestCase
 {
     private string $tempDir;
     private LocalApiClient $api;
-    private CapsuleClient $capsule;
     private string $baseDir;
 
     protected function setUp(): void
@@ -33,7 +32,6 @@ final class McpSdkAdapterTest extends TestCase
         $this->api->setCallable(static fn($cmd, $params) => ['result' => 'success', 'cmd' => $cmd]);
         $this->api->setAdminIdResolver(static fn($_) => 7);
 
-        $this->capsule = new CapsuleClient();
         $this->baseDir = __DIR__ . '/../../src';
 
         FakeCapsule::reset();
@@ -59,7 +57,7 @@ final class McpSdkAdapterTest extends TestCase
     #[Test]
     public function initialize_advertises_only_the_capabilities_actually_implemented(): void
     {
-        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
         $factory = new Psr17Factory();
 
         $request = $factory->createServerRequest('POST', 'https://localhost/mcp.php')
@@ -92,7 +90,7 @@ final class McpSdkAdapterTest extends TestCase
     #[Test]
     public function initialize_returns_200_with_session_id_and_protocol_version(): void
     {
-        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
         $factory = new Psr17Factory();
 
         $request = $factory->createServerRequest('POST', 'https://localhost/mcp.php')
@@ -122,9 +120,9 @@ final class McpSdkAdapterTest extends TestCase
     }
 
     #[Test]
-    public function tools_list_returns_exactly_68_tools_with_whmcs_prefix(): void
+    public function tools_list_returns_exactly_64_tools_with_whmcs_prefix(): void
     {
-        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
         $factory = new Psr17Factory();
 
         $initRequest = $factory->createServerRequest('POST', 'https://localhost/mcp.php')
@@ -156,17 +154,46 @@ final class McpSdkAdapterTest extends TestCase
         $body = json_decode((string) $listResponse->getBody(), true);
 
         $tools = $body['result']['tools'] ?? [];
-        $this->assertCount(68, $tools);
+        $this->assertCount(64, $tools);
 
         foreach ($tools as $tool) {
             $this->assertStringStartsWith('whmcs_', $tool['name']);
         }
+
+        $byName = array_column($tools, null, 'name');
+        foreach (['whmcs_crm_list_contacts', 'whmcs_crm_get_contact', 'whmcs_crm_list_followups', 'whmcs_crm_get_kanban'] as $read) {
+            $this->assertArrayHasKey($read, $byName);
+        }
+        foreach (['whmcs_crm_create_lead', 'whmcs_crm_update_contact', 'whmcs_crm_add_followup', 'whmcs_crm_add_note'] as $removed) {
+            $this->assertArrayNotHasKey($removed, $byName);
+        }
+
+        foreach ([
+            'whmcs_list_clients', 'whmcs_get_client', 'whmcs_get_client_invoices',
+            'whmcs_list_invoices', 'whmcs_list_tickets',
+            'whmcs_list_orders', 'whmcs_get_order', 'whmcs_get_products',
+            'whmcs_list_quotes', 'whmcs_get_quote',
+        ] as $withFields) {
+            $schema = $byName[$withFields]['inputSchema']['properties']['fields'] ?? null;
+            $this->assertIsArray($schema, "{$withFields} não publicou fields");
+            $this->assertSame(['lite', 'full'], $schema['enum'] ?? null, "{$withFields} publicou enum incorreto");
+            $this->assertSame('lite', $schema['default'] ?? null, "{$withFields} publicou default incorreto");
+        }
+
+        $includeUrls = $byName['whmcs_get_products']['inputSchema']['properties']['include_urls'] ?? null;
+        $this->assertIsArray($includeUrls, 'whmcs_get_products não publicou include_urls');
+        $this->assertSame('boolean', $includeUrls['type'] ?? null);
+        $this->assertFalse($includeUrls['default'] ?? true);
+
+        $completed = $byName['whmcs_list_projects']['inputSchema']['properties']['completed'] ?? null;
+        $this->assertIsArray($completed, 'whmcs_list_projects não publicou completed');
+        $this->assertNotSame(false, $completed['default'] ?? null, 'completed omitido não pode publicar default=false');
     }
 
     #[Test]
     public function tools_call_whmcs_get_client_invokes_localapi(): void
     {
-        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
         $factory = new Psr17Factory();
 
         $initRequest = $factory->createServerRequest('POST', 'https://localhost/mcp.php')
@@ -194,7 +221,7 @@ final class McpSdkAdapterTest extends TestCase
                 'method' => 'tools/call',
                 'params' => [
                     'name' => 'whmcs_get_client',
-                    'arguments' => ['clientid' => 5],
+                    'arguments' => ['clientid' => 5, 'fields' => 'full'],
                 ],
             ])));
 
@@ -221,7 +248,7 @@ final class McpSdkAdapterTest extends TestCase
     #[Test]
     public function crm_read_tools_publish_schema_with_additional_properties_false(): void
     {
-        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
         $factory = new Psr17Factory();
 
         $initRequest = $factory->createServerRequest('POST', 'https://localhost/mcp.php')
@@ -297,7 +324,7 @@ final class McpSdkAdapterTest extends TestCase
     #[Test]
     public function crm_read_tools_have_minimum_bounds(): void
     {
-        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
         $factory = new Psr17Factory();
 
         $initRequest = $factory->createServerRequest('POST', 'https://localhost/mcp.php')
@@ -343,7 +370,7 @@ final class McpSdkAdapterTest extends TestCase
     #[Test]
     public function unknown_argument_returns_json_rpc_error_32602(): void
     {
-        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
         $factory = new Psr17Factory();
 
         $initRequest = $factory->createServerRequest('POST', 'https://localhost/mcp.php')
@@ -391,7 +418,7 @@ final class McpSdkAdapterTest extends TestCase
     #[Test]
     public function resource_id_zero_returns_json_rpc_error_32602(): void
     {
-        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
         $factory = new Psr17Factory();
 
         $initRequest = $factory->createServerRequest('POST', 'https://localhost/mcp.php')
@@ -447,7 +474,7 @@ final class McpSdkAdapterTest extends TestCase
             FakeAdminIdentityResolver::resolvingTo(7),
         );
 
-        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir, $repo);
+        $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir, $repo);
         $sessionId = $this->initialize($adapter);
 
         $response = $adapter->handle($this->call($sessionId, 3, 'whmcs_crm_get_contact', ['resource_id' => 1]));
@@ -479,13 +506,58 @@ final class McpSdkAdapterTest extends TestCase
             $port,
             FakeAdminIdentityResolver::resolvingTo(7),
         );
-        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir, $repo);
+        $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir, $repo);
         $sessionId = $this->initialize($adapter);
 
         $body = json_decode((string) $adapter->handle($this->call($sessionId, 4, 'whmcs_crm_get_contact', ['resource_id' => 99]))->getBody(), true);
         $this->assertTrue($body['result']['isError'] ?? false);
         $envelope = json_decode((string) $body['result']['content'][0]['text'], true);
         $this->assertSame('crm_resource_not_found', $envelope['error_code'] ?? null);
+    }
+
+    #[Test]
+    public function products_lite_caps_the_real_json_rpc_body_below_40kb(): void
+    {
+        $products = [];
+        for ($i = 1; $i <= 20; $i++) {
+            $pricing = [];
+            foreach (['BRL', 'USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'CHF'] as $currency) {
+                $pricing[$currency] = [
+                    'prefix' => $currency . ' ', 'suffix' => '',
+                    'msetupfee' => '0.00', 'qsetupfee' => '0.00', 'ssetupfee' => '0.00',
+                    'asetupfee' => '0.00', 'bsetupfee' => '0.00', 'tsetupfee' => '0.00',
+                    'monthly' => '19.90', 'quarterly' => '55.00', 'semiannually' => '105.00',
+                    'annually' => '199.00', 'biennially' => '379.00', 'triennially' => '539.00',
+                ];
+            }
+            $products[] = [
+                'pid' => $i,
+                'gid' => 2,
+                'type' => 'hostingaccount',
+                'name' => "Plano {$i}",
+                'description' => '<p>' . str_repeat('Descrição ampla ', 30) . '</p>',
+                'module' => 'plesk',
+                'paytype' => 'recurring',
+                'pricing' => $pricing,
+            ];
+        }
+
+        $this->api->setCallable(static fn(string $cmd) => $cmd === 'GetProducts'
+            ? ['result' => 'success', 'totalresults' => 20, 'products' => ['product' => $products]]
+            : ['result' => 'success']);
+
+        $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
+        $sessionId = $this->initialize($adapter);
+        $response = $adapter->handle($this->call($sessionId, 3, 'whmcs_get_products', []));
+        $body = (string) $response->getBody();
+        $decoded = json_decode($body, true);
+        $toolResult = json_decode((string) ($decoded['result']['content'][0]['text'] ?? ''), true);
+
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertLessThanOrEqual(40000, strlen($body));
+        $this->assertTrue($toolResult['payload_capped'] ?? false);
+        $this->assertLessThan(20, $toolResult['numreturned'] ?? 20);
+        $this->assertSame($toolResult['numreturned'], $toolResult['next_limitstart']);
     }
 
     // ------------------------------------------------------------------
@@ -541,7 +613,7 @@ final class McpSdkAdapterTest extends TestCase
     #[Test]
     public function invalid_protocol_version_header_is_rejected_with_400(): void
     {
-        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
         $sessionId = $this->initialize($adapter);
 
         $response = $adapter->handle($this->rpc($sessionId, ['jsonrpc' => '2.0', 'id' => 2, 'method' => 'ping'], ['MCP-Protocol-Version' => 'not-a-version']));
@@ -557,7 +629,7 @@ final class McpSdkAdapterTest extends TestCase
     #[Test]
     public function every_sdk_protocol_version_is_accepted_in_header(): void
     {
-        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
         $sessionId = $this->initialize($adapter);
         $cases = array_map(static fn(\Mcp\Schema\Enum\ProtocolVersion $v) => $v->value, \Mcp\Schema\Enum\ProtocolVersion::cases());
         $this->assertSame(['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25'], $cases);
@@ -574,7 +646,7 @@ final class McpSdkAdapterTest extends TestCase
     #[Test]
     public function absent_protocol_version_header_is_tolerated(): void
     {
-        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
         $sessionId = $this->initialize($adapter);
         $response = $adapter->handle($this->rpc($sessionId, ['jsonrpc' => '2.0', 'id' => 2, 'method' => 'ping']));
         $this->assertSame(200, $response->getStatusCode());
@@ -584,7 +656,7 @@ final class McpSdkAdapterTest extends TestCase
     public function initialize_always_answers_the_configured_protocol_version(): void
     {
         foreach (['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25'] as $asked) {
-            $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+            $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
             $factory = new Psr17Factory();
             $response = $adapter->handle($factory->createServerRequest('POST', 'https://localhost/mcp.php')
                 ->withHeader('Content-Type', 'application/json')
@@ -606,7 +678,7 @@ final class McpSdkAdapterTest extends TestCase
     #[Test]
     public function session_files_are_private_and_directory_is_0700(): void
     {
-        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
         $sessionId = $this->initialize($adapter);
         $adapter->handle($this->rpc($sessionId, ['jsonrpc' => '2.0', 'id' => 2, 'method' => 'tools/list'])); // força discovery → cache
         clearstatcache();
@@ -619,7 +691,7 @@ final class McpSdkAdapterTest extends TestCase
     #[Test]
     public function delete_ends_session_and_later_post_is_404(): void
     {
-        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
         $sessionId = $this->initialize($adapter);
         $factory = new Psr17Factory();
 
@@ -641,7 +713,7 @@ final class McpSdkAdapterTest extends TestCase
         });
         $api->setAdminIdResolver(static fn($_) => 7);
 
-        $adapter = new McpSdkAdapter($api, $this->capsule, $this->baseDir, $this->tempDir);
+        $adapter = new McpSdkAdapter($api, $this->baseDir, $this->tempDir);
         $factory = new Psr17Factory();
 
         $initRequest = $factory->createServerRequest('POST', 'https://localhost/mcp.php')
@@ -686,10 +758,70 @@ final class McpSdkAdapterTest extends TestCase
         $this->assertStringNotContainsString('mysql://', $fullBody);
     }
 
+    /**
+     * Issue #29 end-to-end: a recusa de gate tem que chegar ao cliente COM o
+     * motivo, e não como o -32603 genérico do teste acima. Prova o wiring do
+     * AuthorizationAwareReferenceHandler no builder — o teste unitário do
+     * decorator não cobre se ele está de fato ligado.
+     */
+    #[Test]
+    public function authorization_denial_reaches_the_client_with_the_reason(): void
+    {
+        $api = new LocalApiClient('testadmin');
+        $api->setGates(['write' => true]);
+        $api->setCallable(static function ($cmd, $params) {
+            throw new AuthorizationException(
+                "LocalApiClient: command 'AddTicketReply' is blocked "
+                . '(write_target_not_allowed: ticketid=30 fora da allowlist de escrita).'
+            );
+        });
+        $api->setAdminIdResolver(static fn($_) => 7);
+
+        $adapter = new McpSdkAdapter($api, $this->baseDir, $this->tempDir);
+        $factory = new Psr17Factory();
+
+        $initRequest = $factory->createServerRequest('POST', 'https://localhost/mcp.php')
+            ->withHeader('Content-Type', 'application/json')
+            ->withBody($factory->createStream(json_encode([
+                'jsonrpc' => '2.0',
+                'id' => 1,
+                'method' => 'initialize',
+                'params' => [
+                    'protocolVersion' => '2025-06-18',
+                    'capabilities' => (object) [],
+                    'clientInfo' => ['name' => 'test', 'version' => '1'],
+                ],
+            ])));
+
+        $sessionId = $adapter->handle($initRequest)->getHeaderLine('Mcp-Session-Id');
+
+        $callRequest = $factory->createServerRequest('POST', 'https://localhost/mcp.php')
+            ->withHeader('Content-Type', 'application/json')
+            ->withHeader('Mcp-Session-Id', $sessionId)
+            ->withBody($factory->createStream(json_encode([
+                'jsonrpc' => '2.0',
+                'id' => 3,
+                'method' => 'tools/call',
+                'params' => [
+                    'name' => 'whmcs_get_client',
+                    'arguments' => ['clientid' => 5],
+                ],
+            ])));
+
+        $body = json_decode((string) $adapter->handle($callRequest)->getBody(), true);
+
+        // Não é erro de protocolo: é resultado de tool marcado como erro.
+        $this->assertArrayNotHasKey('error', $body, 'recusa de gate não deve virar erro JSON-RPC');
+        $this->assertTrue($body['result']['isError'] ?? false);
+        $text = $body['result']['content'][0]['text'] ?? '';
+        $this->assertStringContainsString('write_target_not_allowed', $text);
+        $this->assertStringContainsString('AddTicketReply', $text);
+    }
+
     #[Test]
     public function request_without_session_id_for_tools_list_fails(): void
     {
-        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
         $factory = new Psr17Factory();
 
         $listRequest = $factory->createServerRequest('POST', 'https://localhost/mcp.php')
@@ -711,9 +843,9 @@ final class McpSdkAdapterTest extends TestCase
     }
 
     #[Test]
-    public function warm_cache_still_lists_68_tools(): void
+    public function warm_cache_still_lists_64_tools(): void
     {
-        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
         $factory = new Psr17Factory();
 
         // Cold start
@@ -747,7 +879,7 @@ final class McpSdkAdapterTest extends TestCase
         $count1 = count($body1['result']['tools'] ?? []);
 
         // Warm start with new adapter instance but same cache dir
-        $adapter2 = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $adapter2 = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
 
         $initRequest2 = $factory->createServerRequest('POST', 'https://localhost/mcp.php')
             ->withHeader('Content-Type', 'application/json')
@@ -778,8 +910,8 @@ final class McpSdkAdapterTest extends TestCase
         $body2 = json_decode((string) $listResp2->getBody(), true);
         $count2 = count($body2['result']['tools'] ?? []);
 
-        $this->assertSame(68, $count1);
-        $this->assertSame(68, $count2);
+        $this->assertSame(64, $count1);
+        $this->assertSame(64, $count2);
     }
 
     #[Test]
@@ -787,7 +919,7 @@ final class McpSdkAdapterTest extends TestCase
     {
         // This test verifies the SDK's body size guard works
         // The McpSdkAdapter sets maxBodyBytes=1048576 in StreamableHttpTransport
-        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
         $factory = new Psr17Factory();
 
         $largebody = json_encode([
@@ -814,7 +946,7 @@ final class McpSdkAdapterTest extends TestCase
     #[Test]
     public function notification_initialized_returns_202(): void
     {
-        $adapter = new McpSdkAdapter($this->api, $this->capsule, $this->baseDir, $this->tempDir);
+        $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
         $factory = new Psr17Factory();
 
         $initRequest = $factory->createServerRequest('POST', 'https://localhost/mcp.php')

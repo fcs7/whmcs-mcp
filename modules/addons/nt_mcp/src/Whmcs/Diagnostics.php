@@ -59,6 +59,7 @@ final class Diagnostics
         'rate_limit_dir_create_failed',
         'rate_limit_file_open_failed',
         'response_encoding_failed',
+        'host_mismatch',
     ];
 
     private const EVENT_CATEGORIES = [
@@ -66,6 +67,7 @@ final class Diagnostics
         self::CATEGORY_NETWORK_CONTEXT,
         self::CATEGORY_TLS,
         self::CATEGORY_RUNTIME,
+        self::CATEGORY_CONFIG_READ,
     ];
 
     /** Nome da chave HMAC persistida na ativação (D10). */

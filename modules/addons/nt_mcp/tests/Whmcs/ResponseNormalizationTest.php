@@ -197,9 +197,12 @@ class ResponseNormalizationTest extends TestCase
 
     public function test_unknown_command_never_invents_collection_keys(): void
     {
+        // `GetInvoices` NÃO está em GUARANTEED_LIST_KEYS de propósito: o
+        // inventário live (#17, desenv 2026-08-23) mostrou que ele já devolve
+        // `invoices => []` sozinho. Comando fora da allowlist não ganha chave.
         $result = ['result' => 'success'];
 
-        ResponseRedactor::normalizeResponse($result, 'GetClients');
+        ResponseRedactor::normalizeResponse($result, 'GetInvoices');
 
         $this->assertSame(['result' => 'success'], $result);
     }
@@ -219,7 +222,7 @@ class ResponseNormalizationTest extends TestCase
             ],
         ];
 
-        ResponseRedactor::stripClientDetails($result, $directory);
+        ResponseRedactor::stripClientDetails($result, $directory, [4, 99]);
 
         $this->assertSame('CPF/CNPJ', $result['customfields'][0]['name']);
         $this->assertSame('text', $result['customfields'][0]['type']);

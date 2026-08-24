@@ -17,7 +17,6 @@ use NtMcp\OAuth\OAuthMigration;
 use NtMcp\Security\CsrfProtection;
 use NtMcp\Whmcs\ActivityEvent;
 use NtMcp\Whmcs\ActivityLog;
-use NtMcp\Whmcs\CapsuleClient;
 use NtMcp\Whmcs\Diagnostics;
 use NtMcp\Whmcs\DiagnosticsKeyStore;
 use NtMcp\Whmcs\LocalApiClient;
@@ -30,7 +29,7 @@ function nt_mcp_config(): array
     return [
         'name'        => 'NT MCP Server',
         'description' => 'Model Context Protocol server para integrar Claude Code ao WHMCS.',
-        'version'     => '2.1.0', // = McpSdkAdapter::SERVER_VERSION; mudar aqui dispara nt_mcp_upgrade()
+        'version'     => McpSdkAdapter::SERVER_VERSION, // mudar a constante dispara nt_mcp_upgrade()
         'author'      => 'NT Web',
         'language'    => 'english',
         'fields'      => [], // Configuracoes gerenciadas na tela _output
@@ -99,7 +98,7 @@ function nt_mcp_activate(): array
 function nt_mcp_warm_element_cache(): bool
 {
     try {
-        $adapter = new McpSdkAdapter(new LocalApiClient(), new CapsuleClient(), __DIR__ . '/src');
+        $adapter = new McpSdkAdapter(new LocalApiClient(), __DIR__ . '/src');
 
         return $adapter->warmElementCache();
     } catch (\Throwable) {

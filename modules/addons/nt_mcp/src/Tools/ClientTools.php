@@ -6,6 +6,7 @@ use NtMcp\Whmcs\LocalApiClient;
 use NtMcp\Whmcs\ResponseRedactor;
 use NtMcp\Whmcs\ToolJson;
 use Mcp\Capability\Attribute\McpTool;
+use Mcp\Capability\Attribute\Schema;
 
 class ClientTools
 {
@@ -13,7 +14,7 @@ class ClientTools
 
     #[McpTool(
         name: 'whmcs_list_clients',
-        description: 'Lista clientes do WHMCS com filtros opcionais'
+        description: 'Lista clientes do WHMCS com filtros opcionais. fields=lite (default) devolve somente IDs/metadados/status, sem identidade; fields=full é opt-in explícito para nome e e-mail.'
     )]
     public function listClients(
         string $search = '',
@@ -21,25 +22,36 @@ class ClientTools
         int $limitnum = 25,
         string $status = '',
         string $sorting = '',
-        string $orderby = ''
+        string $orderby = '',
+        #[Schema(enum: ['lite', 'full'])] string $fields = 'lite'
     ): string {
+        self::assertFields($fields);
         $params = ['limitstart' => $limitstart, 'limitnum' => $limitnum];
         if ($search !== '') $params['search'] = $search;
         if ($status !== '') $params['status'] = $status;
         if ($sorting !== '') $params['sorting'] = $sorting;
         if ($orderby !== '') $params['orderby'] = $orderby;
 
-        return ToolJson::encode($this->api->call('GetClients', $params));
+        $result = $this->api->call('GetClients', $params);
+        if ($fields === 'lite' && ($result['result'] ?? null) === 'success') {
+            ResponseRedactor::clientListLiteView($result);
+        }
+        return ToolJson::encode($result);
     }
 
     #[McpTool(
         name: 'whmcs_get_client',
-        description: 'Obtém detalhes completos de um cliente por ID'
+        description: 'Obtém detalhes de um cliente por ID. Default fields=lite devolve apenas IDs/metadados, status, moeda, data e stats, sem nome, e-mail ou outra PII; fields=full é opt-in explícito para dados pessoais, mantendo segredos e cartão redigidos.'
     )]
-    public function getClient(int $clientid): string
+    public function getClient(int $clientid, #[Schema(enum: ['lite', 'full'])] string $fields = 'lite'): string
     {
+        self::assertFields($fields);
+
         $result = $this->api->call('GetClientsDetails', ['clientid' => $clientid, 'stats' => true]);
         ResponseRedactor::stripClientDetails($result);
+        if ($fields === 'lite' && ($result['result'] ?? null) === 'success') {
+            ResponseRedactor::clientLiteView($result);
+        }
         return ToolJson::encode($result);
     }
 
@@ -176,12 +188,26 @@ class ClientTools
         return ToolJson::encode($this->api->call('GetClientsDomains', ['clientid' => $clientid]));
     }
 
-    #[McpTool(name: 'whmcs_get_client_invoices', description: 'Lista faturas de um cliente')]
-    public function getClientInvoices(int $clientid, string $status = ''): string
+    #[McpTool(name: 'whmcs_get_client_invoices', description: 'Lista faturas de um cliente. fields=lite (default) remove identidade direta e notas livres; fields=full é opt-in.')]
+    public function getClientInvoices(int $clientid, string $status = '', #[Schema(enum: ['lite', 'full'])] string $fields = 'lite'): string
     {
+        self::assertFields($fields);
         $params = ['userid' => $clientid];
         if ($status !== '') $params['status'] = $status;
-        return ToolJson::encode($this->api->call('GetInvoices', $params));
+        $result = $this->api->call('GetInvoices', $params);
+        if ($fields === 'lite' && ($result['result'] ?? null) === 'success') {
+            ResponseRedactor::invoiceListLiteView($result);
+        }
+        return ToolJson::encode($result);
+    }
+
+    private static function assertFields(string $fields): void
+    {
+        if (!in_array($fields, ['lite', 'full'], true)) {
+            throw new \InvalidArgumentException(
+                "fields deve ser 'lite' ou 'full', recebido: " . var_export($fields, true)
+            );
+        }
     }
 
     /**

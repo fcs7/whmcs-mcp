@@ -11,13 +11,9 @@ use NtMcp\Whmcs\Diagnostics;
 use NtMcp\Whmcs\LocalApiClient;
 
 /**
- * Gate de escrita do domínio CRM — o mesmo contrato de `CapsuleClient` e
- * `LocalApiClient`, aplicado na rota nova.
- *
- * Espelha, e não reusa, porque `CapsuleClient::assertWritable()` é privado e
- * está amarrado à allowlist legada de tabelas fictícias, que esta cadeia de
- * tickets existe para substituir. O que importa é que as três frentes
- * fail-closed sejam idênticas:
+ * Gate de escrita futuro do domínio CRM, alinhado ao contrato do
+ * `LocalApiClient`. Não existe rota executável que o consuma neste release;
+ * ele permanece como fundação do CRM-3. O contrato fail-closed exige:
  *
  *  - `nt_mcp_readonly` é master switch e falha de leitura dele BLOQUEIA;
  *  - `nt_mcp_enable_write` tem default DESLIGADO;
@@ -27,9 +23,8 @@ use NtMcp\Whmcs\LocalApiClient;
  * input do chamador — nenhuma correção de campo o abre — e não é transitório,
  * então também não é `downstream`.
  *
- * Em CRM-1 este objeto é apenas uma DECISÃO: não existe executor gravável no
- * addon para ele guardar. CRM-3 o consome dentro dos métodos de escrita do
- * repositório, antes de resolver a autoria OAuth.
+ * Neste release este objeto é apenas uma DECISÃO: não existe executor gravável
+ * no addon para ele guardar. CRM-3 poderá consumi-lo antes da autoria OAuth.
  */
 final class CrmWriteGate
 {

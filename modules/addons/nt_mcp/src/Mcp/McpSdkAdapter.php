@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace NtMcp\Mcp;
 
 use Mcp\Capability\Discovery\DiscoveryState;
+use Mcp\Capability\Registry\ReferenceHandler;
 use Mcp\Schema\Enum\ProtocolVersion;
 use Mcp\Schema\ServerCapabilities;
 use Mcp\Server as McpServer;
@@ -14,6 +15,7 @@ use Nyholm\Psr7\Factory\Psr17Factory;
 use NtMcp\Crm\CapsuleAdminIdentityResolver;
 use NtMcp\Crm\CapsuleQueryPort;
 use NtMcp\Crm\CapsuleSchemaProbe;
+use NtMcp\Crm\CrmSchema;
 use NtMcp\Crm\CrmSchemaGuard;
 use NtMcp\Crm\MgCrmRepository;
 use NtMcp\Tools\BillingTools;
@@ -27,7 +29,6 @@ use NtMcp\Tools\ServiceTools;
 use NtMcp\Tools\SupportInfoTools;
 use NtMcp\Tools\SystemTools;
 use NtMcp\Tools\TicketTools;
-use NtMcp\Whmcs\CapsuleClient;
 use NtMcp\Whmcs\CompatContainer;
 use NtMcp\Whmcs\LocalApiClient;
 use Psr\Http\Message\ResponseInterface;
@@ -62,7 +63,7 @@ use Psr\Log\LoggerInterface;
 final class McpSdkAdapter implements ServerAdapterInterface
 {
     public const SERVER_NAME = 'NT Web WHMCS MCP Server';
-    public const SERVER_VERSION = '2.1.0';
+    public const SERVER_VERSION = '2.2.7';
     public const MAX_BODY_BYTES = 1048576;
     public const SESSION_TTL = 3600;
     public const ELEMENTS_CACHE_FILE = 'mcp_elements.json';
@@ -78,7 +79,6 @@ final class McpSdkAdapter implements ServerAdapterInterface
      */
     public function __construct(
         private readonly LocalApiClient $localApi,
-        private readonly CapsuleClient $capsule,
         private readonly string $baseDir,
         ?string $dataDir = null,
         ?MgCrmRepository $crm = null,
@@ -141,16 +141,21 @@ final class McpSdkAdapter implements ServerAdapterInterface
     {
         $container = new CompatContainer();
         $container->set(LocalApiClient::class, $this->localApi);
-        $container->set(CapsuleClient::class, $this->capsule);
         foreach ([
             BillingTools::class, ClientTools::class, DomainTools::class,
             OrderTools::class, ProjectManagerTools::class, QuoteTools::class,
-            ServiceTools::class, SupportInfoTools::class, SystemTools::class,
+            ServiceTools::class, SupportInfoTools::class,
             TicketTools::class,
         ] as $toolClass) {
             $container->set($toolClass, new $toolClass($this->localApi));
         }
-        $container->set(CrmTools::class, new CrmTools($this->capsule, $this->crm));
+        // SystemTools needs CRM probe capability
+        $container->set(SystemTools::class, new SystemTools(
+            $this->localApi,
+            null,
+            static fn(): bool => \WHMCS\Database\Capsule::schema()->hasTable(CrmSchema::TABLE_RESOURCES)
+        ));
+        $container->set(CrmTools::class, new CrmTools($this->crm));
         $container->set(LoggerInterface::class, $logger);
 
         $server = McpServer::builder()
@@ -159,6 +164,9 @@ final class McpSdkAdapter implements ServerAdapterInterface
             ->setCapabilities(self::capabilities())
             ->setContainer($container)
             ->setLogger($logger)
+            // Issue #29: sem isto, toda recusa de gate vira `-32603 Error while
+            // executing tool` e o motivo fica só no Activity Log.
+            ->setReferenceHandler(new AuthorizationAwareReferenceHandler(new ReferenceHandler($container)))
             ->setDiscovery(
                 $this->baseDir,
                 ['Tools'],

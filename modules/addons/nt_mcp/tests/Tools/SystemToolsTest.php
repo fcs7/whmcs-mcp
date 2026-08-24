@@ -17,6 +17,8 @@ class SystemToolsTest extends TestCase
         $api->setCallable($callable ?? function (string $cmd, array $params) {
             return ['result' => 'success'];
         });
+        // Pour les tests, résoudre testadmin à un ID arbitraire
+        $api->setAdminIdResolver(fn(string $username) => $username === 'testadmin' ? 42 : null);
 
         return new SystemTools($api);
     }
@@ -128,6 +130,143 @@ class SystemToolsTest extends TestCase
         $this->assertSame([], $data['activity']['entry']);
         $this->assertSame(20, $data['pages_scanned']);
         $this->assertTrue($data['scan_capped']);
+    }
+
+    // ---------------------------------------------------------------
+    // #22: updateToDoItem accepts duedate
+    // ---------------------------------------------------------------
+
+    /** #22 — duedate normalizado pelo DateNormalizer. */
+    public function test_update_todo_item_accepts_duedate_ymd(): void
+    {
+        $captured = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$captured) {
+            $captured = ['cmd' => $cmd, 'params' => $params];
+            return ['result' => 'success'];
+        }, ['write' => true]);
+
+        $tools->updateToDoItem(42, duedate: '2026-12-25');
+
+        $this->assertSame('UpdateToDoItem', $captured['cmd']);
+        $this->assertSame('2026-12-25', $captured['params']['duedate']);
+    }
+
+    /** #22 — duedate vazio é omitido. */
+    public function test_update_todo_item_omits_empty_duedate(): void
+    {
+        $captured = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$captured) {
+            $captured = ['cmd' => $cmd, 'params' => $params];
+            return ['result' => 'success'];
+        }, ['write' => true]);
+
+        $tools->updateToDoItem(42, duedate: '');
+
+        $this->assertArrayNotHasKey('duedate', $captured['params']);
+    }
+
+    /** #22 — duedate localizado é rejeitado. */
+    public function test_update_todo_item_rejects_localized_duedate(): void
+    {
+        $tools = $this->makeTools(fn() => ['result' => 'success']);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $tools->updateToDoItem(42, duedate: '31/12/2026');
+    }
+
+    // ---------------------------------------------------------------
+    // #23: getAdminDetails exposes CRM capability
+    // ---------------------------------------------------------------
+
+    /** #23 — probe true → available */
+    public function test_get_admin_details_shows_crm_available_when_probe_true(): void
+    {
+        $api = new LocalApiClient('testadmin');
+        $api->setCallable(fn() => ['result' => 'success', 'id' => 1, 'username' => 'admin']);
+        $api->setAdminIdResolver(fn(string $username) => $username === 'testadmin' ? 42 : null);
+
+        $tools = new \NtMcp\Tools\SystemTools($api, null, fn() => true);
+
+        $result = json_decode($tools->getAdminDetails(), true);
+
+        $this->assertSame('available', $result['capabilities']['crm']);
+    }
+
+    /** #23 — probe false → unavailable */
+    public function test_get_admin_details_shows_crm_unavailable_when_probe_false(): void
+    {
+        $api = new LocalApiClient('testadmin');
+        $api->setCallable(fn() => ['result' => 'success', 'id' => 1, 'username' => 'admin']);
+        $api->setAdminIdResolver(fn(string $username) => $username === 'testadmin' ? 42 : null);
+
+        $tools = new \NtMcp\Tools\SystemTools($api, null, fn() => false);
+
+        $result = json_decode($tools->getAdminDetails(), true);
+
+        $this->assertSame('unavailable', $result['capabilities']['crm']);
+    }
+
+    /** #23 — probe exception → unavailable */
+    public function test_get_admin_details_shows_crm_unavailable_when_probe_throws(): void
+    {
+        $api = new LocalApiClient('testadmin');
+        $api->setCallable(fn() => ['result' => 'success', 'id' => 1, 'username' => 'admin']);
+        $api->setAdminIdResolver(fn(string $username) => $username === 'testadmin' ? 42 : null);
+
+        $tools = new \NtMcp\Tools\SystemTools($api, null, function () {
+            throw new \RuntimeException('probe failed');
+        });
+
+        $result = json_decode($tools->getAdminDetails(), true);
+
+        $this->assertSame('unavailable', $result['capabilities']['crm']);
+    }
+
+    /** #23 — no probe → unknown */
+    public function test_get_admin_details_shows_crm_unknown_when_no_probe(): void
+    {
+        $api = new LocalApiClient('testadmin');
+        $api->setCallable(fn() => ['result' => 'success', 'id' => 1, 'username' => 'admin']);
+        $api->setAdminIdResolver(fn(string $username) => $username === 'testadmin' ? 42 : null);
+
+        $tools = new \NtMcp\Tools\SystemTools($api);
+
+        $result = json_decode($tools->getAdminDetails(), true);
+
+        $this->assertSame('unknown', $result['capabilities']['crm']);
+    }
+
+    // ---------------------------------------------------------------
+    // #24: getStats returns snapshot note
+    // ---------------------------------------------------------------
+
+    /** #24 — getStats inclui nota de snapshot. */
+    public function test_get_stats_includes_snapshot_note(): void
+    {
+        $tools = $this->makeTools(fn() => ['result' => 'success', 'ticketsstatus' => ['open' => 5]]);
+
+        $result = json_decode($tools->getStats(), true);
+
+        $this->assertSame('snapshot; não é histórico', $result['note']);
+    }
+
+    /** Regressão: getAdminDetails enriquece com hostname do WHMCS (system_host) para validação de ambiente. */
+    public function test_get_admin_details_includes_system_host_as_string_or_null(): void
+    {
+        $tools = $this->makeTools(fn() => [
+            'result' => 'success',
+            'adminid' => 1,
+            'username' => 'admin',
+            'email' => 'admin@example.com',
+        ]);
+
+        $result = json_decode($tools->getAdminDetails(), true);
+
+        $this->assertArrayHasKey('system_host', $result);
+        $this->assertTrue(
+            is_string($result['system_host']) || $result['system_host'] === null,
+            'system_host deve ser string ou null'
+        );
     }
 
 }

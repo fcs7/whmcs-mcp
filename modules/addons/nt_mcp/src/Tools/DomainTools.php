@@ -3,6 +3,7 @@
 namespace NtMcp\Tools;
 
 use NtMcp\Whmcs\LocalApiClient;
+use NtMcp\Whmcs\ResponseRedactor;
 use NtMcp\Whmcs\ToolJson;
 use Mcp\Capability\Attribute\McpTool;
 
@@ -39,11 +40,13 @@ class DomainTools
         return ToolJson::encode($this->api->call('DomainGetWhoisInfo', ['domainid' => $domainid]));
     }
 
-    #[McpTool(name: 'whmcs_get_tld_pricing', description: 'Lista preços de TLDs disponíveis para registro')]
+    #[McpTool(name: 'whmcs_get_tld_pricing', description: 'Lista preços de TLDs disponíveis. Preço 0.00 no WHMCS significa não configurado e é omitido; veja years_available. grace_period/redemption ausentes têm not_configured=true.')]
     public function getTldPricing(int $currencyid = 0): string
     {
         $params = [];
         if ($currencyid > 0) $params['currencyid'] = $currencyid;
-        return ToolJson::encode($this->api->call('GetTLDPricing', $params));
+        $result = $this->api->call('GetTLDPricing', $params);
+        ResponseRedactor::normalizeTldPricing($result);
+        return ToolJson::encode($result);
     }
 }

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace NtMcp\Tests\Whmcs;
 
-use NtMcp\Whmcs\CapsuleClient;
 use NtMcp\Whmcs\ConfigFlag;
 use NtMcp\Whmcs\LocalApiClient;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -13,8 +12,7 @@ use PHPUnit\Framework\TestCase;
 /**
  * M3 — o master read-only não pode degradar para "desligado" quando a config
  * carrega um valor não canônico. Cobre o parser tri-state isolado e, com o stub
- * REAL de \WHMCS\Config\Setting, as duas rotas de mutação: LocalApiClient e
- * CapsuleClient.
+ * REAL de \WHMCS\Config\Setting, a rota de mutação LocalApiClient.
  */
 class ConfigFlagTest extends TestCase
 {
@@ -180,47 +178,6 @@ class ConfigFlagTest extends TestCase
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('class WRITE disabled');
         $client->call('AddClient', ['firstname' => 'a', 'noemail' => true]);
-    }
-
-    // ---------------------------------------------------------------
-    // CapsuleClient — rota CRM direta
-    // ---------------------------------------------------------------
-
-    #[DataProvider('invalidReadonlyProvider')]
-    public function test_capsule_blocks_write_when_readonly_value_is_invalid(mixed $raw): void
-    {
-        \WHMCS\Config\Setting::$store = [
-            'nt_mcp_enable_write' => '1',
-            'nt_mcp_readonly' => $raw,
-        ];
-
-        $capsule = new CapsuleClient();
-
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('writes disabled');
-        $capsule->insert('mod_mgcrm_contacts', ['name' => 'x']);
-    }
-
-    public function test_capsule_blocks_write_when_write_gate_value_is_invalid(): void
-    {
-        \WHMCS\Config\Setting::$store = ['nt_mcp_enable_write' => 'true'];
-
-        $capsule = new CapsuleClient();
-
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('writes disabled');
-        $capsule->insert('mod_mgcrm_contacts', ['name' => 'x']);
-    }
-
-    public function test_capsule_blocks_write_when_config_read_fails(): void
-    {
-        \WHMCS\Config\Setting::$throwOnRead = true;
-
-        $capsule = new CapsuleClient();
-
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('writes disabled');
-        $capsule->insert('mod_mgcrm_contacts', ['name' => 'x']);
     }
 
     public function test_local_api_blocks_when_config_read_fails(): void

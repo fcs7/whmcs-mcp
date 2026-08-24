@@ -15,14 +15,14 @@ class ProjectManagerTools
     public function listProjects(
         int $userid = 0,
         string $status = '',
-        bool $completed = false,
+        ?bool $completed = null,
         int $limitnum = 25,
         int $limitstart = 0
     ): string {
         $params = ['limitnum' => $limitnum, 'limitstart' => $limitstart];
         if ($userid > 0) $params['userid'] = $userid;
         if ($status !== '') $params['status'] = $status;
-        if ($completed) $params['completed'] = true;
+        if ($completed !== null) $params['completed'] = $completed;
         return ToolJson::encode($this->api->call('GetProjects', $params));
     }
 

@@ -247,7 +247,7 @@ class LocalApiClientTest extends TestCase
             ->getReflectionConstant('COMMAND_CLASS')->getValue();
     }
 
-    public function test_allowed_commands_match_68_tool_profile(): void
+    public function test_allowed_commands_match_64_tool_profile(): void
     {
         $commands = self::allowedCommands();
 
@@ -306,7 +306,7 @@ class LocalApiClientTest extends TestCase
 
     /**
      * Nenhum comando órfão e nenhuma tool chamando comando ausente: o allowlist
-     * é exatamente o conjunto de comandos que as 68 tools realmente invocam.
+     * é exatamente o conjunto de comandos que as 64 tools realmente invocam.
      */
     public function test_allowlist_matches_exactly_the_commands_the_tools_call(): void
     {

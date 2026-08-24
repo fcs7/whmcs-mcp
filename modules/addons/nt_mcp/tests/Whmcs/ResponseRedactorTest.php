@@ -11,11 +11,13 @@ class ResponseRedactorTest extends TestCase
     {
         $data = [
             'result' => 'success',
+            'system_host' => 'desenv.ntweb.com.br',
             'client' => [
                 'firstname' => 'Jane',
                 'password' => 'hash-should-not-leak',
                 'nested' => [
                     'securityqans' => 'my-answer',
+                    'ipaddress' => '203.0.113.42',
                     'deeper' => [
                         'password2' => 'still-here',
                         'ok' => 'keep-me',
@@ -28,9 +30,11 @@ class ResponseRedactorTest extends TestCase
 
         $this->assertArrayNotHasKey('password', $data['client']);
         $this->assertArrayNotHasKey('securityqans', $data['client']['nested']);
+        $this->assertArrayNotHasKey('ipaddress', $data['client']['nested']);
         $this->assertArrayNotHasKey('password2', $data['client']['nested']['deeper']);
         $this->assertSame('keep-me', $data['client']['nested']['deeper']['ok']);
         $this->assertSame('Jane', $data['client']['firstname']);
+        $this->assertSame('desenv.ntweb.com.br', $data['system_host'], 'host explícito do boot-check é intencional');
     }
 
     public function test_strip_pay_methods_keeps_only_allowlisted_keys(): void
@@ -111,7 +115,7 @@ class ResponseRedactorTest extends TestCase
     /**
      * Regressão (2026-08-23, desenv): `GetInvoice`/`GetOrders` devolvem
      * `""` para lista vazia em vez de `[]`/`array()` — reproduzido em
-     * `transactions`, `nameservers`, `renewals`. Só as chaves da allowlist
+     * `transactions`, `nameservers`, `renewals`, `products`. Só as chaves da allowlist
      * convertem; um campo de texto legitimamente vazio (`notes`) tem que
      * continuar string.
      */
@@ -121,6 +125,7 @@ class ResponseRedactorTest extends TestCase
             'transactions' => '',
             'nameservers' => '',
             'renewals' => '',
+            'products' => '',
             'notes' => '',
             'nested' => ['domains' => '', 'services' => '', 'addons' => ''],
         ];
@@ -130,6 +135,7 @@ class ResponseRedactorTest extends TestCase
         $this->assertSame([], $data['transactions']);
         $this->assertSame([], $data['nameservers']);
         $this->assertSame([], $data['renewals']);
+        $this->assertSame([], $data['products']);
         $this->assertSame('', $data['notes'], 'campo de texto livre nao pode virar lista');
         $this->assertSame([], $data['nested']['domains']);
         $this->assertSame([], $data['nested']['services']);
@@ -156,6 +162,23 @@ class ResponseRedactorTest extends TestCase
             $data['notes'],
             'so o valor EXATO 0000-00-00 vira null, nao substring dentro de texto livre'
         );
+    }
+
+    public function test_replyid_zero_sentinel_becomes_null_recursively(): void
+    {
+        $data = [
+            'replyid' => '0',
+            'replies' => [
+                ['replyid' => 0],
+                ['replyid' => '17'],
+            ],
+        ];
+
+        ResponseRedactor::normalizeTypes($data);
+
+        $this->assertNull($data['replyid']);
+        $this->assertNull($data['replies'][0]['replyid']);
+        $this->assertSame('17', $data['replies'][1]['replyid']);
     }
 
     /**
@@ -237,7 +260,7 @@ class ResponseRedactorTest extends TestCase
             'customfields15' => '',
         ];
 
-        ResponseRedactor::stripClientDetails($result);
+        ResponseRedactor::stripClientDetails($result, null, [171]);
 
         for ($i = 1; $i <= 15; $i++) {
             $this->assertArrayNotHasKey('customfields' . $i, $result);
@@ -253,11 +276,13 @@ class ResponseRedactorTest extends TestCase
 
         ResponseRedactor::stripClientDetails($result);
 
+        // Convertido de HTML para text plano, e truncado ao primeiro '; '
         $this->assertSame(
-            'Date: 17/08/2026 10:19; IP Address: 189.6.10.214; Host: bd060ad6.virtua.com.br',
+            'Date: 17/08/2026 10:19',
             $result['lastlogin']
         );
         $this->assertStringNotContainsString('<br>', $result['lastlogin']);
+        $this->assertStringNotContainsString('IP Address', $result['lastlogin']);
     }
 
     public function test_strip_client_details_preserves_lastlogin_when_format_is_unexpected(): void
@@ -267,5 +292,160 @@ class ResponseRedactorTest extends TestCase
         ResponseRedactor::stripClientDetails($result);
 
         $this->assertSame('Never', $result['lastlogin']);
+    }
+
+    public function test_strip_client_details_truncates_lastlogin_at_first_semicolon(): void
+    {
+        $result = [
+            'lastlogin' => 'Date: 17/08/2026 10:19<br>IP Address: 1.2.3.4<br>Host: example.com',
+        ];
+
+        ResponseRedactor::stripClientDetails($result);
+
+        // Esperado: HTML convertido + truncado ao primeiro '; '
+        $this->assertSame('Date: 17/08/2026 10:19', $result['lastlogin']);
+        $this->assertStringNotContainsString('IP', $result['lastlogin']);
+        $this->assertStringNotContainsString('Host', $result['lastlogin']);
+    }
+
+    public function test_strip_client_details_always_removes_cclastfour_and_cardlastfour(): void
+    {
+        $result = [
+            'clientid' => 1,
+            'cclastfour' => '4242',
+            'cardlastfour' => '1111',
+        ];
+
+        ResponseRedactor::stripClientDetails($result);
+
+        $this->assertArrayNotHasKey('cclastfour', $result);
+        $this->assertArrayNotHasKey('cardlastfour', $result);
+        $this->assertSame(1, $result['clientid']);
+    }
+
+    public function test_strip_client_details_filters_customfields_to_visible_ids(): void
+    {
+        $result = [
+            'customfields' => [
+                ['id' => 5, 'value' => 'field5'],
+                ['id' => 9, 'value' => 'field9'],
+                ['id' => 12, 'value' => 'field12'],
+            ],
+        ];
+
+        ResponseRedactor::stripClientDetails($result, null, [5, 9]);
+
+        $this->assertCount(2, $result['customfields']);
+        $this->assertSame(5, $result['customfields'][0]['id']);
+        $this->assertSame(9, $result['customfields'][1]['id']);
+    }
+
+    public function test_strip_client_details_with_no_visible_ids_empties_customfields(): void
+    {
+        $result = [
+            'customfields' => [
+                ['id' => 5, 'value' => 'field5'],
+                ['id' => 9, 'value' => 'field9'],
+            ],
+        ];
+
+        ResponseRedactor::stripClientDetails($result, null, []);
+
+        $this->assertSame([], $result['customfields']);
+    }
+
+    public function test_client_lite_view_removes_sensitive_fields(): void
+    {
+        $result = [
+            'clientid' => 1,
+            'firstname' => 'John',
+            'lastname' => 'Doe',
+            'email' => 'john@example.com',
+            'status' => 'active',
+            'address1' => '123 Main St',
+            'address2' => 'Apt 4B',
+            'phonenumber' => '555-1234',
+            'customfields' => [['id' => 5, 'value' => 'test']],
+            'notes' => 'Important notes',
+            'currency' => 'USD',
+        ];
+
+        ResponseRedactor::clientLiteView($result);
+
+        $this->assertSame([
+            'clientid' => 1,
+            'status' => 'active',
+            'currency' => 'USD',
+        ], $result);
+    }
+
+    public function test_client_lite_view_drops_unknown_future_fields(): void
+    {
+        $result = [
+            'result' => 'success',
+            'clientid' => 1,
+            'status' => 'Active',
+            'future_identity_field' => 'must-not-leak',
+        ];
+
+        ResponseRedactor::clientLiteView($result);
+
+        $this->assertSame(['result' => 'success', 'clientid' => 1, 'status' => 'Active'], $result);
+    }
+
+    // ---------------------------------------------------------------
+    // #17 — GUARANTEED_LIST_KEYS: uma asserção por chave confirmada
+    // ---------------------------------------------------------------
+
+    /** @return array<string, array{string, string}> */
+    public static function guaranteedListKeys(): array
+    {
+        return [
+            'GetContacts'      => ['GetContacts', 'contacts'],
+            'GetToDoItems'     => ['GetToDoItems', 'todoitems'],
+            'GetClientGroups'  => ['GetClientGroups', 'groups'],
+            'GetClientsAddons' => ['GetClientsAddons', 'addons'],
+            'GetPromotions'    => ['GetPromotions', 'promotions'],
+            'GetOrders'        => ['GetOrders', 'orders'],
+            'GetTransactions'  => ['GetTransactions', 'transactions'],
+            'GetTickets'       => ['GetTickets', 'tickets'],
+            'GetClients'       => ['GetClients', 'clients'],
+            'GetProducts'      => ['GetProducts', 'products'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('guaranteedListKeys')]
+    public function test_guaranteed_list_key_is_reinserted_as_empty_array(string $command, string $key): void
+    {
+        $data = ['result' => 'success', 'totalresults' => 0];
+        ResponseRedactor::normalizeResponse($data, $command);
+        $this->assertSame([], $data[$key], "$command deve garantir $key=[]");
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('guaranteedListKeys')]
+    public function test_guaranteed_list_key_is_not_overwritten_when_present(string $command, string $key): void
+    {
+        $data = ['result' => 'success', $key => [['id' => 1]]];
+        ResponseRedactor::normalizeResponse($data, $command);
+        $this->assertSame([['id' => 1]], $data[$key]);
+    }
+
+    public function test_guaranteed_list_keys_are_command_scoped(): void
+    {
+        $data = ['result' => 'success'];
+        ResponseRedactor::normalizeResponse($data, 'GetClientsDetails');
+        foreach (['contacts', 'todoitems', 'groups', 'addons', 'promotions'] as $k) {
+            $this->assertArrayNotHasKey($k, $data, 'chave garantida de outro comando não pode virar campo fantasma');
+        }
+    }
+
+    public function test_guaranteed_list_keys_constant_matches_provider(): void
+    {
+        $const = (new \ReflectionClass(ResponseRedactor::class))->getReflectionConstant('GUARANTEED_LIST_KEYS')->getValue();
+        $expected = [];
+        foreach (self::guaranteedListKeys() as [$cmd, $key]) {
+            $expected[$cmd][] = $key;
+        }
+        $this->assertSame($expected, $const, 'nova chave na constante exige caso no provider (e confirmação no payload real)');
     }
 }

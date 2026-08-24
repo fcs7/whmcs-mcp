@@ -75,7 +75,7 @@ class TicketToolsTest extends TestCase
             return ['result' => 'success'];
         });
 
-        $tools->openTicket(1, 'Subject', 'Body');
+        $tools->openTicket(1, 'Subject', 'Body', allow_guest: true);
 
         $this->assertTrue($capturedParams['noemail'], 'default é NÃO notificar o cliente');
     }
@@ -109,7 +109,7 @@ class TicketToolsTest extends TestCase
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('COMMS gate');
 
-        $tools->openTicket(1, 'Subject', 'Body', notify_client: true);
+        $tools->openTicket(1, 'Subject', 'Body', notify_client: true, allow_guest: true);
     }
 
     public function test_reply_ticket_with_notify_client_allowed_when_write_and_comms_on(): void
@@ -163,7 +163,7 @@ class TicketToolsTest extends TestCase
             return ['result' => 'success', 'ticketid' => 1];
         });
 
-        $tools->openTicket(deptid: 1, subject: 'Test', message: 'Msg', name: 'John', email: 'john@test.com');
+        $tools->openTicket(deptid: 1, subject: 'Test', message: 'Msg', name: 'John', email: 'john@test.com', allow_guest: true);
 
         $this->assertSame('John', $capturedParams['name']);
         $this->assertSame('john@test.com', $capturedParams['email']);
@@ -263,5 +263,509 @@ class TicketToolsTest extends TestCase
 
         $this->assertSame(2, $capturedParams['deptid']);
         $this->assertSame(50, $capturedParams['limitstart']);
+    }
+
+    public function test_get_ticket_with_tid_sends_ticketnum(): void
+    {
+        $capturedParams = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$capturedParams) {
+            $capturedParams = $params;
+            return ['result' => 'success', 'ticketid' => 1, 'tid' => '084535'];
+        });
+
+        $tools->getTicket(tid: '084535');
+
+        $this->assertArrayHasKey('ticketnum', $capturedParams);
+        $this->assertSame('084535', $capturedParams['ticketnum']);
+        $this->assertArrayNotHasKey('ticketid', $capturedParams);
+    }
+
+    public function test_get_ticket_with_ticketid_sends_ticketid(): void
+    {
+        $capturedParams = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$capturedParams) {
+            $capturedParams = $params;
+            return ['result' => 'success', 'ticketid' => 30];
+        });
+
+        $tools->getTicket(ticketid: 30);
+
+        $this->assertArrayHasKey('ticketid', $capturedParams);
+        $this->assertSame(30, $capturedParams['ticketid']);
+        $this->assertArrayNotHasKey('ticketnum', $capturedParams);
+    }
+
+    public function test_get_ticket_throws_when_neither_ticketid_nor_tid_provided(): void
+    {
+        $tools = $this->makeTools();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('exatamente um');
+
+        $tools->getTicket();
+    }
+
+    public function test_get_ticket_throws_when_both_ticketid_and_tid_provided(): void
+    {
+        $tools = $this->makeTools();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('exatamente um');
+
+        $tools->getTicket(ticketid: 30, tid: '084535');
+    }
+
+    public function test_get_ticket_defaults_to_lite_and_strips_pii(): void
+    {
+        $tools = $this->makeTools(function () {
+            return [
+                'result' => 'success',
+                'ticketid' => 30,
+                'tid' => '084535',
+                'userid' => 12,
+                'subject' => 'Test ticket',
+                'name' => 'Cliente Fulano',
+                'email' => 'fulano@example.com',
+                'cc' => 'copia@example.com',
+                'owner_name' => 'Cliente Fulano',
+                'owner_id' => 12,
+                'requestor_name' => 'Cliente Fulano',
+                'requestor_email' => 'fulano@example.com',
+                'requestor_id' => 12,
+                'replies' => [
+                    'reply' => [
+                        ['message' => 'Olá', 'name' => 'Cliente Fulano', 'email' => 'fulano@example.com', 'requestor_name' => 'Cliente Fulano', 'requestor_id' => 12, 'date' => '2026-08-01'],
+                    ],
+                ],
+                'notes' => [
+                    'note' => [
+                        ['message' => 'nota interna', 'name' => 'Admin', 'email' => 'admin@example.com'],
+                    ],
+                ],
+            ];
+        });
+
+        $json = $tools->getTicket(ticketid: 30);
+        $result = json_decode($json, true);
+
+        $this->assertArrayNotHasKey('name', $result);
+        $this->assertArrayNotHasKey('email', $result);
+        $this->assertArrayNotHasKey('cc', $result);
+        $this->assertSame(12, $result['userid']);
+        $this->assertSame('Test ticket', $result['subject']);
+        $this->assertArrayNotHasKey('owner_name', $result);
+        $this->assertArrayNotHasKey('requestor_name', $result);
+        $this->assertArrayNotHasKey('requestor_email', $result);
+        $this->assertSame(12, $result['owner_id'], 'owner_id é referência, não identidade — deve sobreviver ao lite');
+        $this->assertSame(12, $result['requestor_id']);
+        $this->assertArrayNotHasKey('name', $result['replies']['reply'][0]);
+        $this->assertArrayNotHasKey('email', $result['replies']['reply'][0]);
+        $this->assertArrayNotHasKey('requestor_name', $result['replies']['reply'][0]);
+        $this->assertSame(12, $result['replies']['reply'][0]['requestor_id']);
+        $this->assertSame('Olá', $result['replies']['reply'][0]['message']);
+        $this->assertArrayNotHasKey('name', $result['notes']['note'][0]);
+        $this->assertArrayNotHasKey('email', $result['notes']['note'][0]);
+    }
+
+    public function test_get_ticket_full_keeps_pii(): void
+    {
+        $tools = $this->makeTools(function () {
+            return [
+                'result' => 'success',
+                'ticketid' => 30,
+                'name' => 'Cliente Fulano',
+                'email' => 'fulano@example.com',
+            ];
+        });
+
+        $json = $tools->getTicket(ticketid: 30, fields: 'full');
+        $result = json_decode($json, true);
+
+        $this->assertSame('Cliente Fulano', $result['name']);
+        $this->assertSame('fulano@example.com', $result['email']);
+    }
+
+    public function test_get_ticket_rejects_invalid_fields(): void
+    {
+        $tools = $this->makeTools();
+
+        $this->expectException(\InvalidArgumentException::class);
+
+        $tools->getTicket(ticketid: 30, fields: 'medium');
+    }
+
+    public function test_list_tickets_adds_display_id_from_tid(): void
+    {
+        $tools = $this->makeTools(function () {
+            return [
+                'result' => 'success',
+                'tickets' => [
+                    'ticket' => [
+                        ['id' => 1, 'tid' => '001234', 'subject' => 'Test 1'],
+                        ['id' => 2, 'tid' => '001235', 'subject' => 'Test 2'],
+                    ]
+                ]
+            ];
+        });
+
+        $json = $tools->listTickets();
+        $result = json_decode($json, true);
+
+        $this->assertSame('001234', $result['tickets']['ticket'][0]['display_id']);
+        $this->assertSame('001235', $result['tickets']['ticket'][1]['display_id']);
+    }
+
+    public function test_get_ticket_adds_display_id_from_tid(): void
+    {
+        $tools = $this->makeTools(function () {
+            return [
+                'result' => 'success',
+                'ticketid' => 30,
+                'tid' => '084535',
+                'subject' => 'Test ticket'
+            ];
+        });
+
+        $json = $tools->getTicket(ticketid: 30);
+        $result = json_decode($json, true);
+
+        $this->assertSame('084535', $result['display_id']);
+    }
+
+    public function test_list_tickets_omits_display_id_when_tid_missing(): void
+    {
+        $tools = $this->makeTools(function () {
+            return [
+                'result' => 'success',
+                'tickets' => [
+                    'ticket' => [
+                        ['id' => 1, 'subject' => 'Test without tid'],
+                    ]
+                ]
+            ];
+        });
+
+        $json = $tools->listTickets();
+        $result = json_decode($json, true);
+
+        $this->assertArrayNotHasKey('display_id', $result['tickets']['ticket'][0]);
+    }
+
+    public function test_list_tickets_multi_status_merges_and_deduplicates(): void
+    {
+        $callCount = 0;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$callCount) {
+            $callCount++;
+            $status = $params['status'] ?? '';
+
+            if ($status === 'Open') {
+                // 20 tickets, ids 1-20
+                $tickets = [];
+                for ($i = 1; $i <= 20; $i++) {
+                    $tickets[] = ['id' => $i, 'subject' => "Open $i", 'lastreply' => "2026-08-$i"];
+                }
+                return ['result' => 'success', 'tickets' => ['ticket' => $tickets], 'totalresults' => 20];
+            } else {
+                // Customer-Reply: ids 20, 21 (20 é repetido para testar dedup)
+                return [
+                    'result' => 'success',
+                    'tickets' => [
+                        'ticket' => [
+                            ['id' => 20, 'subject' => 'Reply 20', 'lastreply' => '2026-08-20'],
+                            ['id' => 21, 'subject' => 'Reply 21', 'lastreply' => '2026-08-21'],
+                        ]
+                    ],
+                    'totalresults' => 2
+                ];
+            }
+        });
+
+        $json = $tools->listTickets(status: 'Open,Customer-Reply', limitnum: 100);
+        $result = json_decode($json, true);
+
+        // Verificar que são 21 items (20 + 1 novo, 20 é dedup)
+        $this->assertCount(21, $result['tickets']['ticket']);
+
+        // Verificar statuses_queried
+        $this->assertSame(['Open', 'Customer-Reply'], $result['statuses_queried']);
+
+        // Verificar totalresults é a soma (20 + 2)
+        $this->assertSame(22, $result['totalresults']);
+
+        // Duas chamadas foram feitas (uma per status)
+        $this->assertSame(2, $callCount);
+    }
+
+    public function test_list_tickets_single_status_uses_compatible_path(): void
+    {
+        $capturedParams = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$capturedParams) {
+            $capturedParams = $params;
+            return ['result' => 'success', 'tickets' => ['ticket' => []], 'totalresults' => 0];
+        });
+
+        $tools->listTickets(status: 'Open');
+
+        // Single status: deve fazer uma chamada compatível
+        $this->assertSame('Open', $capturedParams['status']);
+        $this->assertArrayNotHasKey('statuses_queried', json_decode($tools->listTickets(status: 'Open'), true));
+    }
+
+    public function test_list_tickets_default_status_is_open_customer_reply(): void
+    {
+        $json = '';
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$json) {
+            static $count = 0;
+            $count++;
+
+            if ($count === 1) {
+                // Primeira chamada: Open
+                return ['result' => 'success', 'tickets' => ['ticket' => []], 'totalresults' => 0];
+            } else {
+                // Segunda chamada: Customer-Reply
+                return ['result' => 'success', 'tickets' => ['ticket' => []], 'totalresults' => 0];
+            }
+        });
+
+        // Sem especificar status: deve usar Open,Customer-Reply
+        $json = $tools->listTickets();
+        $result = json_decode($json, true);
+
+        $this->assertArrayHasKey('statuses_queried', $result);
+        $this->assertSame(['Open', 'Customer-Reply'], $result['statuses_queried']);
+    }
+
+    public function test_list_tickets_with_awaiting_alias(): void
+    {
+        $json = '';
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$json) {
+            static $count = 0;
+            $count++;
+
+            if ($count === 1) {
+                return ['result' => 'success', 'tickets' => ['ticket' => []], 'totalresults' => 0];
+            } else {
+                return ['result' => 'success', 'tickets' => ['ticket' => []], 'totalresults' => 0];
+            }
+        });
+
+        // Alias "awaiting" deve expandir para Open,Customer-Reply
+        $json = $tools->listTickets(status: 'awaiting');
+        $result = json_decode($json, true);
+
+        $this->assertSame(['Open', 'Customer-Reply'], $result['statuses_queried']);
+    }
+
+    public function test_list_tickets_rejects_more_than_4_statuses(): void
+    {
+        $tools = $this->makeTools();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Máximo 4 status');
+
+        $tools->listTickets(status: 'Open,Customer-Reply,Answered,On Hold,Closed');
+    }
+
+    public function test_list_tickets_hide_sample_removes_guest_with_markers(): void
+    {
+        $tools = $this->makeTools(function () {
+            return [
+                'result' => 'success',
+                'tickets' => [
+                    'ticket' => [
+                        // Guest + marker: remove
+                        ['id' => 1, 'userid' => 0, 'subject' => 'This is a sample ticket', 'name' => 'Guest'],
+                        // Guest + no marker: keep
+                        ['id' => 2, 'userid' => 0, 'subject' => 'Real ticket', 'name' => 'Guest'],
+                        // Non-guest + marker: keep (não é sample)
+                        ['id' => 3, 'userid' => 5, 'subject' => 'This is a sample ticket', 'name' => 'Client'],
+                    ]
+                ],
+                'totalresults' => 3
+            ];
+        });
+
+        $json = $tools->listTickets(hide_sample: true);
+        $result = json_decode($json, true);
+
+        // Deve ter 2 tickets (removed id=1)
+        $this->assertCount(2, $result['tickets']['ticket']);
+
+        // IDs 2 e 3 devem estar presentes
+        $ids = array_column($result['tickets']['ticket'], 'id');
+        $this->assertContains(2, $ids);
+        $this->assertContains(3, $ids);
+        $this->assertNotContains(1, $ids);
+
+        // hidden_sample_count = 1
+        $this->assertSame(1, $result['hidden_sample_count']);
+    }
+
+    public function test_list_tickets_hide_sample_false_keeps_all(): void
+    {
+        $tools = $this->makeTools(function () {
+            return [
+                'result' => 'success',
+                'tickets' => [
+                    'ticket' => [
+                        ['id' => 1, 'userid' => 0, 'subject' => 'This is a sample ticket'],
+                    ]
+                ],
+                'totalresults' => 1
+            ];
+        });
+
+        $json = $tools->listTickets(hide_sample: false);
+        $result = json_decode($json, true);
+
+        $this->assertCount(1, $result['tickets']['ticket']);
+        $this->assertSame(0, $result['hidden_sample_count']);
+    }
+
+    public function test_list_tickets_adds_hidden_sample_count_field(): void
+    {
+        $tools = $this->makeTools(function () {
+            return [
+                'result' => 'success',
+                'tickets' => ['ticket' => []],
+                'totalresults' => 0
+            ];
+        });
+
+        $json = $tools->listTickets();
+        $result = json_decode($json, true);
+
+        $this->assertArrayHasKey('hidden_sample_count', $result);
+        $this->assertSame(0, $result['hidden_sample_count']);
+    }
+
+    // ---------------------------------------------------------------
+    // #14 — allow_guest e reatribuição em reply_ticket
+    // ---------------------------------------------------------------
+
+    public function test_open_ticket_without_clientid_requires_allow_guest(): void
+    {
+        $called = false;
+        $tools = $this->makeTools(function () use (&$called) { $called = true; return ['result' => 'success']; });
+
+        try {
+            $tools->openTicket(1, 'Subject', 'Body');
+            $this->fail('deveria rejeitar guest sem allow_guest');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertStringContainsString('allow_guest', $e->getMessage());
+        }
+        $this->assertFalse($called, 'API não pode ser chamada');
+    }
+
+    public function test_open_ticket_with_clientid_does_not_need_allow_guest_and_omits_flag(): void
+    {
+        $captured = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$captured) {
+            $captured = $params; return ['result' => 'success'];
+        });
+        $tools->openTicket(1, 'Subject', 'Body', clientid: 7);
+        $this->assertSame(7, $captured['clientid']);
+        $this->assertArrayNotHasKey('allow_guest', $captured);
+    }
+
+    public function test_reply_ticket_rejects_name_email_clientid_on_owned_ticket(): void
+    {
+        $cmds = [];
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$cmds) {
+            $cmds[] = $cmd;
+            return $cmd === 'GetTicket'
+                ? ['result' => 'success', 'ticketid' => 5, 'userid' => 42]
+                : ['result' => 'success'];
+        });
+
+        foreach ([['name' => 'X'], ['email' => 'x@y.z'], ['clientid' => 9]] as $extra) {
+            try {
+                $tools->replyTicket(5, 'msg', ...$extra);
+                $this->fail('deveria rejeitar reatribuição');
+            } catch (\InvalidArgumentException $e) {
+                $this->assertStringContainsString('cliente 42', $e->getMessage());
+            }
+        }
+        $this->assertNotContains('AddTicketReply', $cmds);
+    }
+
+    public function test_reply_ticket_accepts_name_email_on_guest_ticket(): void
+    {
+        $captured = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$captured) {
+            if ($cmd === 'GetTicket') return ['result' => 'success', 'ticketid' => 5, 'userid' => 0];
+            $captured = $params; return ['result' => 'success'];
+        });
+        $tools->replyTicket(5, 'msg', name: 'Guest', email: 'g@x.y');
+        $this->assertSame('Guest', $captured['name']);
+    }
+
+    public function test_reply_ticket_without_identity_params_skips_lookup(): void
+    {
+        $cmds = [];
+        $tools = $this->makeTools(function (string $cmd) use (&$cmds) { $cmds[] = $cmd; return ['result' => 'success']; });
+        $tools->replyTicket(5, 'msg');
+        $this->assertSame(['AddTicketReply'], $cmds);
+    }
+
+    public function test_list_tickets_defaults_to_lite_and_full_is_explicit(): void
+    {
+        $tools = $this->makeTools(fn() => [
+            'result' => 'success',
+            'tickets' => ['ticket' => [[
+                'id' => 30,
+                'tid' => '084535',
+                'deptid' => 2,
+                'userid' => 41,
+                'name' => 'Ana Silva',
+                'email' => 'ana@example.test',
+                'requestor_name' => 'Ana Silva',
+                'requestor_email' => 'ana@example.test',
+                'requestor_type' => 'Owner',
+                'owner_name' => 'Ana Silva',
+                'cc' => 'financeiro@example.test',
+                'admin' => 'Operador',
+                'attachment' => 'documento-ana.pdf',
+                'attachments' => [['filename' => 'documento-ana.pdf']],
+                'date' => '2026-08-23 10:00:00',
+                'subject' => 'Falha no serviço',
+                'status' => 'Open',
+                'priority' => 'High',
+                'lastreply' => '2026-08-23 11:00:00',
+                'flag' => 3,
+                'service' => 'Hospedagem',
+            ]]],
+            'totalresults' => 1,
+        ]);
+
+        $lite = json_decode($tools->listTickets(status: 'Open'), true);
+        $full = json_decode($tools->listTickets(status: 'Open', fields: 'full'), true);
+
+        $this->assertSame([
+            'id' => 30,
+            'tid' => '084535',
+            'display_id' => '084535',
+            'deptid' => 2,
+            'userid' => 41,
+            'date' => '2026-08-23 10:00:00',
+            'subject' => 'Falha no serviço',
+            'status' => 'Open',
+            'priority' => 'High',
+            'lastreply' => '2026-08-23 11:00:00',
+            'flag' => 3,
+            'service' => 'Hospedagem',
+        ], $lite['tickets']['ticket'][0]);
+        $this->assertSame('Ana Silva', $full['tickets']['ticket'][0]['requestor_name']);
+        $this->assertSame('ana@example.test', $full['tickets']['ticket'][0]['requestor_email']);
+        $this->assertSame('documento-ana.pdf', $full['tickets']['ticket'][0]['attachment']);
+    }
+
+    public function test_list_tickets_rejects_invalid_fields(): void
+    {
+        $tools = $this->makeTools();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage("fields deve ser 'lite' ou 'full'");
+        $tools->listTickets(fields: 'raw');
     }
 }

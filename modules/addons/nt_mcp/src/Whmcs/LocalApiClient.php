@@ -14,12 +14,15 @@ class LocalApiClient
     // WhoAmI, DecryptPassword, CreateSsoToken, etc.
     //
     // T1: reduzido de 73 para os comandos efetivamente requeridos pela
-    // superfície canônica (hoje 55 comandos para 68 tools — a contagem exata
+    // superfície canônica (hoje 55 comandos para 64 tools — a contagem exata
     // é travada por teste, não por este comentário). Comandos de custo/provisionamento
     // (ModuleSuspend, UpgradeProduct, DomainRegister, AcceptOrder, AddOrder...),
     // de comunicação (SendEmail, SendQuote) e lookups auxiliares saíram do
     // allowlist — não foram apenas desligados por gate.
     // ---------------------------------------------------------------
+
+    /** Commands whose API_CALL and API_OK audit entries are suppressed. */
+    private const AUDIT_SILENT_COMMANDS = ['GetActivityLog'];
 
     /** Exhaustive allowlist of WHMCS API commands used by the addon tools. */
     private const ALLOWED_COMMANDS = [
@@ -165,7 +168,29 @@ class LocalApiClient
     /** @var callable|null Para injecao em testes */
     private $callable = null;
 
-    private ?array $gatesOverride = null; // teste: ['write'=>bool,'destructive'=>bool,...,'readonly'=>bool]
+    // teste: ['write'=>bool,'destructive'=>bool,...,'readonly'=>bool,
+    //         'allowlist_clientids'=>?int[], 'allowlist_ticketids'=>?int[]]
+    private ?array $gatesOverride = null;
+
+    /**
+     * Gate por ALVO (#14): allowlists opcionais de ids de teste. Quando
+     * configuradas, qualquer comando não-READ cujo alvo (clientid/userid,
+     * ticketid) esteja fora da lista é negado com `write_target_not_allowed`.
+     * Vazias/ausentes = sem restrição por alvo (comportamento anterior).
+     */
+    private const ALLOWLIST_CLIENT_KEY = 'nt_mcp_write_allowlist_clientids';
+    private const ALLOWLIST_TICKET_KEY = 'nt_mcp_write_allowlist_ticketids';
+    private const CLIENT_TARGET_PARAMS = ['clientid', 'userid'];
+    private const TICKET_TARGET_PARAMS = ['ticketid'];
+    /**
+     * Alvos indiretos (#14, achado 38): param de id → comando READ que resolve
+     * o dono, filtro usado, e caminho da lista no payload. O registro devolvido
+     * precisa ter `id` igual ao pedido (filtro ignorado = irresolúvel = nega).
+     */
+    private const OWNER_LOOKUPS = [
+        'orderid' => ['GetOrders', 'id',      ['orders', 'order']],
+        'quoteid' => ['GetQuotes', 'quoteid', ['quotes', 'quote']],
+    ];
     private const IMPERSONATION_COMMANDS = [
         'AddTicketReply','CreateProject','UpdateProject','AddProjectTask',
         'UpdateProjectTask','StartTaskTimer','EndTaskTimer','AddProjectMessage',
@@ -222,7 +247,7 @@ class LocalApiClient
      * readonly master switch — FAIL-CLOSED em três frentes: falha de leitura,
      * valor ausente segue o default decidido, e valor PRESENTE porém não
      * canônico (`'true'`, `'yes'`, `'garbage'`, `2`) bloqueia escrita e é
-     * auditado. Espelhado em CapsuleClient::isReadonly() pelo mesmo ConfigFlag.
+     * auditado. O gate futuro do domínio CRM usa o mesmo `ConfigFlag`.
      * O override de teste tem precedência.
      */
     private function isReadonly(): bool
@@ -307,6 +332,187 @@ class LocalApiClient
                 "LocalApiClient: command '{$command}' is blocked (client notification requires the COMMS gate)."
             );
         }
+
+        if ($class !== 'READ') {
+            $this->assertTargetAllowed($command, $params);
+        }
+    }
+
+    /**
+     * Gate por ALVO (#14). Cada allowlist configurada é aplicada de forma
+     * independente (AND):
+     *  - ticket allowlist: `ticketid` presente deve estar na lista;
+     *  - client allowlist: `clientid`/`userid` presente deve estar na lista;
+     *    sem id de cliente, o dono é resolvido ANTES do gate a partir de
+     *    `ticketid` (GetTicket), `orderid` (GetOrders) ou `quoteid`
+     *    (GetQuotes) — todos READ, auditados. Registro guest/órfão (userid 0)
+     *    = sem cliente a checar (para cobrir guests, configure também a
+     *    allowlist de tickets).
+     * Comandos sem nenhum desses params (AddClient, projetos/tarefas) não têm
+     * alvo checável e seguem só pelo gate de classe. Falha de leitura de
+     * config, lista inválida ou alvo não resolvível = NEGA (fail-closed).
+     */
+    private function assertTargetAllowed(string $command, array $params): void
+    {
+        $clientList = $this->targetAllowlist(self::ALLOWLIST_CLIENT_KEY, 'allowlist_clientids');
+        $ticketList = $this->targetAllowlist(self::ALLOWLIST_TICKET_KEY, 'allowlist_ticketids');
+        if ($clientList === null && $ticketList === null) {
+            return;
+        }
+
+        $ticketId = self::firstIntParam($params, self::TICKET_TARGET_PARAMS);
+        $clientId = self::firstIntParam($params, self::CLIENT_TARGET_PARAMS);
+
+        if ($ticketList !== null && $ticketId !== null && !in_array($ticketId, $ticketList, true)) {
+            $this->denyTarget($command, $params, 'ticketid');
+        }
+
+        if ($clientList !== null) {
+            if ($clientId === null) {
+                [$clientId, $via] = $this->resolveIndirectClientId($params, $ticketId);
+                if ($via !== null && $clientId === null) {
+                    // Alvo indireto presente mas não resolvido (lookup falhou /
+                    // registro inexistente / filtro ignorado): nega.
+                    $this->denyTarget($command, $params, "{$via}→clientid");
+                }
+                if ($clientId === 0) {
+                    $clientId = null; // guest/órfão: sem cliente a checar
+                }
+            }
+            if ($clientId !== null && !in_array($clientId, $clientList, true)) {
+                $this->denyTarget($command, $params, 'clientid');
+            }
+        }
+    }
+
+    /**
+     * Resolve o dono a partir do primeiro alvo indireto presente
+     * (ticketid, depois orderid/quoteid). @return array{?int, ?string} [clientId, via]
+     */
+    private function resolveIndirectClientId(array $params, ?int $ticketId): array
+    {
+        if ($ticketId !== null) {
+            return [$this->resolveTicketClientId($ticketId), 'ticketid'];
+        }
+        foreach (self::OWNER_LOOKUPS as $param => [$lookupCmd, $filter, $path]) {
+            $id = self::firstIntParam($params, [$param]);
+            if ($id === null) continue;
+            return [$this->resolveOwnerViaList($lookupCmd, $filter, $path, $id), $param];
+        }
+        return [null, null];
+    }
+
+    /**
+     * Dono via comando de listagem filtrado por id. Exige exatamente UM
+     * registro com `id` igual ao pedido; qualquer outra coisa = null.
+     * @param string[] $path
+     */
+    private function resolveOwnerViaList(string $lookupCmd, string $filter, array $path, int $id): ?int
+    {
+        try {
+            $res = $this->call($lookupCmd, [$filter => $id]);
+        } catch (\Throwable) {
+            return null;
+        }
+        if (($res['result'] ?? null) !== 'success') {
+            return null;
+        }
+        $rows = $res;
+        foreach ($path as $k) {
+            $rows = is_array($rows) ? ($rows[$k] ?? null) : null;
+        }
+        if (!is_array($rows)) {
+            return null;
+        }
+        $matches = array_values(array_filter($rows, fn($r) => is_array($r) && (int) ($r['id'] ?? 0) === $id));
+        if (count($matches) !== 1) {
+            return null;
+        }
+        $uid = $matches[0]['userid'] ?? $matches[0]['clientid'] ?? 0;
+        return is_numeric($uid) ? (int) $uid : null;
+    }
+
+    private function denyTarget(string $command, array $params, string $target): never
+    {
+        self::auditLog(ActivityEvent::API_BLOCKED_TARGET, AuditMetadata::forParams($params), command: $command);
+        throw new AuthorizationException(
+            "LocalApiClient: command '{$command}' is blocked (write_target_not_allowed: {$target} fora da allowlist de escrita)."
+        );
+    }
+
+    /** @return ?int null quando nenhum dos params está presente/é inteiro positivo */
+    private static function firstIntParam(array $params, array $keys): ?int
+    {
+        foreach ($keys as $k) {
+            if (!isset($params[$k])) continue;
+            $v = $params[$k];
+            if (is_int($v) && $v > 0) return $v;
+            if (is_string($v) && ctype_digit($v) && (int) $v > 0) return (int) $v;
+        }
+        return null;
+    }
+
+    /**
+     * `userid` do ticket via GetTicket (READ — passa pelo pipeline normal e é
+     * auditado). 0 = guest; null = não resolvível.
+     */
+    private function resolveTicketClientId(int $ticketId): ?int
+    {
+        try {
+            $ticket = $this->call('GetTicket', ['ticketid' => $ticketId]);
+        } catch (\Throwable) {
+            return null;
+        }
+        if (($ticket['result'] ?? null) !== 'success') {
+            return null;
+        }
+        $uid = $ticket['userid'] ?? 0;
+        return is_numeric($uid) ? (int) $uid : null;
+    }
+
+    /**
+     * Lê uma allowlist CSV de ids. null = não configurada (sem restrição).
+     * Lista presente com token inválido, ou falha de leitura, vira lista
+     * VAZIA (nega todo alvo) e é auditada — config inválida nunca libera.
+     *
+     * @return ?int[]
+     */
+    private function targetAllowlist(string $key, string $overrideKey): ?array
+    {
+        if ($this->gatesOverride !== null) {
+            $raw = $this->gatesOverride[$overrideKey] ?? null;
+            if ($raw === null) return null;
+            return is_array($raw) ? array_values(array_map('intval', $raw)) : self::parseIdCsv((string) $raw, $key);
+        }
+        if (!class_exists('\WHMCS\Config\Setting')) {
+            return null;
+        }
+        try {
+            $raw = \WHMCS\Config\Setting::getValue($key);
+        } catch (\Throwable $e) {
+            self::auditConfig('LocalApiClient: target allowlist read failed — failing closed', $e);
+            return [];
+        }
+        if ($raw === null || trim((string) $raw) === '') {
+            return null;
+        }
+        return self::parseIdCsv((string) $raw, $key);
+    }
+
+    /** @return int[] */
+    private static function parseIdCsv(string $raw, string $key): array
+    {
+        $ids = [];
+        foreach (explode(',', $raw) as $tok) {
+            $tok = trim($tok);
+            if ($tok === '') continue;
+            if (!ctype_digit($tok) || (int) $tok <= 0) {
+                self::auditConfig("LocalApiClient: invalid id in {$key} — failing closed");
+                return [];
+            }
+            $ids[] = (int) $tok;
+        }
+        return $ids;
     }
 
     /**
@@ -414,7 +620,10 @@ class LocalApiClient
         // ---------------------------------------------------------------
         // Identificador de correlação: liga a linha de início, a de desfecho e o
         // diagnóstico detalhado do error_log sem repetir dado nenhum entre eles.
-        $correlationId = self::auditLog(ActivityEvent::API_CALL, AuditMetadata::forParams($params), command: $command);
+        $audited = !in_array($command, self::AUDIT_SILENT_COMMANDS, true);
+        $correlationId = $audited
+            ? self::auditLog(ActivityEvent::API_CALL, AuditMetadata::forParams($params), command: $command)
+            : null;
 
         // ---------------------------------------------------------------
         // m1.1: TODO desfecho é registrado — sucesso, erro em array, retorno
@@ -436,6 +645,9 @@ class LocalApiClient
                 throw $e;
             }
 
+            if ($correlationId === null) {
+                $correlationId = Diagnostics::newCorrelationId();
+            }
             self::auditLog(ActivityEvent::API_EXCEPTION, null, $correlationId, $command);
             Diagnostics::log($correlationId, Diagnostics::CATEGORY_API_EXCEPTION, $command, $e);
 
@@ -499,7 +711,9 @@ class LocalApiClient
         }
 
         if ($outcome === 'success') {
-            self::auditLog(ActivityEvent::API_OK, null, $correlationId, $command);
+            if ($audited) {
+                self::auditLog(ActivityEvent::API_OK, null, $correlationId, $command);
+            }
             // Pipeline ÚNICO de saída (objetos -> escalar, JSON-string -> array,
             // tipos inconsistentes, listas vazias omitidas, scrub por último).
             // A ORDEM é parte do contrato: ver ResponseRedactor::normalizeResponse().
@@ -517,6 +731,9 @@ class LocalApiClient
             // valor deles sai da classificação.
             $classification = ErrorClassifier::classify($command, $downstreamMessage, $params);
 
+            if ($correlationId === null) {
+                $correlationId = Diagnostics::newCorrelationId();
+            }
             self::auditLog(ActivityEvent::API_ERROR, null, $correlationId, $command);
             Diagnostics::log(
                 $correlationId,
@@ -547,6 +764,9 @@ class LocalApiClient
         // indistinguível de "o WHMCS caiu". O formato é o mesmo dos outros dois
         // ramos de erro, então quem já ramifica em `result === 'error'` (as
         // tools de cotação, por exemplo) não muda.
+        if ($correlationId === null) {
+            $correlationId = Diagnostics::newCorrelationId();
+        }
         self::auditLog(ActivityEvent::API_MALFORMED, null, $correlationId, $command);
         Diagnostics::log($correlationId, Diagnostics::CATEGORY_API_MALFORMED, $command);
 

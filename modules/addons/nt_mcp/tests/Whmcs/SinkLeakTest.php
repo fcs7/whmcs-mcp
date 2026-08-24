@@ -7,7 +7,6 @@ namespace NtMcp\Tests\Whmcs;
 use NtMcp\Mcp\McpSdkAdapter;
 use NtMcp\Tests\Support\ActivityLogSpy;
 use NtMcp\Tests\Support\ErrorLogSpy;
-use NtMcp\Whmcs\CapsuleClient;
 use NtMcp\Whmcs\LocalApiClient;
 use Nyholm\Psr7\Factory\Psr17Factory;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -71,7 +70,7 @@ final class SinkLeakTest extends TestCase
         $api->setCallable($cb);
         $api->setAdminIdResolver(static fn(string $u): int => 7);
 
-        return new McpSdkAdapter($api, new CapsuleClient(), $this->baseDir, $this->tempDir);
+        return new McpSdkAdapter($api, $this->baseDir, $this->tempDir);
     }
 
     private function callTool(McpSdkAdapter $adapter, string $name, array $args): string
@@ -251,48 +250,6 @@ final class SinkLeakTest extends TestCase
     }
 
     // ---------------------------------------------------------------
-    // Capsule
-    // ---------------------------------------------------------------
-
-    #[Test]
-    #[DataProvider('capsuleOperationProvider')]
-    public function test_capsule_driver_exception_leaks_nowhere(string $operation, callable $invoke): void
-    {
-        $capsule = $this->capsuleThrowing(new \RuntimeException(self::poisonedText()));
-
-        try {
-            $invoke($capsule);
-            $this->fail("{$operation} deveria lançar");
-        } catch (\Throwable $e) {
-            $this->assertStringNotContainsString('SQLSTATE[42000] SELECT', $e->getMessage());
-        }
-
-        $this->assertNoSinkLeaked('');
-        $this->assertTrue(ErrorLogSpy::hasLineContaining('category=database_exception'));
-        $this->assertTrue(ErrorLogSpy::hasLineContaining('exception=RuntimeException'));
-    }
-
-    public static function capsuleOperationProvider(): array
-    {
-        return [
-            'INSERT' => ['INSERT', fn(CapsuleClient $c) => $c->insert('mod_mgcrm_contacts', ['name' => 'Ana'])],
-            'UPDATE' => ['UPDATE', fn(CapsuleClient $c) => $c->update('mod_mgcrm_contacts', ['id' => 1], ['name' => 'Ana'])],
-            'DELETE' => ['DELETE', fn(CapsuleClient $c) => $c->delete('mod_mgcrm_contacts', ['id' => 1])],
-        ];
-    }
-
-    private function capsuleThrowing(\Throwable $error): CapsuleClient
-    {
-        $capsule = new CapsuleClient();
-        $capsule->setWritableForTests(true);
-        $capsule->setExecutorForTests(static function () use ($error): int {
-            throw $error;
-        });
-
-        return $capsule;
-    }
-
-    // ---------------------------------------------------------------
     // Falha de CONFIG
     // ---------------------------------------------------------------
 
@@ -319,24 +276,6 @@ final class SinkLeakTest extends TestCase
     }
 
     #[Test]
-    public function test_config_read_failure_leaks_nowhere_in_capsule(): void
-    {
-        \WHMCS\Config\Setting::$throwOnRead = true;
-
-        try {
-            (new CapsuleClient())->insert('mod_mgcrm_contacts', ['name' => 'Ana']);
-            $this->fail('deveria falhar fechado');
-        } catch (\InvalidArgumentException) {
-            // esperado
-        } finally {
-            \WHMCS\Config\Setting::reset();
-        }
-
-        $this->assertNoSinkLeaked('');
-        $this->assertTrue(ErrorLogSpy::hasLineContaining('category=config_read_failure'));
-    }
-
-    #[Test]
     public function test_poisoned_config_exception_never_appears_in_any_sink(): void
     {
         \WHMCS\Config\Setting::$throwOnRead = true;
@@ -348,12 +287,6 @@ final class SinkLeakTest extends TestCase
         try {
             $api->call('AddClient', ['firstname' => 'a', 'noemail' => true]);
         } catch (\RuntimeException) {
-            // esperado
-        }
-
-        try {
-            (new CapsuleClient())->insert('mod_mgcrm_contacts', ['name' => 'Ana']);
-        } catch (\InvalidArgumentException) {
             // esperado
         }
 

@@ -23,10 +23,9 @@ namespace NtMcp\Whmcs;
  * --------------------------------
  *  - `GetPaymentMethods` (LocalAPI) reintroduziria um 52º comando na allowlist,
  *    explicitamente vedado.
- *  - `CapsuleClient` NÃO é usado aqui de propósito: sua allowlist é compartilhada
- *    com as tools de CRM, e `tblpaymentgateways` guarda CREDENCIAIS de gateway
- *    na coluna `value`. Liberar a tabela lá daria às tools de CRM leitura de
- *    segredos. Esta classe faz uma leitura estreita e projeta SOMENTE a coluna
+ *  - nenhum cliente genérico de banco é usado: `tblpaymentgateways` guarda
+ *    CREDENCIAIS de gateway na coluna `value`. Esta classe faz uma leitura
+ *    estreita e projeta SOMENTE a coluna
  *    `gateway` — nunca `setting`/`value`.
  *
  * O acesso direto e estreito ao Capsule segue o padrão que o addon já usa em

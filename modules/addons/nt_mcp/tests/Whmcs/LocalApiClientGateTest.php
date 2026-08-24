@@ -403,4 +403,244 @@ class LocalApiClientGateTest extends TestCase
         $this->assertArrayNotHasKey('password', $result);
         $this->assertArrayNotHasKey('securityqans', $result['a']);
     }
+
+    // ---------------------------------------------------------------
+    // #14) Gate por alvo — allowlist de clientid/ticketid
+    // ---------------------------------------------------------------
+
+    /** @param array<string,mixed> $lists */
+    private function targetClient(array $lists, ?callable $fn = null, array &$cmds = []): LocalApiClient
+    {
+        $client = new LocalApiClient('testadmin');
+        $client->setGates(['write' => true, 'destructive' => true, 'financial' => true] + $lists);
+        $client->setCallable(function (string $cmd, array $params) use ($fn, &$cmds) {
+            $cmds[] = $cmd;
+            return $fn ? $fn($cmd, $params) : ['result' => 'success'];
+        });
+        return $client;
+    }
+
+    private function assertTargetDenied(callable $fn, string $target): void
+    {
+        try {
+            $fn();
+            $this->fail('deveria negar por alvo');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('write_target_not_allowed', $e->getMessage());
+            $this->assertStringContainsString($target, $e->getMessage());
+        }
+    }
+
+    public function test_target_allowlist_unconfigured_keeps_current_behaviour(): void
+    {
+        $c = $this->targetClient([]);
+        $this->assertSame('success', $c->call('UpdateClient', ['clientid' => 999])['result']);
+        $this->assertSame('success', $c->call('UpdateTicket', ['ticketid' => 999])['result']);
+    }
+
+    public function test_client_allowlist_allows_inside_and_denies_outside(): void
+    {
+        $c = $this->targetClient(['allowlist_clientids' => [5, 7]]);
+        $this->assertSame('success', $c->call('UpdateClient', ['clientid' => 5])['result']);
+        $this->assertSame('success', $c->call('UpdateClient', ['clientid' => '7'])['result']);
+        $this->assertTargetDenied(fn() => $c->call('UpdateClient', ['clientid' => 6]), 'clientid');
+        // `userid` também é alvo de cliente
+        $this->assertTargetDenied(fn() => $c->call('UpdateClient', ['userid' => 6]), 'clientid');
+    }
+
+    public function test_client_allowlist_accepts_csv_string_override(): void
+    {
+        $c = $this->targetClient(['allowlist_clientids' => ' 5, 7 ']);
+        $this->assertSame('success', $c->call('UpdateClient', ['clientid' => 7])['result']);
+        $this->assertTargetDenied(fn() => $c->call('UpdateClient', ['clientid' => 8]), 'clientid');
+    }
+
+    public function test_invalid_csv_token_fails_closed_for_every_target(): void
+    {
+        $c = $this->targetClient(['allowlist_clientids' => '5,abc']);
+        $this->assertTargetDenied(fn() => $c->call('UpdateClient', ['clientid' => 5]), 'clientid');
+    }
+
+    public function test_ticket_allowlist_allows_inside_and_denies_outside(): void
+    {
+        $c = $this->targetClient(['allowlist_ticketids' => [10]]);
+        $this->assertSame('success', $c->call('AddTicketReply', ['ticketid' => 10, 'message' => 'x', 'noemail' => true])['result']);
+        $this->assertTargetDenied(fn() => $c->call('UpdateTicket', ['ticketid' => 11]), 'ticketid');
+    }
+
+    public function test_client_allowlist_resolves_ticket_to_client_before_gate(): void
+    {
+        $cmds = [];
+        $fn = fn(string $cmd, array $p) => $cmd === 'GetTicket'
+            ? ['result' => 'success', 'ticketid' => $p['ticketid'], 'userid' => $p['ticketid'] === 10 ? 5 : 99]
+            : ['result' => 'success'];
+        $c = $this->targetClient(['allowlist_clientids' => [5]], $fn, $cmds);
+
+        $this->assertSame('success', $c->call('UpdateTicket', ['ticketid' => 10])['result']);
+        $this->assertSame(['GetTicket', 'UpdateTicket'], $cmds, 'GetTicket precede o write');
+
+        $cmds = [];
+        $this->assertTargetDenied(fn() => $c->call('UpdateTicket', ['ticketid' => 11]), 'clientid');
+        $this->assertSame(['GetTicket'], $cmds, 'write nunca chegou à API');
+    }
+
+    public function test_client_allowlist_denies_when_ticket_cannot_be_resolved(): void
+    {
+        $fn = fn(string $cmd) => $cmd === 'GetTicket'
+            ? ['result' => 'error', 'message' => 'Ticket ID Not Found']
+            : ['result' => 'success'];
+        $c = $this->targetClient(['allowlist_clientids' => [5]], $fn);
+        $this->assertTargetDenied(fn() => $c->call('UpdateTicket', ['ticketid' => 404]), 'ticketid');
+    }
+
+    public function test_client_allowlist_skips_client_check_for_guest_ticket_but_ticket_list_still_applies(): void
+    {
+        $fn = fn(string $cmd) => $cmd === 'GetTicket'
+            ? ['result' => 'success', 'userid' => 0]
+            : ['result' => 'success'];
+        $c = $this->targetClient(['allowlist_clientids' => [5]], $fn);
+        $this->assertSame('success', $c->call('UpdateTicket', ['ticketid' => 3])['result']);
+
+        $both = $this->targetClient(['allowlist_clientids' => [5], 'allowlist_ticketids' => [1]], $fn);
+        $this->assertTargetDenied(fn() => $both->call('UpdateTicket', ['ticketid' => 3]), 'ticketid');
+    }
+
+    public function test_explicit_clientid_param_wins_over_ticket_lookup(): void
+    {
+        $cmds = [];
+        $c = $this->targetClient(['allowlist_clientids' => [5]], null, $cmds);
+        $this->assertTargetDenied(fn() => $c->call('AddTicketReply', ['ticketid' => 1, 'clientid' => 9, 'noemail' => true]), 'clientid');
+        $this->assertSame([], $cmds, 'sem lookup quando clientid já veio');
+    }
+
+    public function test_read_commands_ignore_target_allowlists(): void
+    {
+        $c = $this->targetClient(['allowlist_clientids' => [5], 'allowlist_ticketids' => [1]]);
+        $this->assertSame('success', $c->call('GetClientsDetails', ['clientid' => 999])['result']);
+        $this->assertSame('success', $c->call('GetTicket', ['ticketid' => 999])['result']);
+    }
+
+    public function test_commands_without_any_target_param_follow_class_gate_only(): void
+    {
+        $c = $this->targetClient(['allowlist_clientids' => [5], 'allowlist_ticketids' => [1]]);
+        $this->assertSame('success', $c->call('AddClient', ['firstname' => 'x', 'noemail' => true])['result']);
+    }
+
+    // ---------------------------------------------------------------
+    // #14 (achado 38) — orderid/quoteid resolvidos ao dono antes do gate
+    // ---------------------------------------------------------------
+
+    /** Fixture: pedido 10 e cotação 20 pertencem ao cliente 5; 11/21 ao 99; 12/22 órfãos. */
+    private static function ownerLookupFixture(): callable
+    {
+        $owner = fn(int $id): int => match ($id) { 10, 20 => 5, 11, 21 => 99, default => 0 };
+        return function (string $cmd, array $p) use ($owner) {
+            if ($cmd === 'GetOrders') {
+                $id = (int) $p['id'];
+                return ['result' => 'success', 'orders' => ['order' => [['id' => $id, 'userid' => $owner($id)]]]];
+            }
+            if ($cmd === 'GetQuotes') {
+                $id = (int) $p['quoteid'];
+                return ['result' => 'success', 'quotes' => ['quote' => [['id' => $id, 'userid' => $owner($id)]]]];
+            }
+            return ['result' => 'success'];
+        };
+    }
+
+    public function test_cancel_order_resolves_owner_via_get_orders_before_gate(): void
+    {
+        $cmds = [];
+        $c = $this->targetClient(['allowlist_clientids' => [5]], self::ownerLookupFixture(), $cmds);
+
+        $this->assertSame('success', $c->call('CancelOrder', ['orderid' => 10, 'noemail' => true])['result']);
+        $this->assertSame(['GetOrders', 'CancelOrder'], $cmds);
+
+        $cmds = [];
+        $this->assertTargetDenied(fn() => $c->call('CancelOrder', ['orderid' => 11, 'noemail' => true]), 'clientid');
+        $this->assertSame(['GetOrders'], $cmds, 'CancelOrder nunca chegou à API');
+    }
+
+    public function test_delete_and_update_quote_resolve_owner_via_get_quotes_before_gate(): void
+    {
+        $cmds = [];
+        $c = $this->targetClient(['allowlist_clientids' => [5]], self::ownerLookupFixture(), $cmds);
+
+        $this->assertSame('success', $c->call('DeleteQuote', ['quoteid' => 20])['result']);
+        $this->assertSame('success', $c->call('UpdateQuote', ['quoteid' => 20, 'subject' => 'x'])['result']);
+        $this->assertSame('success', $c->call('AcceptQuote', ['quoteid' => 20])['result']);
+        $this->assertSame(['GetQuotes', 'DeleteQuote', 'GetQuotes', 'UpdateQuote', 'GetQuotes', 'AcceptQuote'], $cmds);
+
+        $cmds = [];
+        $this->assertTargetDenied(fn() => $c->call('DeleteQuote', ['quoteid' => 21]), 'clientid');
+        $this->assertSame(['GetQuotes'], $cmds);
+    }
+
+    public function test_orphan_order_or_quote_skips_client_check(): void
+    {
+        $c = $this->targetClient(['allowlist_clientids' => [5]], self::ownerLookupFixture());
+        $this->assertSame('success', $c->call('CancelOrder', ['orderid' => 12, 'noemail' => true])['result']);
+        $this->assertSame('success', $c->call('DeleteQuote', ['quoteid' => 22])['result']);
+    }
+
+    public function test_unresolvable_order_or_quote_is_denied(): void
+    {
+        // lookup com erro
+        $err = fn(string $cmd) => in_array($cmd, ['GetOrders', 'GetQuotes'], true)
+            ? ['result' => 'error', 'message' => 'not found'] : ['result' => 'success'];
+        $c = $this->targetClient(['allowlist_clientids' => [5]], $err);
+        $this->assertTargetDenied(fn() => $c->call('CancelOrder', ['orderid' => 1, 'noemail' => true]), 'orderid→clientid');
+        $this->assertTargetDenied(fn() => $c->call('DeleteQuote', ['quoteid' => 1]), 'quoteid→clientid');
+
+        // lookup devolve lista vazia
+        $empty = fn(string $cmd) => match ($cmd) {
+            'GetOrders' => ['result' => 'success', 'orders' => ['order' => []]],
+            'GetQuotes' => ['result' => 'success', 'quotes' => ['quote' => []]],
+            default => ['result' => 'success'],
+        };
+        $c = $this->targetClient(['allowlist_clientids' => [5]], $empty);
+        $this->assertTargetDenied(fn() => $c->call('CancelOrder', ['orderid' => 1, 'noemail' => true]), 'orderid→clientid');
+
+        // lookup devolve registro de OUTRO id (filtro ignorado) — mesmo que o dono seja permitido
+        $wrongId = fn(string $cmd) => $cmd === 'GetQuotes'
+            ? ['result' => 'success', 'quotes' => ['quote' => [['id' => 999, 'userid' => 5]]]]
+            : ['result' => 'success'];
+        $c = $this->targetClient(['allowlist_clientids' => [5]], $wrongId);
+        $this->assertTargetDenied(fn() => $c->call('DeleteQuote', ['quoteid' => 1]), 'quoteid→clientid');
+
+        // lookup lança exceção
+        $throws = function (string $cmd) { if ($cmd === 'GetOrders') throw new \RuntimeException('boom'); return ['result' => 'success']; };
+        $c = $this->targetClient(['allowlist_clientids' => [5]], $throws);
+        $this->assertTargetDenied(fn() => $c->call('CancelOrder', ['orderid' => 1, 'noemail' => true]), 'orderid→clientid');
+    }
+
+    public function test_explicit_userid_on_quote_wins_over_lookup(): void
+    {
+        $cmds = [];
+        $c = $this->targetClient(['allowlist_clientids' => [5]], self::ownerLookupFixture(), $cmds);
+        $this->assertTargetDenied(fn() => $c->call('UpdateQuote', ['quoteid' => 20, 'userid' => 9]), 'clientid');
+        $this->assertSame([], $cmds, 'sem lookup quando userid já veio');
+    }
+
+    public function test_order_quote_lookup_not_performed_without_client_allowlist(): void
+    {
+        $cmds = [];
+        $c = $this->targetClient(['allowlist_ticketids' => [1]], self::ownerLookupFixture(), $cmds);
+        $this->assertSame('success', $c->call('CancelOrder', ['orderid' => 11, 'noemail' => true])['result']);
+        $this->assertSame(['CancelOrder'], $cmds);
+    }
+
+    public function test_class_gate_still_applies_before_target_resolution(): void
+    {
+        $cmds = [];
+        $c = new LocalApiClient('testadmin');
+        $c->setGates(['write' => true, 'destructive' => false, 'allowlist_clientids' => [5]]);
+        $c->setCallable(function (string $cmd) use (&$cmds) { $cmds[] = $cmd; return ['result' => 'success']; });
+        try {
+            $c->call('CancelOrder', ['orderid' => 10, 'noemail' => true]);
+            $this->fail('DESTRUCTIVE desligado deve negar');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('class DESTRUCTIVE disabled', $e->getMessage());
+        }
+        $this->assertSame([], $cmds, 'nenhum lookup quando a classe já nega');
+    }
 }

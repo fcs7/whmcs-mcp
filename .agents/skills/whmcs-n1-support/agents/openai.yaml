@@ -1,0 +1,3 @@
+interface:
+  display_name: "WHMCS N1 Support"
+  short_description: "Triagem e resposta de tickets via conector WHMCS MCP (desenv)"

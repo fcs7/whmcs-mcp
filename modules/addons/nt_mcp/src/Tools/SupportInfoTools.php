@@ -26,11 +26,20 @@ class SupportInfoTools
         return ToolJson::encode($this->api->call('GetSupportStatuses', $params));
     }
 
-    #[McpTool(name: 'whmcs_get_ticket_counts', description: 'Obtém contagem de tickets por status')]
+    #[McpTool(name: 'whmcs_get_ticket_counts', description: 'Obtém contagem de tickets por status. filteredDepartments/department_scope_limited indicam que o admin do token só vê parte dos departamentos.')]
     public function getTicketCounts(bool $includeCountsByStatus = true): string
     {
         $params = [];
         if ($includeCountsByStatus) $params['includeCountsByStatus'] = true;
-        return ToolJson::encode($this->api->call('GetTicketCounts', $params));
+        $result = $this->api->call('GetTicketCounts', $params);
+
+        // Adicionar department_scope_limited quando há filtro
+        if (!empty($result['filteredDepartments'])) {
+            $result['department_scope_limited'] = true;
+        } else {
+            $result['department_scope_limited'] = false;
+        }
+
+        return ToolJson::encode($result);
     }
 }

@@ -6,16 +6,20 @@ use NtMcp\Whmcs\DateNormalizer;
 use NtMcp\Whmcs\LocalApiClient;
 use NtMcp\Whmcs\LocalizedDate;
 use NtMcp\Whmcs\ResponseRedactor;
+use NtMcp\Whmcs\SystemUrl;
 use NtMcp\Whmcs\ToolJson;
 use Mcp\Capability\Attribute\McpTool;
 
 class SystemTools
 {
     private ?LocalizedDate $localizedDate;
+    /** @var callable|null */
+    private $crmProbe;
 
-    public function __construct(private readonly LocalApiClient $api, ?LocalizedDate $localizedDate = null)
+    public function __construct(private readonly LocalApiClient $api, ?LocalizedDate $localizedDate = null, $crmProbe = null)
     {
         $this->localizedDate = $localizedDate;
+        $this->crmProbe = $crmProbe;
     }
 
     private function localizedDate(): LocalizedDate
@@ -23,10 +27,12 @@ class SystemTools
         return $this->localizedDate ??= new LocalizedDate();
     }
 
-    #[McpTool(name: 'whmcs_get_stats', description: 'Retorna estatísticas gerais do WHMCS (receita, clientes, tickets)')]
+    #[McpTool(name: 'whmcs_get_stats', description: 'Snapshot do momento: contagens de tickets por status atual e agregados de receita do WHMCS — NÃO é série histórica; não usar como KPI de período.')]
     public function getStats(): string
     {
-        return ToolJson::encode($this->api->call('GetStats', []));
+        $result = $this->api->call('GetStats', []);
+        $result['note'] = 'snapshot; não é histórico';
+        return ToolJson::encode($result);
     }
 
     /**
@@ -47,8 +53,9 @@ class SystemTools
      * WHMCS (inclui o ruído).
      *
      * @param string $date Filtro de data. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY não são aceitos por serem ambíguos.
+     * @param int $limitnum Linhas ÚTEIS desejadas (a paginação do WHMCS é anterior ao filtro; pages_scanned/scan_capped mostram o custo real da varredura).
      */
-    #[McpTool(name: 'whmcs_get_activity_log', description: 'Obtém log de atividades do sistema. Por padrão descarta as linhas de "Hooks Debug" (ruído de depuração), avançando páginas automaticamente até reunir limitnum linhas reais; filtered_out soma o ruído de todas as páginas varridas; scan_capped:true avisa quando o teto de chamadas bateu antes de encontrar linhas suficientes.')]
+    #[McpTool(name: 'whmcs_get_activity_log', description: 'Obtém log de atividades do sistema. Por padrão descarta as linhas de "Hooks Debug" (ruído de depuração), avançando páginas automaticamente até reunir limitnum linhas reais; filtered_out soma o ruído de todas as páginas varridas; scan_capped:true avisa quando o teto de chamadas bateu antes de encontrar linhas suficientes. Leituras deste log não são auditadas no próprio log.')]
     public function getActivityLog(int $limitnum = 25, int $limitstart = 0, string $user = '', string $description = '', string $date = '', bool $hide_hook_debug = true): string
     {
         $params = compact('limitnum', 'limitstart');
@@ -108,10 +115,39 @@ class SystemTools
         return ToolJson::encode($result);
     }
 
-    #[McpTool(name: 'whmcs_get_admin_details', description: 'Obtém detalhes do administrador autenticado')]
+    #[McpTool(name: 'whmcs_get_admin_details', description: 'Obtém detalhes do administrador autenticado. Inclui system_host para validar o ambiente e capabilities.crm (available|unavailable|unknown), que indica disponibilidade das leituras CRM.')]
     public function getAdminDetails(): string
     {
-        return ToolJson::encode($this->api->call('GetAdminDetails', []));
+        $result = $this->api->call('GetAdminDetails', []);
+
+        // Enriquece com hostname do WHMCS para validação de ambiente cliente-side.
+        try {
+            $result['system_host'] = SystemUrl::host();
+        } catch (\Throwable $_ex) {
+            // Falha na resolução do hostname não pode derrubar a tool
+            $result['system_host'] = null;
+        }
+
+        // Adiciona capabilidades disponíveis
+        $result['capabilities'] = [
+            'crm' => $this->getCrmCapability(),
+        ];
+
+        return ToolJson::encode($result);
+    }
+
+    private function getCrmCapability(): string
+    {
+        if ($this->crmProbe === null) {
+            return 'unknown';
+        }
+
+        try {
+            $available = ($this->crmProbe)();
+            return $available ? 'available' : 'unavailable';
+        } catch (\Throwable) {
+            return 'unavailable';
+        }
     }
 
     #[McpTool(name: 'whmcs_get_todo_items', description: 'Lista itens de tarefas administrativas (To-Do)')]
@@ -123,31 +159,18 @@ class SystemTools
     }
 
     /**
-     * `duedate` foi REMOVIDO temporariamente desta assinatura.
-     *
-     * Motivo: o contrato de entrada não pôde ser provado. A documentação oficial
-     * tipa `UpdateToDoItem.duedate` como `int` sem formato; a introspecção do
-     * WHMCS 8.11.2 de desenvolvimento mostrou que `tbltodolist.duedate` é uma
-     * coluna `date NOT NULL` — logo o `int` da doc está errado —, mas o parser
-     * que decide o formato ACEITO está em `includes/api/updatetodoitem.php`,
-     * ionCube-encoded. E o tipo da coluna não desambigua: nesta mesma instalação
-     * `tblquotes.validuntil` também é `date` e a API pede formato LOCALIZADO,
-     * enquanto o `duedate` de projeto/tarefa também é `date` e a API pede
-     * `Y-m-d`. Sem prova, enviar qualquer um dos dois é chute com efeito de
-     * escrita.
-     *
-     * A tool e o comando `UpdateToDoItem` continuam disponíveis para
-     * `status`/`title`/`description`. Reintroduzir `duedate` depende de provar o
-     * formato aceito (chamada real controlada em dev ou confirmação da WHMCS).
+     * `duedate` aceita `Y-m-d` ou ISO-8601 — ver `DateNormalizer`. Formato
+     * localizado é rejeitado (mesma regra de ProjectManagerTools).
      */
-    #[McpTool(name: 'whmcs_update_todo_item', description: 'Atualiza um item To-Do existente (status, título e descrição). O campo duedate está temporariamente indisponível: o formato aceito pela API do WHMCS não pôde ser comprovado.')]
-    public function updateToDoItem(int $itemid, string $status = '', string $title = '', string $description = '', int $adminid = 0): string
+    #[McpTool(name: 'whmcs_update_todo_item', description: 'Atualiza um item To-Do existente (status, título, descrição e duedate). `duedate` aceita YYYY-MM-DD ou ISO-8601 date-time; formato localizado é rejeitado.')]
+    public function updateToDoItem(int $itemid, string $status = '', string $title = '', string $description = '', int $adminid = 0, string $duedate = ''): string
     {
         $params = ['itemid' => $itemid];
         if ($status !== '') $params['status'] = $status;
         if ($title !== '') $params['title'] = $title;
         if ($description !== '') $params['description'] = $description;
         if ($adminid > 0) $params['adminid'] = $adminid;
+        if ($duedate !== '') $params['duedate'] = DateNormalizer::toWhmcsDate($duedate, 'duedate');
         return ToolJson::encode($this->api->call('UpdateToDoItem', $params));
     }
 

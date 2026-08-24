@@ -31,7 +31,7 @@ class ClientToolsTest extends TestCase
             ];
         });
 
-        $json = $tools->getClient(1);
+        $json = $tools->getClient(1, 'full');
         $data = json_decode($json, true);
 
         $this->assertArrayNotHasKey('password', $data);
@@ -45,7 +45,7 @@ class ClientToolsTest extends TestCase
             return ['result' => 'success', 'clientid' => 1, 'firstname' => 'Jane'];
         });
 
-        $json = $tools->getClient(1);
+        $json = $tools->getClient(1, 'full');
         $data = json_decode($json, true);
 
         $this->assertSame('Jane', $data['firstname']);
@@ -131,6 +131,161 @@ class ClientToolsTest extends TestCase
         $data = json_decode($tools->getContacts(clientid: 31), true);
 
         $this->assertSame([], $data['contacts']);
+    }
+
+    public function test_get_client_defaults_to_lite_view(): void
+    {
+        $tools = $this->makeTools(function () {
+            return [
+                'result' => 'success',
+                'clientid' => 1,
+                'firstname' => 'John',
+                'lastname' => 'Doe',
+                'email' => 'john@example.com',
+                'status' => 'active',
+                'groupid' => 4,
+                'currency' => 1,
+                'currency_code' => 'BRL',
+                'datecreated' => '2026-01-02',
+                'stats' => ['numproducts' => 2],
+                'address1' => '123 Main St',
+                'phonenumber' => '555-1234',
+                'customfields' => [['id' => 5, 'value' => 'test']],
+                'lastlogin' => 'Date: 17/08/2026 10:19<br>IP Address: 1.2.3.4<br>Host: x',
+            ];
+        });
+
+        $data = json_decode($tools->getClient(1), true);
+
+        $this->assertSame([
+            'result' => 'success',
+            'clientid' => 1,
+            'status' => 'active',
+            'groupid' => 4,
+            'currency' => 1,
+            'currency_code' => 'BRL',
+            'datecreated' => '2026-01-02',
+            'stats' => ['numproducts' => 2],
+        ], $data);
+    }
+
+    public function test_get_client_full_view_keeps_address_and_customfields(): void
+    {
+        $tools = $this->makeTools(function () {
+            return [
+                'result' => 'success',
+                'clientid' => 1,
+                'firstname' => 'John',
+                'address1' => '123 Main St',
+                'phonenumber' => '555-1234',
+                'customfields' => [['id' => 5, 'value' => 'test']],
+                'cclastfour' => '4242',
+                'cardlastfour' => '1111',
+            ];
+        });
+
+        $data = json_decode($tools->getClient(1, 'full'), true);
+
+        // Full view keeps address and phone
+        $this->assertSame('123 Main St', $data['address1']);
+        $this->assertSame('555-1234', $data['phonenumber']);
+        // But strips cclastfour and cardlastfour
+        $this->assertArrayNotHasKey('cclastfour', $data);
+        $this->assertArrayNotHasKey('cardlastfour', $data);
+        // Customfields kept (as empty or filtered list based on config)
+        $this->assertArrayHasKey('customfields', $data);
+    }
+
+    public function test_get_client_rejects_invalid_fields_parameter(): void
+    {
+        $tools = $this->makeTools();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage("fields deve ser 'lite' ou 'full'");
+        $tools->getClient(1, 'invalid');
+    }
+
+    public function test_get_client_lite_preserves_structured_error_details(): void
+    {
+        $tools = $this->makeTools(fn() => [
+            'result' => 'error',
+            'message' => 'Client Not Found',
+            'error_code' => 'client_not_found',
+        ]);
+
+        $data = json_decode($tools->getClient(999), true);
+
+        $this->assertSame('error', $data['result']);
+        $this->assertStringStartsWith('No client exists with the given id in WHMCS.', $data['message']);
+        $this->assertSame('client_not_found', $data['error_code']);
+    }
+
+    public function test_list_clients_defaults_to_lite_and_full_is_explicit(): void
+    {
+        $tools = $this->makeTools(fn() => [
+            'result' => 'success',
+            'totalresults' => 1,
+            'clients' => ['client' => [[
+                'id' => 41,
+                'firstname' => 'Ana',
+                'lastname' => 'Silva',
+                'companyname' => 'Empresa',
+                'email' => 'ana@example.test',
+                'datecreated' => '2026-01-02',
+                'groupid' => 3,
+                'status' => 'Active',
+            ]]],
+        ]);
+
+        $lite = json_decode($tools->listClients(), true);
+        $full = json_decode($tools->listClients(fields: 'full'), true);
+
+        $this->assertSame([
+            'id' => 41,
+            'datecreated' => '2026-01-02',
+            'groupid' => 3,
+            'status' => 'Active',
+        ], $lite['clients']['client'][0]);
+        $this->assertSame('Ana', $full['clients']['client'][0]['firstname']);
+        $this->assertSame('ana@example.test', $full['clients']['client'][0]['email']);
+    }
+
+    public function test_get_client_invoices_defaults_to_lite_and_full_is_explicit(): void
+    {
+        $tools = $this->makeTools(fn() => [
+            'result' => 'success',
+            'invoices' => ['invoice' => [[
+                'id' => 7,
+                'userid' => 41,
+                'firstname' => 'Ana',
+                'lastname' => 'Silva',
+                'email' => 'ana@example.test',
+                'notes' => 'texto livre',
+                'total' => '99.90',
+                'status' => 'Paid',
+            ]]],
+        ]);
+
+        $lite = json_decode($tools->getClientInvoices(41), true);
+        $full = json_decode($tools->getClientInvoices(41, fields: 'full'), true);
+
+        $this->assertSame([
+            'id' => 7,
+            'userid' => 41,
+            'total' => '99.90',
+            'status' => 'Paid',
+        ], $lite['invoices']['invoice'][0]);
+        $this->assertSame('Ana', $full['invoices']['invoice'][0]['firstname']);
+        $this->assertSame('texto livre', $full['invoices']['invoice'][0]['notes']);
+    }
+
+    public function test_client_list_reads_reject_invalid_fields(): void
+    {
+        $tools = $this->makeTools();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage("fields deve ser 'lite' ou 'full'");
+        $tools->listClients(fields: 'pii');
     }
 
 }

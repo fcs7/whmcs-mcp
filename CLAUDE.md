@@ -1,6 +1,6 @@
 # NT MCP — WHMCS MCP Server Addon
 
-Addon PHP para WHMCS que expõe 68 tools via Model Context Protocol.
+Addon PHP para WHMCS que expõe 64 tools via Model Context Protocol.
 Repo: `git@github.com:fcs7/whmcs-mcp.git`
 
 ## Commands
@@ -10,15 +10,22 @@ cd modules/addons/nt_mcp
 composer install --ignore-platform-req=ext-iconv
 ./vendor/bin/phpunit --testdox                    # tests
 composer audit                                    # check dependency CVEs
-rg -o "name: '[a-z_0-9]+'" src/Tools/*.php | wc -l  # 68 tools total (rg -o '#\[McpTool' conta um comentário em QuoteTools.php também)
-# Deploy manual via FTP (senha interativa — from modules/addons/nt_mcp/)
-lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror -R --only-newer --exclude .git/ --exclude vendor/ --exclude tests/ --exclude data/ --exclude .phpunit.cache/ --exclude .omc/ --exclude .full-review/ --exclude .security-hardening/ --exclude .security-hardening-archive-20260329/ . /httpdocs/modules/addons/nt_mcp/; bye" desenv.ntweb.com.br
+rg -o "name: '[a-z_0-9]+'" src/Tools/*.php | wc -l  # 64 tools total (rg -o '#\[McpTool' conta um comentário em QuoteTools.php também)
+# Deploy manual via FTP (from modules/addons/nt_mcp/). A credencial DEV compartilhada
+# fica fora do git no repo do tema 2026; nunca pedir a senha novamente nem copiá-la
+# para este repositório.
+source /home/fcs/Documents/ntweb/whmcs-tema-2026/whmcs-theme/.env.deploy
+lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY_CERTIFICATE:-yes}; set ftp:ssl-force ${FTP_SSL_FORCE:-yes}; set ftp:ssl-protect-data ${FTP_SSL_FORCE:-yes}; mirror -R --only-newer --exclude .git/ --exclude vendor/ --exclude tests/ --exclude data/ --exclude .phpunit.cache/ --exclude .omc/ --exclude .full-review/ --exclude .security-hardening/ --exclude .security-hardening-archive-20260329/ . /httpdocs/modules/addons/nt_mcp/; bye" 191.7.26.232
 # Deploy com vendor/ (troca de lib SDK — sem --exclude vendor/)
-lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror -R --only-newer --exclude .git/ --exclude tests/ --exclude data/ --exclude vendor/bin/ --exclude .phpunit.cache/ --exclude .omc/ --exclude .full-review/ --exclude .security-hardening/ --exclude .security-hardening-archive-20260329/ . /httpdocs/modules/addons/nt_mcp/; bye" desenv.ntweb.com.br
+lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY_CERTIFICATE:-yes}; set ftp:ssl-force ${FTP_SSL_FORCE:-yes}; set ftp:ssl-protect-data ${FTP_SSL_FORCE:-yes}; mirror -R --only-newer --exclude .git/ --exclude tests/ --exclude data/ --exclude vendor/bin/ --exclude .phpunit.cache/ --exclude .omc/ --exclude .full-review/ --exclude .security-hardening/ --exclude .security-hardening-archive-20260329/ . /httpdocs/modules/addons/nt_mcp/; bye" 191.7.26.232
 # Testes de subprocesso (McpEndpointHttpTest, DiagnosticBoundaryTest) falham no PHP 8.5 local — rodar em container:
-docker run --rm -v "$PWD:/app" -w /app php:8.3-cli-bookworm php vendor/bin/phpunit
-# Verify desenv: download deployed tools and count MCP attributes
-lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror /httpdocs/modules/addons/nt_mcp/src/Tools/ /tmp/nt_mcp_desenv_check/src/Tools/; bye" desenv.ntweb.com.br && test -f /tmp/nt_mcp_desenv_check/src/Tools/CrmTools.php && rg -o '#\[McpTool' /tmp/nt_mcp_desenv_check/src/Tools/*.php | wc -l
+# `-u 1000:1000` e `zend.exception_ignore_args=1` são OBRIGATÓRIOS: como root o chmod 0000 do
+# SecureFileSessionStoreTest não bloqueia a escrita, e sem php.ini os args entram no stack trace,
+# fazendo o CrmExceptionTest ver "PDOException" no (string) da exceção. Duas falhas ambientais.
+docker run --rm -v "$PWD:/app" -w /app -u 1000:1000 php:8.3-cli-bookworm php -d zend.exception_ignore_args=1 vendor/bin/phpunit
+# Verify desenv: download deployed tools and count MCP attributes (usa o mesmo
+# $FTP_PASS carregado acima)
+lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY_CERTIFICATE:-yes}; set ftp:ssl-force ${FTP_SSL_FORCE:-yes}; set ftp:ssl-protect-data ${FTP_SSL_FORCE:-yes}; mirror /httpdocs/modules/addons/nt_mcp/src/Tools/ /tmp/nt_mcp_desenv_check/src/Tools/; bye" 191.7.26.232 && test -f /tmp/nt_mcp_desenv_check/src/Tools/CrmTools.php && rg -o '#\[McpTool' /tmp/nt_mcp_desenv_check/src/Tools/*.php | wc -l
 ```
 
 ## Architecture
@@ -34,8 +41,8 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror /httpdocs/modules
 - `src/Http/` — IpResolver, IpAllowlist, TlsEnforcer, SecurityHeaders, CorsHandler
 - `src/OAuth/` — OAuthRouter, OAuthMigration, OAuthHelper, Handlers/{Token,Authorization,Registration,Metadata}Handler
 - `src/Admin/` — AdminController (auth dashboard), OAuthApprovalController (5-layer approval)
-- `src/Whmcs/` — LocalApiClient (73 cmd allowlist + gates READ/WRITE/DESTRUCTIVE/FINANCIAL/COST/COMMS), CapsuleClient (3 table allowlist), CompatContainer, SystemUrl, AdminSession
-- `src/Tools/*.php` — 11 tool classes, 68 tools: Client(12), ProjectManager(9), CRM(8), Order(7), Quote(7), System(6), Ticket(5), Domain(5), Billing(5), SupportInfo(3), Service(1)
+- `src/Whmcs/` — LocalApiClient (73 cmd allowlist + gates READ/WRITE/DESTRUCTIVE/FINANCIAL/COST/COMMS), ResponseRedactor, CompatContainer, SystemUrl, AdminSession
+- `src/Tools/*.php` — 11 tool classes, 64 tools: Client(12), ProjectManager(9), CRM(4), Order(7), Quote(7), System(6), Ticket(5), Domain(5), Billing(5), SupportInfo(3), Service(1)
 - `templates/admin/` — dashboard.php, oauth-approve.php (output escapado via htmlspecialchars)
 
 ### Admin Binding Flow
@@ -62,15 +69,15 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror /httpdocs/modules
 
 - Tools: `#[McpTool]` (from `Mcp\Capability\Attribute\McpTool`) — retornam `json_encode(..., JSON_PRETTY_PRINT)`
 - CRM READ tools usam `#[Schema(additionalProperties:false)]` + `#[Schema(minimum:…)]` e retornam `CallToolResult::error()` para envelopes de erro
-- LocalAPI tools injetam `LocalApiClient`; CRM tools injetam `CapsuleClient`
+- LocalAPI tools injetam `LocalApiClient`; CRM tools injetam `MgCrmRepository`
 - Não usar try/catch nos tools — o framework captura exceções automaticamente
 - PHP 8.1+ (composer `platform.php=8.1.34` — desenv/prod rodam 8.1; sem `readonly class`, sem tipo `true`, sem enum em const de array); PHPUnit ^10.5
 
 ## Current Tool Policy
 
-- Expor CRM do ModulesGarden via `CapsuleClient`, respeitando allowlist de tabelas/colunas e readonly gate.
+- Expor somente as quatro leituras reais do ModulesGarden CRM via `MgCrmRepository`; writes CRM legados não são descobertos.
 - Tools LocalAPI passam por `LocalApiClient::ALLOWED_COMMANDS` e gates de classe de efeito colateral.
-- WRITE fica habilitado por padrão; DESTRUCTIVE/FINANCIAL/COST/COMMS ficam bloqueados por padrão e exigem opt-in.
+- TODAS as classes de efeito colateral ficam bloqueadas por padrão — WRITE inclusive (`gateEnabled()` passa `default: false` para todas). Cada uma exige opt-in próprio (`nt_mcp_enable_write`, `nt_mcp_enable_destructive`, …), com valor canônico `'1'` (`'on'`/`'true'`/`'yes'` NÃO são aceitos por `ConfigFlag`).
 - Cotações cobrem listar, obter, criar, atualizar, duplicar, converter em fatura e excluir. `whmcs_convert_quote_to_invoice` passa pelo gate FINANCIAL (AcceptQuote + UpdateInvoice) e `whmcs_delete_quote` pelo DESTRUCTIVE. Não existe `whmcs_send_quote`: `SendQuote` está fora do allowlist (classe COMMS).
 - Saída de TODA tool passa por `ToolJson::encode()` e a resposta da LocalAPI por `ResponseRedactor::normalizeResponse()` — não usar `json_encode()` direto numa tool nova.
 
@@ -83,7 +90,7 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror /httpdocs/modules
 - OAuth codes: SHA-256 hash no DB, consumo atômico (`$affected === 0`)
 - CSRF: HMAC-SHA256 nonce em todos os forms admin
 - Command allowlist: 55 comandos em `LocalApiClient::ALLOWED_COMMANDS`
-- Table/column allowlist: 3 tabelas CRM em `CapsuleClient::ALLOWED_TABLES/COLUMNS`
+- CRM read-only: `CrmSchema` e os objetos `CrmSelect`/`CrmCount` fecham tabelas, projeções, filtros e limites
 - Trusted proxy IP: `IpResolver::resolve()` — usa `\App::getClientIp()` do WHMCS quando disponível (coherence guard contra spoof em conexão direta); `isTrustedProxy()` mescla Trusted Proxies nativo (aba Security, chave `TrustedProxyIps`) ∪ `nt_mcp_trusted_proxies` (aditivo/opcional); fallback rightmost-untrusted XFF
 - Content-Length guard: Server.php rejeita >1MB; transport maxBodyBytes = 1 MiB (hard limit)
 - Batch JSON-RPC rejeitado antes do SDK (rate limit por request): invalid requests → 400 -32600
@@ -93,11 +100,14 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror /httpdocs/modules
 - Admin action audit: logActivity() em regenerate_token, revoke_token, remove_client (ações destrutivas UI)
 - Per-token admin binding: cada token registra qual admin o criou/aprovou
 - File access: 5 .htaccess (root, data/, src/, vendor/, tests/) — whitelist apenas mcp.php, oauth.php, nt_mcp.php
-- CapsuleClient query limit: MAX 500 rows por SELECT (hard-clamped)
-- Write-class gate (WO-2): `LocalApiClient` classifica cada comando (READ/WRITE/DESTRUCTIVE/FINANCIAL/COST/COMMS). WRITE on por padrão; DESTRUCTIVE/FINANCIAL/COST/COMMS bloqueados por padrão (opt-in `nt_mcp_enable_*`); master switch `nt_mcp_readonly` (fail-closed). Espelhado em `CapsuleClient::assertWritable()`. `AcceptQuote`=FINANCIAL (gera fatura). Impersonação clampada: `adminid`/`adminusername` forçados ao admin do token
+- CRM query limits são fechados em `MgCrmRepository`/`CrmSchema`; não há executor CRM de escrita publicado
+- Write-class gate (WO-2): `LocalApiClient` classifica cada comando (READ/WRITE/DESTRUCTIVE/FINANCIAL/COST/COMMS). TODAS bloqueadas por padrão, WRITE inclusive (opt-in `nt_mcp_enable_*` = `'1'`); master switch `nt_mcp_readonly` (fail-closed). Sem opt-in, `AddTicketReply` e afins morrem no gate de CLASSE — antes da allowlist por alvo (#14), que só é consultada depois; por isso o Activity Log mostra `MCP API BLOCKED BY GATE` e nunca `BLOCKED BY TARGET ALLOWLIST` enquanto a classe estiver off. `AcceptQuote`=FINANCIAL (gera fatura). Impersonação clampada: `adminid`/`adminusername` forçados ao admin do token
+- Gate por alvo (#14): `nt_mcp_write_allowlist_clientids` / `nt_mcp_write_allowlist_ticketids` (CSV, opcionais, vazias = sem restrição). Comando não-READ com `clientid`/`userid`/`ticketid` fora da lista → `write_target_not_allowed` (Activity Log `MCP API BLOCKED BY TARGET ALLOWLIST`). Sem `clientid`, o dono é resolvido ANTES do gate via `GetTicket` (`ticketid`), `GetOrders id=` (`orderid`) ou `GetQuotes quoteid=` (`quoteid`) — registro deve ter `id` igual ao pedido, senão nega; guest/órfão (userid 0) não é checado pela lista de clientes. Config inválida/ilegível = nega tudo. Não cobre comandos sem id de alvo (`AddClient`, projetos/To-Do). Tool-level: `open_ticket` sem `clientid` exige `allow_guest=true`; `reply_ticket` só aceita `name/email/clientid` em ticket guest
 - Admin fail-closed (WO-7): sem `nt_mcp_admin_user` resolvível, `BearerAuth` e `Server::run()` negam (401) — nunca vinculam ao superadmin `admin`
+- Recusa de autorização visível ao cliente (#29): `AuthorizationAwareReferenceHandler` envolve o `ReferenceHandler` do SDK (`Builder::setReferenceHandler()`) e converte `AuthorizationException` em `ToolCallException`. Motivo: o `CallToolHandler` do SDK só preserva a mensagem de `ToolCallException` (→ `CallToolResult::error()`); qualquer outro `\Throwable` vira `-32603 "Error while executing tool"` com a mensagem DESCARTADA. `ToolCallException` é `final`, daí composição e não herança. Ponto ÚNICO de tradução — tool nova não precisa (e não deve) de try/catch. Exceção de outro tipo continua subindo intacta: falha real tem que seguir sendo `-32603`, nunca ganhar cara de recusa tratada.
 - Middleware do SDK: só `ProtocolVersionMiddleware` ligado (spec: `MCP-Protocol-Version` inválido → 400; ausente tolerado). CorsMiddleware/DnsRebinding desligados de propósito — CORS/IP/TLS são nossos, em mcp.php. Perfil CORS do mcp.php = `POST, DELETE, OPTIONS` (DELETE encerra sessão); oauth.php continua `POST, OPTIONS`
 - Lock por sessão (`SessionLock`): o `FileSessionStore` do SDK faz read-modify-write sem lock — requests concorrentes com o mesmo `Mcp-Session-Id` perdiam resposta e cruzavam respostas entre clientes (reproduzido). Lock segurado até depois do `emit`; initialize (sem header) não trava. UM arquivo por sessão (era 64 faixas `crc32 % 64`, que serializava sessões DIFERENTES caídas na mesma faixa — com o lock segurado pelo request inteiro, um cliente parado derrubava outro com 503)
+- Isolamento de desenv/prod: `nt_mcp_expected_host` (opcional, recomendado) — verifica se hostname do request bate com a config; mismatch retorna 403 `host_mismatch`. Evita que um token reaproveitado acesse um WHMCS errado
 
 ## Gotchas
 
@@ -107,7 +117,7 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror /httpdocs/modules
 - **Objeto do WHMCS numa resposta vira `{}` no JSON** (2026-08-23) — `json_encode` de um objeto sem propriedade PÚBLICA produz `{}`. Vários campos monetários (`GetStats.income_*`, `stats.*` de `GetClientsDetails`, `amount` de line item, `grace_period.price` de `GetTLDPricing`) são formatadores com estado protegido, e as passadas de redação só desciam em `is_array` — passavam intactos. `ResponseRedactor::materialize()` achata objeto por método (`jsonSerialize` → `DateTimeInterface` → `toNumeric()` = `{amount, formatted}` → `__toString()` → `get_object_vars()` → `null`). Detecção por `method_exists`, nunca por nome de classe: o core é ionCube e a classe pode mudar entre versões.
 - **A ORDEM do pipeline de saída é contrato de segurança** (2026-08-23) — `normalizeResponse()` faz materialize → normalizeTypes → ensureListKeys → **scrub por último**. Achatar objeto e decodificar JSON-string CRIA arrays novos; se o scrub rodar antes (como rodava), um `password` dentro de objeto ou de campo JSON-string nunca é visitado. Ao acrescentar qualquer passada que materialize dado, ela entra ANTES do scrub.
 - **Data-zero do WHMCS nem sempre é `0000-00-00`** (2026-08-23) — várias datas vêm já FORMATADAS no locale da instalação (`GetQuotes.validuntil/datecreated/datesent`), e aí a sentinela é `00/00/0000`. Foi por isso que só `datepaid` virava `null` e as outras três não. `ZERO_DATE_PATTERN` cobre `0000-00-00[ 00:00:00]`, `00/00/0000`, `00-00-0000` e `00.00.0000`.
-- **Coleção vazia SOME do payload** (2026-08-23) — `GetContacts`/`GetToDoItems`/`GetClientGroups`/`GetClientsAddons` omitem a chave inteira quando não há resultado (diferente de `domains`, que vem `""`). `ResponseRedactor::GUARANTEED_LIST_KEYS` reinsere como `[]`. Allowlist por comando e só com nome de chave CONFIRMADO no payload real — chave errada cria campo fantasma, que é pior que a ausência.
+- **Coleção vazia SOME do payload** (2026-08-23) — `GetContacts`/`GetToDoItems`/`GetClientGroups`/`GetClientsAddons` omitem a chave inteira quando não há resultado; `GetClientsProducts.products` e `domains` vêm como `""`. `ResponseRedactor::GUARANTEED_LIST_KEYS` reinsere as omitidas como `[]`, enquanto `EMPTY_STRING_MEANS_EMPTY_LIST` normaliza as presentes. Allowlist por comando/chave e só com nome CONFIRMADO no payload real — chave errada cria campo fantasma, que é pior que a ausência.
 - **`json_encode()` devolve `false`, não lança** (2026-08-23) — UTF-8 inválido (dado legado em latin1) fazia o `false` bater no `: string` da tool, virar `TypeError` e chegar ao cliente como `-32603` genérico. Toda tool serializa por `ToolJson::encode()` (`JSON_INVALID_UTF8_SUBSTITUTE` + erro estruturado se ainda assim falhar). Não usar `json_encode()` direto no retorno de tool.
 - **WHMCS LocalAPI não é uniforme na chave de outcome** (2026-08-23) — a maioria dos comandos devolve `result: success|error`, mas `GetInvoice` (confirmado; possivelmente outros) devolve `status` no lugar. `LocalApiClient` lê `$result['result'] ?? $result['status'] ?? null` — `status` só é fallback quando `result` está AUSENTE, nunca sobrepõe. Se outro comando parecer cair sempre no ramo "indeterminado"/downstream mesmo com erro classificável no `ErrorClassifier`, suspeitar desta inconsistência primeiro.
 - **Debug de fatal/hang sem SSH neste Plesk** — `logs/error_log` (raiz FTP) e `logs/php-fpm_error.log` não capturam `error_log()` explícito de forma confiável (o segundo fica permanentemente em 0 bytes; `ini_get('error_log')` retorna vazio = stderr, que não chega em nenhum log acessível via FTP). Único método que funciona: subir script PHP temporário (nome aleatório + segredo aleatório na query string, deletado logo após o uso — aprovado caso a caso pelo usuário, não é o backdoor que este arquivo proíbe) que replica o trecho suspeito com `display_errors=1` e ecoa o resultado direto na resposta HTTP. Mesma técnica serve pra `opcache_reset()` quando não há acesso ao painel Plesk pra restart do PHP-FPM.
@@ -117,19 +127,18 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror /httpdocs/modules
 - **Addon access control** — cada addon precisa permissão explícita por role group (Setup > Addon Modules > Configure > Access Control)
 - **Deploy** — via `lftp` com `set ssl:verify-certificate no` (SSH indisponível no Plesk)
 - **Não commitar debug logs** — nunca usar `@file_put_contents('/tmp/...')` em código; usar logging estruturado
-- **CRM table names são placeholders** (`mod_mgcrm_*` em CrmTools.php) — verificar no banco real se o ModulesGarden CRM mudar schema
-- **CRM dependency** — se `mod_mgcrm_contacts` não existir, apenas as tools CRM devem falhar com erro claro; o restante do conector continua operacional. No desenv isso é o ESTADO ESPERADO: a instalação usa mgCRM2 e as tools de CRM respondem `crm_unavailable` — não é bug de shape, é exatamente o comportamento exigido
+- **CRM dependency** — `capabilities.crm` mede a disponibilidade das leituras do schema real mgCRM2 (`available|unavailable|unknown`). Falha CRM não afeta o restante do conector
 - **mcp.php** requer `__DIR__ . '/../../../init.php'` (3 níveis até raiz WHMCS)
 - **ext-iconv** pode não estar habilitada — usar `--ignore-platform-req=ext-iconv` no composer
 - **Bearer Token** armazenado em tblconfiguration, gerado na ativação do addon
 - **Nunca criar debug/token files no servidor** — `debug-log.php` e `mcp-make-token.php` são backdoors; usar WHMCS Activity Log
 - **Sempre comparar git vs prod** antes e depois de deploy — servidor pode ter arquivos extras ou versões antigas
-- **lftp requer senha interativa** — sem senha, falha silenciosamente ("assume anonymous login")
+- **Credencial FTP DEV compartilhada** — fonte de verdade: `/home/fcs/Documents/ntweb/whmcs-tema-2026/whmcs-theme/.env.deploy` (arquivo local 0600, fora do git). Carregar com `source` antes do `lftp`; nunca pedir a senha ao usuário nem gravá-la neste repositório. O host operacional é `191.7.26.232` e o usuário é `desenvnt5442`
 - **`mcp/sdk` pinado em 0.7.1** (pre-1.0) — v0.6→v0.7 renomeou classes (`HttpTransportHandler` → `StreamableHttpTransport`, etc.); subir de versão só em branch dedicada
 - **`php-http/discovery` é plugin composer** — `allow-plugins` já no composer.json; sem isso, `composer install` falha
 - **Deploy com troca de lib PRECISA incluir `vendor/`** — o comando padrão exclui vendor; usar comando "deploy com vendor/" listado em Commands
 - **`data/sessions/`, `data/cache/` e `data/session-locks/` devem ser excluídos do deploy e são 0700** — sessões dinâmicas + cache de discovery + locks; excluir sempre (o comando padrão já exclui `data/`)
-- **`nt_mcp_upgrade()` apaga `mcp_elements.json`** — quando há mudança de schema (tools/prompts novos), isso força rediscovery. Também limpa legacy `mcp_state.json` e reprovisiona `data/{cache,sessions,session-locks}` 0700. Sessões NÃO são afetadas (arquivos próprios). `nt_mcp_config()['version']` = `2.1.0` = `McpSdkAdapter::SERVER_VERSION` — subir a versão aqui é o que dispara o upgrade no WHMCS. **A chave do cache NÃO é derivada do conteúdo/mtime dos arquivos de tools** — é `md5(basePath+directories+excludeDirs)`, sempre igual. Deploy que adiciona/remove tool SEM bumpar `SERVER_VERSION` continua servindo a contagem antiga até `data/cache/mcp_elements.json` ser apagado manualmente (via lftp `rm`) ou a versão subir. Desde 2.1.0, ativação e upgrade chamam `nt_mcp_warm_element_cache()` (→ `McpSdkAdapter::warmElementCache()`, builder com `setLazyLoading(false)`): o cache é regravado ali, fora do caminho de request — antes o PRIMEIRO request pagava o discovery inteiro SEGURANDO o `SessionLock`, o que aparecia no cliente como `DeadlineExceeded`.
+- **`nt_mcp_upgrade()` apaga `mcp_elements.json`** — quando há mudança de schema (tools/prompts novos), isso força rediscovery. Também limpa legacy `mcp_state.json` e reprovisiona `data/{cache,sessions,session-locks}` 0700. Sessões NÃO são afetadas (arquivos próprios). `nt_mcp_config()['version']` referencia `McpSdkAdapter::SERVER_VERSION` (atual `2.2.3`) — subir a constante é o que dispara o upgrade no WHMCS. **A chave do cache NÃO é derivada do conteúdo/mtime dos arquivos de tools** — é `md5(basePath+directories+excludeDirs)`, sempre igual. Deploy que adiciona/remove tool SEM bumpar `SERVER_VERSION` continua servindo a contagem antiga até `data/cache/mcp_elements.json` ser apagado manualmente (via lftp `rm`) ou a versão subir. Desde 2.1.0, ativação e upgrade chamam `nt_mcp_warm_element_cache()` (→ `McpSdkAdapter::warmElementCache()`, builder com `setLazyLoading(false)`): o cache é regravado ali, fora do caminho de request — antes o PRIMEIRO request pagava o discovery inteiro SEGURANDO o `SessionLock`, o que aparecia no cliente como `DeadlineExceeded`.
 - **Versão de protocolo**: SDK 0.7.1 conhece `2024-11-05`, `2025-03-26`, `2025-06-18`, `2025-11-25` (header) e responde SEMPRE `2025-11-25` no initialize, qualquer que seja a pedida — não há negociação para baixo nem modo stateless. Transporte é stateful (sessão obrigatória após initialize)
 - **Audit fix IDs** — comentários `// SECURITY FIX (Fn)`/`(M-02)` referenciam findings da auditoria de production readiness; não remover. Com a migração pro SDK, os fixes F5 (lock_open_failed) e F6 (resposta vazia → -32603) do Server.php antigo ficaram obsoletos: não há mais lock global e o SDK responde sempre. M-02 (1 MB) continua em Server.php + `maxBodyBytes`
 - **Pending audit findings** — F-05, F-10, F-12 resolvidos. Resolvidos no refactor: F-07 (RateLimiter), F-11 (TokenHandler). Mitigados: F-06 (IpAllowlist), F-14 (SystemUrl — intencional)
@@ -139,4 +148,4 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror /httpdocs/modules
 - **property_exists() guard** — colunas novas (`admin_user`, `approved_by`, `last_used_at`) podem não existir em DBs pré-migration; usar `property_exists($row, 'col')` antes de acessar
 - **`deploy/htaccess-well-known.conf`** — regras RewriteRule a inserir no `.htaccess` da raiz WHMCS (antes das regras WHMCS existentes) para que Claude.ai auto-descubra o OAuth 2.1 via RFC 8414 (`/.well-known/oauth-authorization-server`); sem esse passo, Custom Connector do Claude.ai não consegue descobrir os endpoints
 - **Trusted proxy unificado (WO-TP)** — `IpResolver` reusa o IP resolvido pelo WHMCS (`\App::getClientIp()`) e mescla a lista nativa `TrustedProxyIps` (aba Security) ∪ `nt_mcp_trusted_proxies`. Consequências: (i) proxies da lista NATIVA também autorizam `X-Forwarded-Proto` e `NT_MCP_ALLOW_HTTP` no `TlsEnforcer` — liste só proxies próprios na aba Security; (ii) o caminho nativo honra o "Proxy IP Header" (ex.: CF-Connecting-IP), mas o fallback só lê `X-Forwarded-For`; (iii) se a chave nativa não for `TrustedProxyIps` na versão instalada, a unificação vira no-op — observável pelo error_log "X-Forwarded-For present but no trusted proxies configured". `nt_mcp_trusted_proxies` é agora opcional/aditivo
-- **Config obrigatória pré-deploy** — `nt_mcp_admin_user` DEVE estar setado antes do deploy (senão 401 fail-closed, ver WO-7); operador também configura `nt_mcp_allowed_ips`, `nt_mcp_cors_origins`, e (opcional) `nt_mcp_trusted_proxies` / Trusted Proxies nativo do WHMCS
+- **Config obrigatória pré-deploy** — `nt_mcp_admin_user` DEVE estar setado antes do deploy (senão 401 fail-closed, ver WO-7); operador também configura `nt_mcp_allowed_ips`, `nt_mcp_cors_origins`, e (opcionais) `nt_mcp_expected_host` (isolamento desenv/prod), `nt_mcp_trusted_proxies` / Trusted Proxies nativo do WHMCS

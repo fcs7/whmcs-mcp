@@ -20,9 +20,7 @@ namespace NtMcp\Whmcs;
  * --------------------------------
  *  - Não existe comando de LocalAPI que liste custom fields; adicionar um ao
  *    allowlist não é opção porque não há qual adicionar.
- *  - `CapsuleClient` NÃO é usado aqui de propósito: a allowlist dele é
- *    compartilhada com as tools de CRM, e liberar uma tabela core lá daria às
- *    tools de CRM leitura fora do escopo delas. Esta classe faz uma leitura
+ *  - nenhum cliente genérico de banco é usado. Esta classe faz uma leitura
  *    estreita e projeta SOMENTE `id`, `fieldname` e `fieldtype` — nunca
  *    `fieldoptions`, `regexpr` ou `description`.
  *
