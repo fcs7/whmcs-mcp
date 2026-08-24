@@ -19,7 +19,10 @@ lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY
 # Deploy com vendor/ (troca de lib SDK — sem --exclude vendor/)
 lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY_CERTIFICATE:-yes}; set ftp:ssl-force ${FTP_SSL_FORCE:-yes}; set ftp:ssl-protect-data ${FTP_SSL_FORCE:-yes}; mirror -R --only-newer --exclude .git/ --exclude tests/ --exclude data/ --exclude vendor/bin/ --exclude .phpunit.cache/ --exclude .omc/ --exclude .full-review/ --exclude .security-hardening/ --exclude .security-hardening-archive-20260329/ . /httpdocs/modules/addons/nt_mcp/; bye" 191.7.26.232
 # Testes de subprocesso (McpEndpointHttpTest, DiagnosticBoundaryTest) falham no PHP 8.5 local — rodar em container:
-docker run --rm -v "$PWD:/app" -w /app php:8.3-cli-bookworm php vendor/bin/phpunit
+# `-u 1000:1000` e `zend.exception_ignore_args=1` são OBRIGATÓRIOS: como root o chmod 0000 do
+# SecureFileSessionStoreTest não bloqueia a escrita, e sem php.ini os args entram no stack trace,
+# fazendo o CrmExceptionTest ver "PDOException" no (string) da exceção. Duas falhas ambientais.
+docker run --rm -v "$PWD:/app" -w /app -u 1000:1000 php:8.3-cli-bookworm php -d zend.exception_ignore_args=1 vendor/bin/phpunit
 # Verify desenv: download deployed tools and count MCP attributes (usa o mesmo
 # $FTP_PASS carregado acima)
 lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY_CERTIFICATE:-yes}; set ftp:ssl-force ${FTP_SSL_FORCE:-yes}; set ftp:ssl-protect-data ${FTP_SSL_FORCE:-yes}; mirror /httpdocs/modules/addons/nt_mcp/src/Tools/ /tmp/nt_mcp_desenv_check/src/Tools/; bye" 191.7.26.232 && test -f /tmp/nt_mcp_desenv_check/src/Tools/CrmTools.php && rg -o '#\[McpTool' /tmp/nt_mcp_desenv_check/src/Tools/*.php | wc -l
