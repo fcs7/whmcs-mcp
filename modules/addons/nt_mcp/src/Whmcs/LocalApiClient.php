@@ -230,15 +230,8 @@ class LocalApiClient
     {
         if ($class === 'READ') return true;
         if ($this->isReadonly()) return false; // master switch (fail-closed)
-        $key = match ($class) {
-            'WRITE'       => 'nt_mcp_enable_write',
-            'DESTRUCTIVE' => 'nt_mcp_enable_destructive',
-            'FINANCIAL'   => 'nt_mcp_enable_financial',
-            'COST'        => 'nt_mcp_enable_cost',
-            'COMMS'       => 'nt_mcp_enable_comms',
-            // Fail-closed: uma classe nova sem entrada aqui nunca é liberada.
-            default       => null,
-        };
+        // Fail-closed: uma classe nova sem entrada no mapa nunca é liberada.
+        $key = GateSettings::keyForClass($class);
         if ($key === null) return false;
         return $this->boolSetting($key, false, strtolower($class));
     }
@@ -247,35 +240,17 @@ class LocalApiClient
      * readonly master switch — FAIL-CLOSED em três frentes: falha de leitura,
      * valor ausente segue o default decidido, e valor PRESENTE porém não
      * canônico (`'true'`, `'yes'`, `'garbage'`, `2`) bloqueia escrita e é
-     * auditado. O gate futuro do domínio CRM usa o mesmo `ConfigFlag`.
-     * O override de teste tem precedência.
+     * auditado. A leitura em si vive em `GateSettings`, compartilhada com as
+     * tools que escrevem fora da LocalAPI (nt_chips). O override de teste tem
+     * precedência.
      */
     private function isReadonly(): bool
     {
         if ($this->gatesOverride !== null) {
             return (bool) ($this->gatesOverride['readonly'] ?? false);
         }
-        // Fora de um WHMCS bootstrapado (ex.: testes) não há config a proteger —
-        // usa o default seguro. Sob WHMCS, uma falha de leitura cai no catch
-        // abaixo e falha FECHADO (bloqueia escrita).
-        if (!class_exists('\WHMCS\Config\Setting')) {
-            return false;
-        }
-        try {
-            $raw = \WHMCS\Config\Setting::getValue('nt_mcp_readonly');
-        } catch (\Throwable $e) {
-            // A mensagem NÃO é concatenada: uma PDOException aqui carrega DSN,
-            // credencial e SQL, e este ramo grava nos dois sinks.
-            self::auditConfig('LocalApiClient: readonly config read failed — failing closed', $e);
-            return true;
-        }
 
-        return ConfigFlag::parse($raw)->resolve(
-            default: false,   // ausente: rollout define read-only explicitamente
-            failClosed: true, // presente e inválido: bloqueia mutação
-            key: 'nt_mcp_readonly',
-            auditor: self::auditConfig(...),
-        );
+        return GateSettings::readonlyEnabled();
     }
 
     /**
@@ -287,30 +262,8 @@ class LocalApiClient
         if ($this->gatesOverride !== null) {
             return (bool) ($this->gatesOverride[$overrideKey] ?? $default);
         }
-        try {
-            $raw = \WHMCS\Config\Setting::getValue($key);
-        } catch (\Throwable $e) {
-            return $default;
-        }
 
-        return ConfigFlag::parse($raw)->resolve(
-            default: $default,
-            failClosed: false, // gate inválido nunca libera efeito
-            key: $key,
-            auditor: self::auditConfig(...),
-        );
-    }
-
-    /**
-     * Config corrompida é evento de segurança: vai para o Activity Log com
-     * texto ESTÁVEL nosso, e o diagnóstico estrutural (classe + fingerprint)
-     * para o error_log, correlacionados. A mensagem da exceção não é
-     * concatenada em nenhum dos dois.
-     */
-    private static function auditConfig(string $_message, ?\Throwable $e = null): void
-    {
-        $correlationId = Diagnostics::report(Diagnostics::CATEGORY_CONFIG_READ, 'nt_mcp_config', $e);
-        self::auditLog(ActivityEvent::CONFIG_INVALID, null, $correlationId);
+        return GateSettings::boolSetting($key, $default);
     }
 
     private function assertModeAllows(string $command, array $params = []): void
@@ -482,37 +435,12 @@ class LocalApiClient
         if ($this->gatesOverride !== null) {
             $raw = $this->gatesOverride[$overrideKey] ?? null;
             if ($raw === null) return null;
-            return is_array($raw) ? array_values(array_map('intval', $raw)) : self::parseIdCsv((string) $raw, $key);
+            return is_array($raw)
+                ? array_values(array_map('intval', $raw))
+                : GateSettings::parseIdCsv((string) $raw, $key);
         }
-        if (!class_exists('\WHMCS\Config\Setting')) {
-            return null;
-        }
-        try {
-            $raw = \WHMCS\Config\Setting::getValue($key);
-        } catch (\Throwable $e) {
-            self::auditConfig('LocalApiClient: target allowlist read failed — failing closed', $e);
-            return [];
-        }
-        if ($raw === null || trim((string) $raw) === '') {
-            return null;
-        }
-        return self::parseIdCsv((string) $raw, $key);
-    }
 
-    /** @return int[] */
-    private static function parseIdCsv(string $raw, string $key): array
-    {
-        $ids = [];
-        foreach (explode(',', $raw) as $tok) {
-            $tok = trim($tok);
-            if ($tok === '') continue;
-            if (!ctype_digit($tok) || (int) $tok <= 0) {
-                self::auditConfig("LocalApiClient: invalid id in {$key} — failing closed");
-                return [];
-            }
-            $ids[] = (int) $tok;
-        }
-        return $ids;
+        return GateSettings::idAllowlist($key);
     }
 
     /**

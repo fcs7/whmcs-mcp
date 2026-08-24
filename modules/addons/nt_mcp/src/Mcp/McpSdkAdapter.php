@@ -19,6 +19,7 @@ use NtMcp\Crm\CrmSchema;
 use NtMcp\Crm\CrmSchemaGuard;
 use NtMcp\Crm\MgCrmRepository;
 use NtMcp\Tools\BillingTools;
+use NtMcp\Tools\ChipTools;
 use NtMcp\Tools\ClientTools;
 use NtMcp\Tools\CrmTools;
 use NtMcp\Tools\DomainTools;
@@ -63,7 +64,7 @@ use Psr\Log\LoggerInterface;
 final class McpSdkAdapter implements ServerAdapterInterface
 {
     public const SERVER_NAME = 'NT Web WHMCS MCP Server';
-    public const SERVER_VERSION = '2.2.7';
+    public const SERVER_VERSION = '2.3.0';
     public const MAX_BODY_BYTES = 1048576;
     public const SESSION_TTL = 3600;
     public const ELEMENTS_CACHE_FILE = 'mcp_elements.json';
@@ -156,6 +157,9 @@ final class McpSdkAdapter implements ServerAdapterInterface
             static fn(): bool => \WHMCS\Database\Capsule::schema()->hasTable(CrmSchema::TABLE_RESOURCES)
         ));
         $container->set(CrmTools::class, new CrmTools($this->crm));
+        // Domínio nt_chips: não usa LocalAPI (não há comando WHMCS para chips),
+        // então tem ponte e guard próprios em vez do LocalApiClient.
+        $container->set(ChipTools::class, new ChipTools());
         $container->set(LoggerInterface::class, $logger);
 
         $server = McpServer::builder()
