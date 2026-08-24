@@ -40,6 +40,19 @@ final class ResponseRedactor
      */
     private const TICKET_DETAIL_LITE_DROP = ['name', 'email', 'cc'];
 
+    /**
+     * Prefixos de identidade do solicitante/dono em GetTicket (`owner_name`,
+     * `requestor_name`, `requestor_email`… — confirmados no reteste #27, que
+     * viu esses campos sobreviverem ao primeiro corte de lite).
+     *
+     * Prefixo, e não lista fechada, porque o WHMCS acrescenta campos a esse
+     * grupo entre versões (`requestor_phone` etc.) e um campo novo de PII que
+     * escapa é pior que um id a menos. Chaves terminadas em `_id` são
+     * PRESERVADAS: `owner_id`/`requestor_id` são referências, não identidade,
+     * e a triagem N1 depende delas.
+     */
+    private const TICKET_IDENTITY_PREFIXES = ['owner_', 'requestor_'];
+
     /** PII direta presente no nível do pedido, mas não nos seus line items. */
     private const ORDER_LITE_DROP = [
         'name', 'firstname', 'lastname', 'fullname', 'companyname', 'email',
@@ -540,16 +553,17 @@ final class ResponseRedactor
     /**
      * Remove PII direta de whmcs_get_ticket: nível raiz e cada reply/note em
      * replies.reply / notes.note. Mantém corpo, status, datas e histórico
-     * completo — só derruba identidade (name/email/cc).
+     * completo — só derruba identidade (name/email/cc e o grupo
+     * `owner_` / `requestor_`, exceto as chaves terminadas em `_id`).
      */
     public static function ticketDetailLiteView(array &$result): void
     {
-        self::dropKeys($result, self::TICKET_DETAIL_LITE_DROP);
+        self::dropTicketIdentity($result);
 
         if (isset($result['replies']['reply']) && is_array($result['replies']['reply'])) {
             foreach ($result['replies']['reply'] as &$reply) {
                 if (is_array($reply)) {
-                    self::dropKeys($reply, self::TICKET_DETAIL_LITE_DROP);
+                    self::dropTicketIdentity($reply);
                 }
             }
             unset($reply);
@@ -558,10 +572,31 @@ final class ResponseRedactor
         if (isset($result['notes']['note']) && is_array($result['notes']['note'])) {
             foreach ($result['notes']['note'] as &$note) {
                 if (is_array($note)) {
-                    self::dropKeys($note, self::TICKET_DETAIL_LITE_DROP);
+                    self::dropTicketIdentity($note);
                 }
             }
             unset($note);
+        }
+    }
+
+    /**
+     * Derruba a identidade de um nível de ticket: as chaves diretas e todo o
+     * grupo `owner_*` / `requestor_*` cujo nome NÃO termine em `_id`.
+     */
+    private static function dropTicketIdentity(array &$data): void
+    {
+        self::dropKeys($data, self::TICKET_DETAIL_LITE_DROP);
+
+        foreach (array_keys($data) as $key) {
+            if (!is_string($key) || substr($key, -3) === '_id') {
+                continue;
+            }
+            foreach (self::TICKET_IDENTITY_PREFIXES as $prefix) {
+                if (strpos($key, $prefix) === 0) {
+                    unset($data[$key]);
+                    break;
+                }
+            }
         }
     }
 

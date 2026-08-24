@@ -327,9 +327,14 @@ class TicketToolsTest extends TestCase
                 'name' => 'Cliente Fulano',
                 'email' => 'fulano@example.com',
                 'cc' => 'copia@example.com',
+                'owner_name' => 'Cliente Fulano',
+                'owner_id' => 12,
+                'requestor_name' => 'Cliente Fulano',
+                'requestor_email' => 'fulano@example.com',
+                'requestor_id' => 12,
                 'replies' => [
                     'reply' => [
-                        ['message' => 'Olá', 'name' => 'Cliente Fulano', 'email' => 'fulano@example.com', 'date' => '2026-08-01'],
+                        ['message' => 'Olá', 'name' => 'Cliente Fulano', 'email' => 'fulano@example.com', 'requestor_name' => 'Cliente Fulano', 'requestor_id' => 12, 'date' => '2026-08-01'],
                     ],
                 ],
                 'notes' => [
@@ -348,8 +353,15 @@ class TicketToolsTest extends TestCase
         $this->assertArrayNotHasKey('cc', $result);
         $this->assertSame(12, $result['userid']);
         $this->assertSame('Test ticket', $result['subject']);
+        $this->assertArrayNotHasKey('owner_name', $result);
+        $this->assertArrayNotHasKey('requestor_name', $result);
+        $this->assertArrayNotHasKey('requestor_email', $result);
+        $this->assertSame(12, $result['owner_id'], 'owner_id é referência, não identidade — deve sobreviver ao lite');
+        $this->assertSame(12, $result['requestor_id']);
         $this->assertArrayNotHasKey('name', $result['replies']['reply'][0]);
         $this->assertArrayNotHasKey('email', $result['replies']['reply'][0]);
+        $this->assertArrayNotHasKey('requestor_name', $result['replies']['reply'][0]);
+        $this->assertSame(12, $result['replies']['reply'][0]['requestor_id']);
         $this->assertSame('Olá', $result['replies']['reply'][0]['message']);
         $this->assertArrayNotHasKey('name', $result['notes']['note'][0]);
         $this->assertArrayNotHasKey('email', $result['notes']['note'][0]);
