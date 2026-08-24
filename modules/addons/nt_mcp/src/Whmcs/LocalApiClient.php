@@ -14,7 +14,7 @@ class LocalApiClient
     // WhoAmI, DecryptPassword, CreateSsoToken, etc.
     //
     // T1: reduzido de 73 para os comandos efetivamente requeridos pela
-    // superfície canônica (hoje 55 comandos para 68 tools — a contagem exata
+    // superfície canônica (hoje 55 comandos para 64 tools — a contagem exata
     // é travada por teste, não por este comentário). Comandos de custo/provisionamento
     // (ModuleSuspend, UpgradeProduct, DomainRegister, AcceptOrder, AddOrder...),
     // de comunicação (SendEmail, SendQuote) e lookups auxiliares saíram do
@@ -247,7 +247,7 @@ class LocalApiClient
      * readonly master switch — FAIL-CLOSED em três frentes: falha de leitura,
      * valor ausente segue o default decidido, e valor PRESENTE porém não
      * canônico (`'true'`, `'yes'`, `'garbage'`, `2`) bloqueia escrita e é
-     * auditado. Espelhado em CapsuleClient::isReadonly() pelo mesmo ConfigFlag.
+     * auditado. O gate futuro do domínio CRM usa o mesmo `ConfigFlag`.
      * O override de teste tem precedência.
      */
     private function isReadonly(): bool

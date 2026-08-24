@@ -164,6 +164,23 @@ class ResponseRedactorTest extends TestCase
         );
     }
 
+    public function test_replyid_zero_sentinel_becomes_null_recursively(): void
+    {
+        $data = [
+            'replyid' => '0',
+            'replies' => [
+                ['replyid' => 0],
+                ['replyid' => '17'],
+            ],
+        ];
+
+        ResponseRedactor::normalizeTypes($data);
+
+        $this->assertNull($data['replyid']);
+        $this->assertNull($data['replies'][0]['replyid']);
+        $this->assertSame('17', $data['replies'][1]['replyid']);
+    }
+
     /**
      * Regressão (2026-08-23, desenv): `GetOrders` embute `fraudoutput` — JSON
      * cru do MaxMind com geolocalização, 3+ KB por pedido. Cobre as duas
@@ -355,18 +372,25 @@ class ResponseRedactorTest extends TestCase
 
         ResponseRedactor::clientLiteView($result);
 
-        // Deve remover todos os campos em CLIENT_LITE_DROP
-        foreach (ResponseRedactor::CLIENT_LITE_DROP as $key) {
-            $this->assertArrayNotHasKey($key, $result, "Campo $key deve ter sido removido");
-        }
+        $this->assertSame([
+            'clientid' => 1,
+            'status' => 'active',
+            'currency' => 'USD',
+        ], $result);
+    }
 
-        // Deve manter os campos de identificação
-        $this->assertSame(1, $result['clientid']);
-        $this->assertSame('John', $result['firstname']);
-        $this->assertSame('Doe', $result['lastname']);
-        $this->assertSame('john@example.com', $result['email']);
-        $this->assertSame('active', $result['status']);
-        $this->assertSame('USD', $result['currency']);
+    public function test_client_lite_view_drops_unknown_future_fields(): void
+    {
+        $result = [
+            'result' => 'success',
+            'clientid' => 1,
+            'status' => 'Active',
+            'future_identity_field' => 'must-not-leak',
+        ];
+
+        ResponseRedactor::clientLiteView($result);
+
+        $this->assertSame(['result' => 'success', 'clientid' => 1, 'status' => 'Active'], $result);
     }
 
     // ---------------------------------------------------------------

@@ -8,6 +8,7 @@ use NtMcp\Whmcs\LocalApiClient;
 use NtMcp\Whmcs\ResponseRedactor;
 use NtMcp\Whmcs\ToolJson;
 use Mcp\Capability\Attribute\McpTool;
+use Mcp\Capability\Attribute\Schema;
 
 class OrderTools
 {
@@ -16,24 +17,39 @@ class OrderTools
 
     public function __construct(private readonly LocalApiClient $api) {}
 
-    #[McpTool(name: 'whmcs_list_orders', description: 'Lista pedidos com filtros opcionais')]
-    public function listOrders(string $status = '', int $clientid = 0, int $limitnum = 25, int $limitstart = 0): string
+    #[McpTool(name: 'whmcs_list_orders', description: 'Lista pedidos com filtros opcionais. fields=lite (default) remove PII direta do cliente; fields=full é opt-in para identidade. Segredos, IP e dump antifraude nunca são retornados.')]
+    public function listOrders(string $status = '', int $clientid = 0, int $limitnum = 25, int $limitstart = 0, #[Schema(enum: ['lite', 'full'])] string $fields = 'lite'): string
     {
+        self::assertFields($fields);
         $params = ['limitnum' => $limitnum];
         if ($limitstart > 0) $params['limitstart'] = $limitstart;
         if ($status !== '') $params['status'] = $status;
         if ($clientid > 0) $params['userid'] = $clientid;
         $result = $this->api->call('GetOrders', $params);
         ResponseRedactor::stripOrderFraudDump($result);
+        if ($fields === 'lite' && ($result['result'] ?? null) === 'success') {
+            ResponseRedactor::orderLiteView($result);
+        }
         return ToolJson::encode($result);
     }
 
-    #[McpTool(name: 'whmcs_get_order', description: 'Obtém detalhes de um pedido específico')]
-    public function getOrder(int $orderid): string
+    #[McpTool(name: 'whmcs_get_order', description: 'Obtém um pedido. fields=lite (default) remove PII direta do cliente; fields=full é opt-in para identidade. Segredos, IP e dump antifraude nunca são retornados.')]
+    public function getOrder(int $orderid, #[Schema(enum: ['lite', 'full'])] string $fields = 'lite'): string
     {
+        self::assertFields($fields);
         $result = $this->api->call('GetOrders', ['id' => $orderid]);
         ResponseRedactor::stripOrderFraudDump($result);
+        if ($fields === 'lite' && ($result['result'] ?? null) === 'success') {
+            ResponseRedactor::orderLiteView($result);
+        }
         return ToolJson::encode($result);
+    }
+
+    private static function assertFields(string $fields): void
+    {
+        if (!in_array($fields, ['lite', 'full'], true)) {
+            throw new \InvalidArgumentException("fields deve ser 'lite' ou 'full', recebido: " . var_export($fields, true));
+        }
     }
 
     /**
@@ -100,7 +116,7 @@ class OrderTools
         int $pid = 0,
         string $module = '',
         bool $full_description = false,
-        string $fields = 'lite',
+        #[Schema(enum: ['lite', 'full'])] string $fields = 'lite',
         int $limit = 20,
         int $limitstart = 0,
         bool $include_urls = false

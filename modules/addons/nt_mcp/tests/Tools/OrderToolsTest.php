@@ -76,6 +76,63 @@ class OrderToolsTest extends TestCase
         }
     }
 
+    public function test_list_orders_defaults_to_lite_without_customer_identity(): void
+    {
+        $tools = $this->makeTools(fn() => [
+            'result' => 'success',
+            'orders' => ['order' => [[
+                'id' => 70,
+                'name' => 'Ana Cliente',
+                'firstname' => 'Ana',
+                'email' => 'ana@example.test',
+                'status' => 'Pending',
+                'lineitems' => ['lineitem' => [[
+                    'id' => 9,
+                    'product' => 'Hospedagem Premium',
+                    'name' => 'dominio.example',
+                ]]],
+            ]]],
+        ], ['readonly' => true]);
+
+        $order = json_decode($tools->listOrders(), true)['orders']['order'][0];
+
+        foreach (['name', 'firstname', 'email'] as $pii) {
+            $this->assertArrayNotHasKey($pii, $order);
+        }
+        $this->assertSame('Hospedagem Premium', $order['lineitems']['lineitem'][0]['product']);
+        $this->assertSame('dominio.example', $order['lineitems']['lineitem'][0]['name']);
+    }
+
+    public function test_get_order_full_keeps_identity_but_never_secrets(): void
+    {
+        $tools = $this->makeTools(fn() => [
+            'result' => 'success',
+            'id' => 70,
+            'name' => 'Ana Cliente',
+            'email' => 'ana@example.test',
+            'transfersecret' => 'domain-secret',
+            'ipaddress' => '203.0.113.70',
+            'fraudoutput' => 'raw fraud dump',
+        ], ['readonly' => true]);
+
+        $order = json_decode($tools->getOrder(70, 'full'), true);
+
+        $this->assertSame('Ana Cliente', $order['name']);
+        $this->assertSame('ana@example.test', $order['email']);
+        foreach (['transfersecret', 'ipaddress', 'fraudoutput'] as $secret) {
+            $this->assertArrayNotHasKey($secret, $order);
+        }
+    }
+
+    public function test_order_reads_reject_invalid_fields(): void
+    {
+        $tools = $this->makeTools();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage("fields deve ser 'lite' ou 'full'");
+        $tools->getOrder(70, 'identity');
+    }
+
     // ---------------------------------------------------------------
     // whmcs_get_products
     // ---------------------------------------------------------------
@@ -136,6 +193,33 @@ class OrderToolsTest extends TestCase
         $this->assertSame('CancelOrder', $captured['cmd']);
         $this->assertSame('success', $result['result']);
         $this->assertSame(12, $result['orderid']);
+    }
+
+    public function test_cancel_order_outside_client_allowlist_never_reaches_destructive_api(): void
+    {
+        $calls = [];
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$calls) {
+            $calls[] = $cmd;
+            if ($cmd === 'GetOrders') {
+                return [
+                    'result' => 'success',
+                    'orders' => ['order' => [[
+                        'id' => (int) $params['id'],
+                        'userid' => 99,
+                    ]]],
+                ];
+            }
+            return ['result' => 'success'];
+        }, ['destructive' => true, 'allowlist_clientids' => [5]]);
+
+        try {
+            $tools->cancelOrder(orderid: 12, confirm: true);
+            $this->fail('pedido fora da allowlist deveria ser negado');
+        } catch (\RuntimeException $exception) {
+            $this->assertStringContainsString('write_target_not_allowed', $exception->getMessage());
+        }
+
+        $this->assertSame(['GetOrders'], $calls, 'CancelOrder nunca pode chegar à LocalAPI');
     }
 
     /** Decisão fechada: a tool não envia e-mail. */

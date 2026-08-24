@@ -722,6 +722,33 @@ class QuoteToolsTest extends TestCase
         $this->assertSame(7, $result['quoteid']);
     }
 
+    public function test_delete_quote_outside_client_allowlist_never_reaches_destructive_api(): void
+    {
+        $calls = [];
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$calls) {
+            $calls[] = $cmd;
+            if ($cmd === 'GetQuotes') {
+                return [
+                    'result' => 'success',
+                    'quotes' => ['quote' => [[
+                        'id' => (int) $params['quoteid'],
+                        'userid' => 99,
+                    ]]],
+                ];
+            }
+            return ['result' => 'success'];
+        }, ['destructive' => true, 'allowlist_clientids' => [5]]);
+
+        try {
+            $tools->deleteQuote(quoteid: 7, confirm: true);
+            $this->fail('cotação fora da allowlist deveria ser negada');
+        } catch (\RuntimeException $exception) {
+            $this->assertStringContainsString('write_target_not_allowed', $exception->getMessage());
+        }
+
+        $this->assertSame(['GetQuotes'], $calls, 'DeleteQuote nunca pode chegar à LocalAPI');
+    }
+
     /** confirm=true é defesa adicional — NÃO substitui o gate. */
     public function test_delete_quote_blocked_by_gate_even_with_confirm_true(): void
     {
@@ -744,7 +771,7 @@ class QuoteToolsTest extends TestCase
                 ['id' => 1, 'userid' => '0', 'datecreated' => '2026-01-01'],
                 ['id' => 2, 'userid' => '31', 'subject' => 'Proposta', 'stage' => 'Draft',
                  'datecreated' => null, 'validuntil' => null, 'datesent' => null,
-                 'client' => ['firstname' => 'A']],
+                 'client' => ['id' => 31, 'firstname' => 'A', 'email' => 'a@example.test', 'status' => 'Active']],
             ]]];
         });
         $data = json_decode($tools->listQuotes(), true);
@@ -758,7 +785,80 @@ class QuoteToolsTest extends TestCase
 
         $this->assertSame(31, $normal['userid']);
         $this->assertArrayNotHasKey('is_orphan', $normal);
-        $this->assertSame('A', $normal['client']['firstname']);
+        $this->assertSame(['id' => 31, 'status' => 'Active'], $normal['client']);
         $this->assertNull($normal['validuntil']);
+    }
+
+    public function test_get_quote_defaults_to_lite_and_normalizes_single_quote_shape(): void
+    {
+        $tools = $this->makeTools(fn() => ['result' => 'success', 'quotes' => ['quote' => [
+            'id' => 8,
+            'userid' => '31',
+            'subject' => 'Proposta',
+            'stage' => 'Draft',
+            'firstname' => 'Ana',
+            'email' => 'ana@example.test',
+            'client' => [
+                'id' => 31,
+                'datecreated' => '2020-01-01',
+                'groupid' => 2,
+                'status' => 'Active',
+                'firstname' => 'Ana',
+                'email' => 'ana@example.test',
+            ],
+        ]]]);
+
+        $quote = json_decode($tools->getQuote(8), true)['quotes']['quote'][0];
+
+        $this->assertArrayNotHasKey('firstname', $quote);
+        $this->assertArrayNotHasKey('email', $quote);
+        $this->assertSame([
+            'id' => 31,
+            'datecreated' => '2020-01-01',
+            'groupid' => 2,
+            'status' => 'Active',
+        ], $quote['client']);
+    }
+
+    public function test_get_quote_full_keeps_customer_identity(): void
+    {
+        $tools = $this->makeTools(fn() => ['result' => 'success', 'quotes' => ['quote' => [[
+            'id' => 8,
+            'userid' => 31,
+            'firstname' => 'Ana',
+            'email' => 'ana@example.test',
+            'client' => ['id' => 31, 'firstname' => 'Ana', 'email' => 'ana@example.test'],
+        ]]]]);
+
+        $quote = json_decode($tools->getQuote(8, 'full'), true)['quotes']['quote'][0];
+
+        $this->assertSame('Ana', $quote['firstname']);
+        $this->assertSame('ana@example.test', $quote['email']);
+        $this->assertSame('Ana', $quote['client']['firstname']);
+        $this->assertSame('ana@example.test', $quote['client']['email']);
+    }
+
+    public function test_get_quote_lite_preserves_orphan_marker(): void
+    {
+        $tools = $this->makeTools(fn() => ['result' => 'success', 'quotes' => ['quote' => [[
+            'id' => 9,
+            'userid' => 0,
+            'firstname' => 'Contato sem cadastro',
+        ]]]]);
+
+        $quote = json_decode($tools->getQuote(9), true)['quotes']['quote'][0];
+
+        $this->assertNull($quote['client']);
+        $this->assertTrue($quote['is_orphan']);
+        $this->assertArrayNotHasKey('firstname', $quote);
+    }
+
+    public function test_quote_reads_reject_invalid_fields(): void
+    {
+        $tools = $this->makeTools();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage("fields deve ser 'lite' ou 'full'");
+        $tools->listQuotes(fields: 'pii');
     }
 }

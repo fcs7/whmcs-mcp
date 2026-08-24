@@ -11,8 +11,10 @@ use NtMcp\Whmcs\LocalApiClient;
 use NtMcp\Whmcs\LocalizedDate;
 use NtMcp\Whmcs\PaymentGatewayDirectory;
 use NtMcp\Whmcs\Diagnostics;
+use NtMcp\Whmcs\ResponseRedactor;
 use NtMcp\Whmcs\ToolJson;
 use Mcp\Capability\Attribute\McpTool;
+use Mcp\Capability\Attribute\Schema;
 
 class QuoteTools
 {
@@ -65,7 +67,7 @@ class QuoteTools
      * @param string $datecreated  Filtro por data de criação. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY nao sao aceitos por serem ambiguos.
      * @param string $lastmodified Filtro por data da última modificação. Mesmas formas aceitas de datecreated.
      */
-    #[McpTool(name: 'whmcs_list_quotes', description: 'Lista orçamentos com filtros. Campos datecreated/validuntil/datesent/lastmodified podem ser null; client é null e is_orphan=true quando a cotação não tem cliente (userid=0).')]
+    #[McpTool(name: 'whmcs_list_quotes', description: 'Lista cotações. fields=lite (default) remove PII direta e reduz client a metadados; fields=full é opt-in para identidade. Datas podem ser null; client é null e is_orphan=true quando userid=0.')]
     public function listQuotes(
         int $clientid = 0,
         int $quoteid = 0,
@@ -74,8 +76,10 @@ class QuoteTools
         string $subject = '',
         string $stage = '',
         string $datecreated = '',
-        string $lastmodified = ''
+        string $lastmodified = '',
+        #[Schema(enum: ['lite', 'full'])] string $fields = 'lite'
     ): string {
+        self::assertFields($fields);
         $params = ['limitstart' => $limitstart, 'limitnum' => $limitnum];
         if ($clientid > 0) $params['userid'] = $clientid;
         if ($quoteid > 0) $params['quoteid'] = $quoteid;
@@ -88,13 +92,29 @@ class QuoteTools
         if ($lastmodified !== '') $params['lastmodified'] = DateNormalizer::toWhmcsDate($lastmodified, 'lastmodified');
         $result = $this->api->call('GetQuotes', $params);
         $this->normalizeQuoteShape($result);
+        if ($fields === 'lite' && ($result['result'] ?? null) === 'success') {
+            ResponseRedactor::quoteLiteView($result);
+        }
         return ToolJson::encode($result);
     }
 
-    #[McpTool(name: 'whmcs_get_quote', description: 'Obtém detalhes de um orçamento')]
-    public function getQuote(int $quoteid): string
+    #[McpTool(name: 'whmcs_get_quote', description: 'Obtém uma cotação. fields=lite (default) remove PII direta e reduz client a metadados; fields=full é opt-in para identidade.')]
+    public function getQuote(int $quoteid, #[Schema(enum: ['lite', 'full'])] string $fields = 'lite'): string
     {
-        return ToolJson::encode($this->api->call('GetQuotes', ['quoteid' => $quoteid]));
+        self::assertFields($fields);
+        $result = $this->api->call('GetQuotes', ['quoteid' => $quoteid]);
+        $this->normalizeQuoteShape($result);
+        if ($fields === 'lite' && ($result['result'] ?? null) === 'success') {
+            ResponseRedactor::quoteLiteView($result);
+        }
+        return ToolJson::encode($result);
+    }
+
+    private static function assertFields(string $fields): void
+    {
+        if (!in_array($fields, ['lite', 'full'], true)) {
+            throw new \InvalidArgumentException("fields deve ser 'lite' ou 'full', recebido: " . var_export($fields, true));
+        }
     }
 
     /**

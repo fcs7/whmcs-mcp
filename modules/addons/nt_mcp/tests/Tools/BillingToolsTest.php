@@ -73,4 +73,52 @@ class BillingToolsTest extends TestCase
 
         $this->assertSame('success', $data['result']);
     }
+
+    public function test_list_invoices_defaults_to_lite_and_full_is_explicit(): void
+    {
+        $tools = $this->makeTools(fn() => [
+            'result' => 'success',
+            'totalresults' => 114,
+            'numreturned' => 1,
+            'invoices' => ['invoice' => [[
+                'id' => 9,
+                'userid' => 41,
+                'firstname' => 'Ana',
+                'lastname' => 'Silva',
+                'companyname' => 'Empresa',
+                'email' => 'ana@example.test',
+                'notes' => 'texto livre',
+                'duedate' => '2026-09-01',
+                'total' => '149.90',
+                'status' => 'Unpaid',
+                'currencycode' => 'BRL',
+            ]]],
+        ]);
+
+        $lite = json_decode($tools->listInvoices(limitnum: 1), true);
+        $full = json_decode($tools->listInvoices(limitnum: 1, fields: 'full'), true);
+
+        $this->assertSame(114, $lite['totalresults']);
+        $this->assertSame(1, $lite['numreturned']);
+        $this->assertSame([
+            'id' => 9,
+            'userid' => 41,
+            'duedate' => '2026-09-01',
+            'total' => '149.90',
+            'status' => 'Unpaid',
+            'currencycode' => 'BRL',
+        ], $lite['invoices']['invoice'][0]);
+        $this->assertSame('Ana', $full['invoices']['invoice'][0]['firstname']);
+        $this->assertSame('ana@example.test', $full['invoices']['invoice'][0]['email']);
+        $this->assertSame('texto livre', $full['invoices']['invoice'][0]['notes']);
+    }
+
+    public function test_list_invoices_rejects_invalid_fields(): void
+    {
+        $tools = $this->makeTools();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage("fields deve ser 'lite' ou 'full'");
+        $tools->listInvoices(fields: 'identity');
+    }
 }

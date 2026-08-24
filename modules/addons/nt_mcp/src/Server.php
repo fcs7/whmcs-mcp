@@ -6,7 +6,6 @@ use Nyholm\Psr7\Factory\Psr17Factory;
 use NtMcp\Mcp\McpSdkAdapter;
 use NtMcp\Mcp\ServerAdapterInterface;
 use NtMcp\Mcp\SessionLock;
-use NtMcp\Whmcs\CapsuleClient;
 use NtMcp\Whmcs\Diagnostics;
 use NtMcp\Whmcs\LocalApiClient;
 use NtMcp\Whmcs\SystemUrl;
@@ -184,7 +183,7 @@ class Server
         try {
             $adapter = self::$adapterFactory !== null
                 ? (self::$adapterFactory)($adminUser)
-                : new McpSdkAdapter(new LocalApiClient($adminUser), new CapsuleClient(), __DIR__);
+                : new McpSdkAdapter(new LocalApiClient($adminUser), __DIR__);
 
             $response = $adapter->handle($request);
 

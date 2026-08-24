@@ -6,7 +6,6 @@ namespace NtMcp\Tests;
 
 use NtMcp\Mcp\McpSdkAdapter;
 use NtMcp\Server;
-use NtMcp\Whmcs\CapsuleClient;
 use NtMcp\Whmcs\LocalApiClient;
 use Nyholm\Psr7\Factory\Psr17Factory;
 use Psr\Http\Message\ResponseInterface;

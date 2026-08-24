@@ -28,7 +28,6 @@ use NtMcp\Tools\ServiceTools;
 use NtMcp\Tools\SupportInfoTools;
 use NtMcp\Tools\SystemTools;
 use NtMcp\Tools\TicketTools;
-use NtMcp\Whmcs\CapsuleClient;
 use NtMcp\Whmcs\CompatContainer;
 use NtMcp\Whmcs\LocalApiClient;
 use Psr\Http\Message\ResponseInterface;
@@ -63,7 +62,7 @@ use Psr\Log\LoggerInterface;
 final class McpSdkAdapter implements ServerAdapterInterface
 {
     public const SERVER_NAME = 'NT Web WHMCS MCP Server';
-    public const SERVER_VERSION = '2.2.1';
+    public const SERVER_VERSION = '2.2.3';
     public const MAX_BODY_BYTES = 1048576;
     public const SESSION_TTL = 3600;
     public const ELEMENTS_CACHE_FILE = 'mcp_elements.json';
@@ -79,7 +78,6 @@ final class McpSdkAdapter implements ServerAdapterInterface
      */
     public function __construct(
         private readonly LocalApiClient $localApi,
-        private readonly CapsuleClient $capsule,
         private readonly string $baseDir,
         ?string $dataDir = null,
         ?MgCrmRepository $crm = null,
@@ -142,7 +140,6 @@ final class McpSdkAdapter implements ServerAdapterInterface
     {
         $container = new CompatContainer();
         $container->set(LocalApiClient::class, $this->localApi);
-        $container->set(CapsuleClient::class, $this->capsule);
         foreach ([
             BillingTools::class, ClientTools::class, DomainTools::class,
             OrderTools::class, ProjectManagerTools::class, QuoteTools::class,
@@ -157,7 +154,7 @@ final class McpSdkAdapter implements ServerAdapterInterface
             null,
             static fn(): bool => \WHMCS\Database\Capsule::schema()->hasTable(CrmSchema::TABLE_RESOURCES)
         ));
-        $container->set(CrmTools::class, new CrmTools($this->capsule, $this->crm));
+        $container->set(CrmTools::class, new CrmTools($this->crm));
         $container->set(LoggerInterface::class, $logger);
 
         $server = McpServer::builder()

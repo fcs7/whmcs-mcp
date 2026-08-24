@@ -3,8 +3,10 @@
 namespace NtMcp\Tools;
 
 use NtMcp\Whmcs\LocalApiClient;
+use NtMcp\Whmcs\ResponseRedactor;
 use NtMcp\Whmcs\ToolJson;
 use Mcp\Capability\Attribute\McpTool;
+use Mcp\Capability\Attribute\Schema;
 
 class TicketTools
 {
@@ -14,9 +16,10 @@ class TicketTools
     public function __construct(private readonly LocalApiClient $api) {}
 
     /** Status: lista separada por vírgula, ex. "Open,Customer-Reply". Alias "awaiting" expande automaticamente. */
-    #[McpTool(name: 'whmcs_list_tickets', description: 'Lista tickets de suporte. Por padrão une Open+Customer-Reply. O campo userid de cada ticket é o clientid de whmcs_get_client (userid=0 = guest). Não traz corpo — use whmcs_get_ticket. flag = id do admin atribuído (0 = ninguém).')]
-    public function listTickets(int $clientid = 0, string $status = 'Open,Customer-Reply', int $limitnum = 25, int $deptid = 0, int $limitstart = 0, string $subject = '', bool $hide_sample = true): string
+    #[McpTool(name: 'whmcs_list_tickets', description: 'Lista tickets de suporte. fields=lite (default) remove identidade direta, CC e anexos; fields=full é opt-in. Por padrão une Open+Customer-Reply. O campo userid é o clientid (0 = guest). Não traz corpo — use whmcs_get_ticket. flag = id do admin atribuído (0 = ninguém).')]
+    public function listTickets(int $clientid = 0, string $status = 'Open,Customer-Reply', int $limitnum = 25, int $deptid = 0, int $limitstart = 0, string $subject = '', bool $hide_sample = true, #[Schema(enum: ['lite', 'full'])] string $fields = 'lite'): string
     {
+        self::assertFields($fields);
         // Expandir alias e split
         if (strtolower(trim($status)) === 'awaiting') {
             $status = 'Open,Customer-Reply';
@@ -111,6 +114,9 @@ class TicketTools
         }
 
         $this->addDisplayIds($result);
+        if ($fields === 'lite' && ($result['result'] ?? null) === 'success') {
+            ResponseRedactor::ticketListLiteView($result);
+        }
         return ToolJson::encode($result);
     }
 
@@ -246,6 +252,15 @@ class TicketTools
         // Resposta de getTicket: tid na raiz
         if (isset($result['tid']) && $result['tid'] !== '') {
             $result['display_id'] = $result['tid'];
+        }
+    }
+
+    private static function assertFields(string $fields): void
+    {
+        if (!in_array($fields, ['lite', 'full'], true)) {
+            throw new \InvalidArgumentException(
+                "fields deve ser 'lite' ou 'full', recebido: " . var_export($fields, true)
+            );
         }
     }
 }

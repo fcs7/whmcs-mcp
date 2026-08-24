@@ -1,6 +1,6 @@
 # NT MCP — WHMCS MCP Server Addon
 
-Addon PHP para WHMCS que expõe 68 tools via Model Context Protocol.
+Addon PHP para WHMCS que expõe 64 tools via Model Context Protocol.
 Repo: `git@github.com:fcs7/whmcs-mcp.git`
 
 ## Commands
@@ -10,7 +10,7 @@ cd modules/addons/nt_mcp
 composer install --ignore-platform-req=ext-iconv
 ./vendor/bin/phpunit --testdox                    # tests
 composer audit                                    # check dependency CVEs
-rg -o "name: '[a-z_0-9]+'" src/Tools/*.php | wc -l  # 68 tools total (rg -o '#\[McpTool' conta um comentário em QuoteTools.php também)
+rg -o "name: '[a-z_0-9]+'" src/Tools/*.php | wc -l  # 64 tools total (rg -o '#\[McpTool' conta um comentário em QuoteTools.php também)
 # Deploy manual via FTP (from modules/addons/nt_mcp/). A credencial DEV compartilhada
 # fica fora do git no repo do tema 2026; nunca pedir a senha novamente nem copiá-la
 # para este repositório.
@@ -38,8 +38,8 @@ lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY
 - `src/Http/` — IpResolver, IpAllowlist, TlsEnforcer, SecurityHeaders, CorsHandler
 - `src/OAuth/` — OAuthRouter, OAuthMigration, OAuthHelper, Handlers/{Token,Authorization,Registration,Metadata}Handler
 - `src/Admin/` — AdminController (auth dashboard), OAuthApprovalController (5-layer approval)
-- `src/Whmcs/` — LocalApiClient (73 cmd allowlist + gates READ/WRITE/DESTRUCTIVE/FINANCIAL/COST/COMMS), CapsuleClient (3 table allowlist), CompatContainer, SystemUrl, AdminSession
-- `src/Tools/*.php` — 11 tool classes, 68 tools: Client(12), ProjectManager(9), CRM(8), Order(7), Quote(7), System(6), Ticket(5), Domain(5), Billing(5), SupportInfo(3), Service(1)
+- `src/Whmcs/` — LocalApiClient (73 cmd allowlist + gates READ/WRITE/DESTRUCTIVE/FINANCIAL/COST/COMMS), ResponseRedactor, CompatContainer, SystemUrl, AdminSession
+- `src/Tools/*.php` — 11 tool classes, 64 tools: Client(12), ProjectManager(9), CRM(4), Order(7), Quote(7), System(6), Ticket(5), Domain(5), Billing(5), SupportInfo(3), Service(1)
 - `templates/admin/` — dashboard.php, oauth-approve.php (output escapado via htmlspecialchars)
 
 ### Admin Binding Flow
@@ -66,13 +66,13 @@ lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY
 
 - Tools: `#[McpTool]` (from `Mcp\Capability\Attribute\McpTool`) — retornam `json_encode(..., JSON_PRETTY_PRINT)`
 - CRM READ tools usam `#[Schema(additionalProperties:false)]` + `#[Schema(minimum:…)]` e retornam `CallToolResult::error()` para envelopes de erro
-- LocalAPI tools injetam `LocalApiClient`; CRM tools injetam `CapsuleClient`
+- LocalAPI tools injetam `LocalApiClient`; CRM tools injetam `MgCrmRepository`
 - Não usar try/catch nos tools — o framework captura exceções automaticamente
 - PHP 8.1+ (composer `platform.php=8.1.34` — desenv/prod rodam 8.1; sem `readonly class`, sem tipo `true`, sem enum em const de array); PHPUnit ^10.5
 
 ## Current Tool Policy
 
-- Expor CRM do ModulesGarden via `CapsuleClient`, respeitando allowlist de tabelas/colunas e readonly gate.
+- Expor somente as quatro leituras reais do ModulesGarden CRM via `MgCrmRepository`; writes CRM legados não são descobertos.
 - Tools LocalAPI passam por `LocalApiClient::ALLOWED_COMMANDS` e gates de classe de efeito colateral.
 - WRITE fica habilitado por padrão; DESTRUCTIVE/FINANCIAL/COST/COMMS ficam bloqueados por padrão e exigem opt-in.
 - Cotações cobrem listar, obter, criar, atualizar, duplicar, converter em fatura e excluir. `whmcs_convert_quote_to_invoice` passa pelo gate FINANCIAL (AcceptQuote + UpdateInvoice) e `whmcs_delete_quote` pelo DESTRUCTIVE. Não existe `whmcs_send_quote`: `SendQuote` está fora do allowlist (classe COMMS).
@@ -87,7 +87,7 @@ lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY
 - OAuth codes: SHA-256 hash no DB, consumo atômico (`$affected === 0`)
 - CSRF: HMAC-SHA256 nonce em todos os forms admin
 - Command allowlist: 55 comandos em `LocalApiClient::ALLOWED_COMMANDS`
-- Table/column allowlist: 3 tabelas CRM em `CapsuleClient::ALLOWED_TABLES/COLUMNS`
+- CRM read-only: `CrmSchema` e os objetos `CrmSelect`/`CrmCount` fecham tabelas, projeções, filtros e limites
 - Trusted proxy IP: `IpResolver::resolve()` — usa `\App::getClientIp()` do WHMCS quando disponível (coherence guard contra spoof em conexão direta); `isTrustedProxy()` mescla Trusted Proxies nativo (aba Security, chave `TrustedProxyIps`) ∪ `nt_mcp_trusted_proxies` (aditivo/opcional); fallback rightmost-untrusted XFF
 - Content-Length guard: Server.php rejeita >1MB; transport maxBodyBytes = 1 MiB (hard limit)
 - Batch JSON-RPC rejeitado antes do SDK (rate limit por request): invalid requests → 400 -32600
@@ -97,8 +97,8 @@ lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY
 - Admin action audit: logActivity() em regenerate_token, revoke_token, remove_client (ações destrutivas UI)
 - Per-token admin binding: cada token registra qual admin o criou/aprovou
 - File access: 5 .htaccess (root, data/, src/, vendor/, tests/) — whitelist apenas mcp.php, oauth.php, nt_mcp.php
-- CapsuleClient query limit: MAX 500 rows por SELECT (hard-clamped)
-- Write-class gate (WO-2): `LocalApiClient` classifica cada comando (READ/WRITE/DESTRUCTIVE/FINANCIAL/COST/COMMS). WRITE on por padrão; DESTRUCTIVE/FINANCIAL/COST/COMMS bloqueados por padrão (opt-in `nt_mcp_enable_*`); master switch `nt_mcp_readonly` (fail-closed). Espelhado em `CapsuleClient::assertWritable()`. `AcceptQuote`=FINANCIAL (gera fatura). Impersonação clampada: `adminid`/`adminusername` forçados ao admin do token
+- CRM query limits são fechados em `MgCrmRepository`/`CrmSchema`; não há executor CRM de escrita publicado
+- Write-class gate (WO-2): `LocalApiClient` classifica cada comando (READ/WRITE/DESTRUCTIVE/FINANCIAL/COST/COMMS). WRITE on por padrão; DESTRUCTIVE/FINANCIAL/COST/COMMS bloqueados por padrão (opt-in `nt_mcp_enable_*`); master switch `nt_mcp_readonly` (fail-closed). `AcceptQuote`=FINANCIAL (gera fatura). Impersonação clampada: `adminid`/`adminusername` forçados ao admin do token
 - Gate por alvo (#14): `nt_mcp_write_allowlist_clientids` / `nt_mcp_write_allowlist_ticketids` (CSV, opcionais, vazias = sem restrição). Comando não-READ com `clientid`/`userid`/`ticketid` fora da lista → `write_target_not_allowed` (Activity Log `MCP API BLOCKED BY TARGET ALLOWLIST`). Sem `clientid`, o dono é resolvido ANTES do gate via `GetTicket` (`ticketid`), `GetOrders id=` (`orderid`) ou `GetQuotes quoteid=` (`quoteid`) — registro deve ter `id` igual ao pedido, senão nega; guest/órfão (userid 0) não é checado pela lista de clientes. Config inválida/ilegível = nega tudo. Não cobre comandos sem id de alvo (`AddClient`, projetos/To-Do). Tool-level: `open_ticket` sem `clientid` exige `allow_guest=true`; `reply_ticket` só aceita `name/email/clientid` em ticket guest
 - Admin fail-closed (WO-7): sem `nt_mcp_admin_user` resolvível, `BearerAuth` e `Server::run()` negam (401) — nunca vinculam ao superadmin `admin`
 - Middleware do SDK: só `ProtocolVersionMiddleware` ligado (spec: `MCP-Protocol-Version` inválido → 400; ausente tolerado). CorsMiddleware/DnsRebinding desligados de propósito — CORS/IP/TLS são nossos, em mcp.php. Perfil CORS do mcp.php = `POST, DELETE, OPTIONS` (DELETE encerra sessão); oauth.php continua `POST, OPTIONS`
@@ -123,8 +123,7 @@ lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY
 - **Addon access control** — cada addon precisa permissão explícita por role group (Setup > Addon Modules > Configure > Access Control)
 - **Deploy** — via `lftp` com `set ssl:verify-certificate no` (SSH indisponível no Plesk)
 - **Não commitar debug logs** — nunca usar `@file_put_contents('/tmp/...')` em código; usar logging estruturado
-- **CRM table names são placeholders** (`mod_mgcrm_*` em CrmTools.php) — verificar no banco real se o ModulesGarden CRM mudar schema
-- **CRM dependency** — se `mod_mgcrm_contacts` não existir, apenas as tools CRM devem falhar com erro claro; o restante do conector continua operacional. No desenv isso é o ESTADO ESPERADO: a instalação usa mgCRM2 e as tools de CRM respondem `crm_unavailable` — não é bug de shape, é exatamente o comportamento exigido
+- **CRM dependency** — `capabilities.crm` mede a disponibilidade das leituras do schema real mgCRM2 (`available|unavailable|unknown`). Falha CRM não afeta o restante do conector
 - **mcp.php** requer `__DIR__ . '/../../../init.php'` (3 níveis até raiz WHMCS)
 - **ext-iconv** pode não estar habilitada — usar `--ignore-platform-req=ext-iconv` no composer
 - **Bearer Token** armazenado em tblconfiguration, gerado na ativação do addon
@@ -135,7 +134,7 @@ lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY
 - **`php-http/discovery` é plugin composer** — `allow-plugins` já no composer.json; sem isso, `composer install` falha
 - **Deploy com troca de lib PRECISA incluir `vendor/`** — o comando padrão exclui vendor; usar comando "deploy com vendor/" listado em Commands
 - **`data/sessions/`, `data/cache/` e `data/session-locks/` devem ser excluídos do deploy e são 0700** — sessões dinâmicas + cache de discovery + locks; excluir sempre (o comando padrão já exclui `data/`)
-- **`nt_mcp_upgrade()` apaga `mcp_elements.json`** — quando há mudança de schema (tools/prompts novos), isso força rediscovery. Também limpa legacy `mcp_state.json` e reprovisiona `data/{cache,sessions,session-locks}` 0700. Sessões NÃO são afetadas (arquivos próprios). `nt_mcp_config()['version']` = `2.2.1` = `McpSdkAdapter::SERVER_VERSION` — subir a versão aqui é o que dispara o upgrade no WHMCS. **A chave do cache NÃO é derivada do conteúdo/mtime dos arquivos de tools** — é `md5(basePath+directories+excludeDirs)`, sempre igual. Deploy que adiciona/remove tool SEM bumpar `SERVER_VERSION` continua servindo a contagem antiga até `data/cache/mcp_elements.json` ser apagado manualmente (via lftp `rm`) ou a versão subir. Desde 2.1.0, ativação e upgrade chamam `nt_mcp_warm_element_cache()` (→ `McpSdkAdapter::warmElementCache()`, builder com `setLazyLoading(false)`): o cache é regravado ali, fora do caminho de request — antes o PRIMEIRO request pagava o discovery inteiro SEGURANDO o `SessionLock`, o que aparecia no cliente como `DeadlineExceeded`.
+- **`nt_mcp_upgrade()` apaga `mcp_elements.json`** — quando há mudança de schema (tools/prompts novos), isso força rediscovery. Também limpa legacy `mcp_state.json` e reprovisiona `data/{cache,sessions,session-locks}` 0700. Sessões NÃO são afetadas (arquivos próprios). `nt_mcp_config()['version']` referencia `McpSdkAdapter::SERVER_VERSION` (atual `2.2.3`) — subir a constante é o que dispara o upgrade no WHMCS. **A chave do cache NÃO é derivada do conteúdo/mtime dos arquivos de tools** — é `md5(basePath+directories+excludeDirs)`, sempre igual. Deploy que adiciona/remove tool SEM bumpar `SERVER_VERSION` continua servindo a contagem antiga até `data/cache/mcp_elements.json` ser apagado manualmente (via lftp `rm`) ou a versão subir. Desde 2.1.0, ativação e upgrade chamam `nt_mcp_warm_element_cache()` (→ `McpSdkAdapter::warmElementCache()`, builder com `setLazyLoading(false)`): o cache é regravado ali, fora do caminho de request — antes o PRIMEIRO request pagava o discovery inteiro SEGURANDO o `SessionLock`, o que aparecia no cliente como `DeadlineExceeded`.
 - **Versão de protocolo**: SDK 0.7.1 conhece `2024-11-05`, `2025-03-26`, `2025-06-18`, `2025-11-25` (header) e responde SEMPRE `2025-11-25` no initialize, qualquer que seja a pedida — não há negociação para baixo nem modo stateless. Transporte é stateful (sessão obrigatória após initialize)
 - **Audit fix IDs** — comentários `// SECURITY FIX (Fn)`/`(M-02)` referenciam findings da auditoria de production readiness; não remover. Com a migração pro SDK, os fixes F5 (lock_open_failed) e F6 (resposta vazia → -32603) do Server.php antigo ficaram obsoletos: não há mais lock global e o SDK responde sempre. M-02 (1 MB) continua em Server.php + `maxBodyBytes`
 - **Pending audit findings** — F-05, F-10, F-12 resolvidos. Resolvidos no refactor: F-07 (RateLimiter), F-11 (TokenHandler). Mitigados: F-06 (IpAllowlist), F-14 (SystemUrl — intencional)

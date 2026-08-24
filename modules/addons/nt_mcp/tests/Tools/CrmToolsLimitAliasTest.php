@@ -11,7 +11,6 @@ use NtMcp\Tests\Support\FakeAdminIdentityResolver;
 use NtMcp\Tests\Support\FakeCrmQueryPort;
 use NtMcp\Tests\Support\FakeCrmSchemaProbe;
 use NtMcp\Tools\CrmTools;
-use NtMcp\Whmcs\CapsuleClient;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -31,7 +30,7 @@ class CrmToolsLimitAliasTest extends TestCase
             FakeAdminIdentityResolver::resolvingTo(7),
         );
 
-        return new CrmTools(new CapsuleClient(), $repo);
+        return new CrmTools($repo);
     }
 
     public function test_list_contacts_uses_limitnum_when_provided(): void
@@ -56,7 +55,7 @@ class CrmToolsLimitAliasTest extends TestCase
             FakeAdminIdentityResolver::resolvingTo(7),
         );
         $port->seed(CrmSchema::TABLE_RESOURCES, [['id' => 1, 'deleted_at' => null]]);
-        $tools = new CrmTools(new CapsuleClient(), $repo);
+        $tools = new CrmTools($repo);
 
         $result = json_decode(
             (string) $tools->listFollowups(resource_id: 1, limit: 25, limitnum: 5),

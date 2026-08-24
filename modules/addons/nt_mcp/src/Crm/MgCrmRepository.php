@@ -7,10 +7,9 @@ namespace NtMcp\Crm;
 /**
  * Fronteira ÚNICA entre as tools de CRM e o domínio real do mgCRM2.
  *
- * Este ticket (CRM-1) entrega apenas as BARREIRAS: schema, recurso, catálogos,
- * identidade administrativa, instante e limites. As oito tools continuam
- * exatamente como estavam — a migração das leituras é CRM-2 e a das escritas é
- * CRM-3. Nada aqui está ligado a `CrmTools`, ao adapter ou ao registry.
+ * As barreiras cobrem schema, recurso, catálogos, identidade administrativa,
+ * instante e limites. As quatro leituras públicas passam por este repositório;
+ * escrita continua reservada ao futuro contrato CRM-3.
  *
  * NÃO EXISTE ESCRITA nesta tranche — nem aqui, nem no port, nem em nenhum
  * value object. A revisão fria mostrou que oferecer um caminho de escrita

@@ -7,15 +7,47 @@ final class ResponseRedactor
     /** Teto de profundidade de recursão, compartilhado por todas as passadas. */
     private const MAX_DEPTH = 8;
 
-    /** Chaves de cliente a omitir na view lite (identificação apenas, sem PII). */
-    public const CLIENT_LITE_DROP = [
-        'address1', 'address2', 'city', 'state', 'fullstate', 'postcode',
-        'phonenumber', 'phonenumberformatted', 'phonecc', 'tax_id', 'lastlogin',
-        'cctype', 'cclastfour', 'gatewayid', 'defaultgateway', 'allowSingleSignOn',
-        'marketing_emails_opt_in', 'email_verified', 'customfields', 'notes',
-        'users', 'securityqid', 'cardnum', 'startdate', 'issuenumber', 'expdate',
-        'bankname', 'banktype', 'bankcode', 'bankacct',
+    /** Allowlist fechada da view lite de cliente: nenhum dado de identidade. */
+    public const CLIENT_LITE_KEEP = [
+        'result', 'clientid', 'status', 'groupid', 'currency', 'currency_code',
+        'datecreated', 'stats',
     ];
+
+    /** Metadados não identificadores mantidos em cada linha de GetClients. */
+    private const CLIENT_LIST_LITE_KEEP = ['id', 'datecreated', 'groupid', 'status'];
+
+    /** Dados financeiros/operacionais mantidos em cada linha de GetInvoices. */
+    private const INVOICE_LIST_LITE_KEEP = [
+        'id', 'userid', 'invoicenum', 'date', 'duedate', 'datepaid',
+        'last_capture_attempt', 'lastcaptureattempt', 'date_refunded', 'date_cancelled',
+        'subtotal', 'credit', 'tax', 'tax2', 'total', 'taxrate', 'taxrate2',
+        'status', 'paymentmethod', 'paymethodid', 'created_at', 'updated_at',
+        'currencycode', 'currencyprefix', 'currencysuffix',
+    ];
+
+    /** Dados necessários para triar uma fila sem identidade direta do solicitante. */
+    private const TICKET_LIST_LITE_KEEP = [
+        'id', 'tid', 'display_id', 'deptid', 'userid', 'date', 'subject',
+        'status', 'priority', 'lastreply', 'flag', 'service',
+    ];
+
+    /** PII direta presente no nível do pedido, mas não nos seus line items. */
+    private const ORDER_LITE_DROP = [
+        'name', 'firstname', 'lastname', 'fullname', 'companyname', 'email',
+        'address1', 'address2', 'city', 'state', 'fullstate', 'postcode',
+        'country', 'phonenumber', 'phonenumberformatted', 'phonecc', 'tax_id',
+        'client',
+    ];
+
+    /** PII direta presente no nível da cotação. */
+    private const QUOTE_LITE_DROP = [
+        'firstname', 'lastname', 'fullname', 'companyname', 'email',
+        'address1', 'address2', 'city', 'state', 'fullstate', 'postcode',
+        'country', 'phonenumber', 'phonenumberformatted', 'phonecc', 'tax_id',
+    ];
+
+    /** Campos não identificadores permitidos no cliente embutido da cotação. */
+    private const QUOTE_CLIENT_LITE_KEEP = ['id', 'datecreated', 'groupid', 'status'];
 
     /** Chave de configuração WHMCS para lista de field IDs visíveis em view full. */
     private const CUSTOMFIELDS_VISIBLE_SETTING = 'nt_mcp_client_customfields_visible';
@@ -28,7 +60,7 @@ final class ResponseRedactor
      * `password`); nome curto, mas WHMCS não usa `c` como chave em nenhum
      * outro payload conhecido do addon.
      */
-    private const ALWAYS_STRIP = ['password', 'password2', 'securityqans', 'c', 'ipaddress'];
+    private const ALWAYS_STRIP = ['password', 'password2', 'securityqans', 'c', 'ipaddress', 'transfersecret'];
 
     /**
      * Chaves cujo valor vazio o WHMCS serializa como `""` (string) quando a
@@ -55,6 +87,9 @@ final class ResponseRedactor
         'clientid', 'userid', 'contactid', 'addonid', 'ticketid', 'quoteid',
         'projectid', 'taskid', 'relid', 'gatewayid',
     ];
+
+    /** `replyid=0` significa que a mensagem não possui resposta pai. */
+    private const ZERO_MEANS_NULL_ID = ['replyid'];
 
     /**
      * Chaves cujo valor é um JSON SERIALIZADO dentro do payload (string), e não
@@ -317,6 +352,11 @@ final class ResponseRedactor
                 continue;
             }
             $name = strtolower((string) $key);
+            if (in_array($name, self::ZERO_MEANS_NULL_ID, true)
+                && ($value === '' || $value === '0' || $value === 0)) {
+                $value = null;
+                continue;
+            }
             if ($value === '' && in_array($name, self::EMPTY_STRING_MEANS_EMPTY_LIST, true)) {
                 $value = [];
                 continue;
@@ -461,15 +501,109 @@ final class ResponseRedactor
     }
 
     /**
-     * Remove campos sensíveis de cliente para view lite.
-     * Chamada APÓS stripClientDetails (que faz o scrub comum).
-     * Remove apenas chaves de nível raiz — não é recursiva.
+     * Projeta a resposta de sucesso na allowlist estrita da view lite.
+     * Chamada APÓS stripClientDetails (que faz o scrub comum). Respostas de
+     * erro não devem passar por esta função, para preservar seu diagnóstico.
      */
     public static function clientLiteView(array &$result): void
     {
-        foreach (self::CLIENT_LITE_DROP as $key) {
-            unset($result[$key]);
+        $result = self::keepKeys($result, self::CLIENT_LITE_KEEP);
+    }
+
+    /** Projeta as linhas de GetClients para metadados sem identidade direta. */
+    public static function clientListLiteView(array &$result): void
+    {
+        self::projectListRows($result, ['clients', 'client'], self::CLIENT_LIST_LITE_KEEP);
+    }
+
+    /** Projeta as linhas de GetInvoices sem identidade direta nem notas livres. */
+    public static function invoiceListLiteView(array &$result): void
+    {
+        self::projectListRows($result, ['invoices', 'invoice'], self::INVOICE_LIST_LITE_KEEP);
+    }
+
+    /** Projeta a fila de tickets sem identidade direta ou anexos. */
+    public static function ticketListLiteView(array &$result): void
+    {
+        self::projectListRows($result, ['tickets', 'ticket'], self::TICKET_LIST_LITE_KEEP);
+    }
+
+    /** Remove PII direta de pedidos, preservando integralmente os line items. */
+    public static function orderLiteView(array &$result): void
+    {
+        if (isset($result['orders']['order']) && is_array($result['orders']['order'])) {
+            foreach ($result['orders']['order'] as &$order) {
+                if (is_array($order)) {
+                    self::dropKeys($order, self::ORDER_LITE_DROP);
+                }
+            }
+            unset($order);
+            return;
         }
+
+        self::dropKeys($result, self::ORDER_LITE_DROP);
+    }
+
+    /** Remove PII direta de cotações e reduz o cliente embutido a metadados. */
+    public static function quoteLiteView(array &$result): void
+    {
+        if (!isset($result['quotes']['quote']) || !is_array($result['quotes']['quote'])) {
+            return;
+        }
+
+        foreach ($result['quotes']['quote'] as &$quote) {
+            if (!is_array($quote)) {
+                continue;
+            }
+            self::dropKeys($quote, self::QUOTE_LITE_DROP);
+            if (isset($quote['client']) && is_array($quote['client'])) {
+                $quote['client'] = self::keepKeys($quote['client'], self::QUOTE_CLIENT_LITE_KEEP);
+            }
+        }
+        unset($quote);
+    }
+
+    /** @param array<int, string> $keys */
+    private static function dropKeys(array &$data, array $keys): void
+    {
+        foreach ($keys as $key) {
+            unset($data[$key]);
+        }
+    }
+
+    /** @param array<int, string> $keys */
+    private static function keepKeys(array $data, array $keys): array
+    {
+        $kept = [];
+        foreach ($keys as $key) {
+            if (array_key_exists($key, $data)) {
+                $kept[$key] = $data[$key];
+            }
+        }
+
+        return $kept;
+    }
+
+    /**
+     * @param array<int, string> $path
+     * @param array<int, string> $keys
+     */
+    private static function projectListRows(array &$result, array $path, array $keys): void
+    {
+        $rows =& $result;
+        foreach ($path as $segment) {
+            if (!isset($rows[$segment]) || !is_array($rows[$segment])) {
+                return;
+            }
+            $rows =& $rows[$segment];
+        }
+
+        foreach ($rows as &$row) {
+            if (is_array($row)) {
+                $row = self::keepKeys($row, $keys);
+            }
+        }
+        unset($row, $rows);
     }
 
     /**

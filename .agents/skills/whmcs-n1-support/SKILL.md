@@ -39,8 +39,9 @@ whmcs_get_admin_details
 - `system_host` **deve** ser `desenv.ntweb.com.br`. Qualquer outro valor
   (inclusive `null`) → **PARAR** e avisar: "host inesperado: <valor>". Não
   prosseguir em produção sob nenhuma hipótese.
-- `capabilities.crm = unavailable` é o estado esperado no desenv (mgCRM2). Não
-  chamar tools `whmcs_crm_*`.
+- `capabilities.crm` informa a disponibilidade das quatro leituras reais do
+  mgCRM2 (`available|unavailable|unknown`). O fluxo N1 não depende delas; não
+  chamar tools `whmcs_crm_*` nesta triagem.
 
 ### 1. Fila
 
@@ -73,8 +74,8 @@ whmcs_get_ticket ticketid=<id interno>
 - `ticket.userid` = `tblclients.id` (NÃO `owner_user_id`).
 - `userid = 0` ⇒ **ticket guest**. Não chamar `whmcs_get_client` (estoura
   `not_found` ou pega cliente errado). Usar `name`/`email` do próprio ticket.
-- `userid > 0` ⇒ `whmcs_get_client clientid=<userid>` (view lite, sem PII
-  completa — suficiente para N1). Só pedir `fields=full` se a triagem
+- `userid > 0` ⇒ `whmcs_get_client clientid=<userid>` (view lite, somente
+  IDs/metadados/status/moeda/stats, sem nome ou e-mail). Só pedir `fields=full` se a triagem
   realmente exigir e dizer por quê.
 - Para "meu serviço está fora": `whmcs_get_client_products clientid=<userid>`.
 

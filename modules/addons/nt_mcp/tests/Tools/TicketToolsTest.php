@@ -628,4 +628,65 @@ class TicketToolsTest extends TestCase
         $tools->replyTicket(5, 'msg');
         $this->assertSame(['AddTicketReply'], $cmds);
     }
+
+    public function test_list_tickets_defaults_to_lite_and_full_is_explicit(): void
+    {
+        $tools = $this->makeTools(fn() => [
+            'result' => 'success',
+            'tickets' => ['ticket' => [[
+                'id' => 30,
+                'tid' => '084535',
+                'deptid' => 2,
+                'userid' => 41,
+                'name' => 'Ana Silva',
+                'email' => 'ana@example.test',
+                'requestor_name' => 'Ana Silva',
+                'requestor_email' => 'ana@example.test',
+                'requestor_type' => 'Owner',
+                'owner_name' => 'Ana Silva',
+                'cc' => 'financeiro@example.test',
+                'admin' => 'Operador',
+                'attachment' => 'documento-ana.pdf',
+                'attachments' => [['filename' => 'documento-ana.pdf']],
+                'date' => '2026-08-23 10:00:00',
+                'subject' => 'Falha no serviço',
+                'status' => 'Open',
+                'priority' => 'High',
+                'lastreply' => '2026-08-23 11:00:00',
+                'flag' => 3,
+                'service' => 'Hospedagem',
+            ]]],
+            'totalresults' => 1,
+        ]);
+
+        $lite = json_decode($tools->listTickets(status: 'Open'), true);
+        $full = json_decode($tools->listTickets(status: 'Open', fields: 'full'), true);
+
+        $this->assertSame([
+            'id' => 30,
+            'tid' => '084535',
+            'display_id' => '084535',
+            'deptid' => 2,
+            'userid' => 41,
+            'date' => '2026-08-23 10:00:00',
+            'subject' => 'Falha no serviço',
+            'status' => 'Open',
+            'priority' => 'High',
+            'lastreply' => '2026-08-23 11:00:00',
+            'flag' => 3,
+            'service' => 'Hospedagem',
+        ], $lite['tickets']['ticket'][0]);
+        $this->assertSame('Ana Silva', $full['tickets']['ticket'][0]['requestor_name']);
+        $this->assertSame('ana@example.test', $full['tickets']['ticket'][0]['requestor_email']);
+        $this->assertSame('documento-ana.pdf', $full['tickets']['ticket'][0]['attachment']);
+    }
+
+    public function test_list_tickets_rejects_invalid_fields(): void
+    {
+        $tools = $this->makeTools();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage("fields deve ser 'lite' ou 'full'");
+        $tools->listTickets(fields: 'raw');
+    }
 }

@@ -25,8 +25,10 @@ endpoint em produção, e um cuidado **arquitetural** com o modelo de uso do MCP
       `nt_mcp_trusted_proxies` (ex.: `127.0.0.1,::1`). Sem isso, rate limiting e
       IP allowlist usam o IP do proxy, não do cliente (ver `src/Http/IpResolver.php`).
 - [ ] **Admin user** — setar `nt_mcp_admin_user` para um admin **real** de
-      `tbladmins`. Sem isso, há fallback hardcoded para `'admin'`
-      (`src/Auth/BearerAuth.php`), que pode não existir / ser inesperado.
+      `tbladmins`, com role de privilégio mínimo e somente os departamentos de
+      suporte que o conector deve enxergar. Não reutilizar o admin/token do desenv.
+- [ ] **Ambiente** — configurar `nt_mcp_expected_host` com o hostname de
+      produção e confirmar `system_host` no início de cada sessão.
 - [ ] **IP allowlist (opcional, recomendado)** — restringir o endpoint:
       `nt_mcp_allowed_ips = '203.0.113.10,198.51.100.0/24'`.
 - [ ] **TLS** — confirmar HTTPS válido (o endpoint rejeita HTTP com 421).
@@ -36,11 +38,11 @@ endpoint em produção, e um cuidado **arquitetural** com o modelo de uso do MCP
 
 ## ⚠️ Cuidado arquitetural — o blast radius do MCP
 
-Um único token de longa duração dá ao LLM acesso a **todas as 96 tools**,
-incluindo **destrutivas** (`whmcs_terminate_service`, `whmcs_delete_order`,
-`whmcs_close_client`) e **financeiras** (`whmcs_add_credit`, `whmcs_renew_domain`,
-`whmcs_send_email`). **Não há confirmação por ação** no servidor — a aprovação
-OAuth é consentimento único na emissão do token, não por operação.
+Um único token de longa duração pode dar ao LLM acesso às **64 tools**. Os gates
+WRITE, DESTRUCTIVE, FINANCIAL e COMMS ficam desligados por padrão; manter todos
+desligados durante o rollout read-only. As duas operações destrutivas publicadas
+(`whmcs_cancel_order` e `whmcs_delete_quote`) exigem também `confirm=true`.
+Notificações só ocorrem com `notify_client=true` e gate COMMS.
 
 Risco de **prompt injection** ("tríade letal"): o mesmo token lê conteúdo
 não-confiável de terceiros (tickets, notas de cliente, CRM) **e** executa ações
@@ -50,7 +52,8 @@ autorizar e logar, porque para ele foi um pedido válido.
 
 **Recomendações antes de liberar tools de escrita a um LLM em produção:**
 
-- [ ] Usar token apenas para tools de **leitura/consulta** no dia-a-dia.
+- [ ] Começar com token e gates apenas para tools de **leitura/consulta**.
+- [ ] Validar escrita primeiro num clone de staging com cliente/serviço de teste.
 - [ ] Para ações destrutivas, exigir **confirmação humana** no lado do
       plugin/hooks (`whmcs-mcp-plugin/hooks.json`) — o servidor não tem
       human-in-the-loop por ação.

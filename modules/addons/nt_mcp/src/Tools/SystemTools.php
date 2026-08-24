@@ -115,7 +115,7 @@ class SystemTools
         return ToolJson::encode($result);
     }
 
-    #[McpTool(name: 'whmcs_get_admin_details', description: 'Obtém detalhes do administrador autenticado. Inclui system_host (hostname do WHMCS) para o cliente validar o ambiente no boot.')]
+    #[McpTool(name: 'whmcs_get_admin_details', description: 'Obtém detalhes do administrador autenticado. Inclui system_host para validar o ambiente e capabilities.crm (available|unavailable|unknown), que indica disponibilidade das leituras CRM.')]
     public function getAdminDetails(): string
     {
         $result = $this->api->call('GetAdminDetails', []);

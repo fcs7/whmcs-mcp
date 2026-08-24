@@ -7,7 +7,6 @@ namespace NtMcp\Tests\Whmcs;
 use NtMcp\Tests\Support\ActivityLogSpy;
 use NtMcp\Tools\OrderTools;
 use NtMcp\Tools\QuoteTools;
-use NtMcp\Whmcs\CapsuleClient;
 use NtMcp\Whmcs\LocalApiClient;
 use NtMcp\Whmcs\PaymentGatewayDirectory;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -286,154 +285,44 @@ class AuditTrailTest extends TestCase
         $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP API BLOCKED BY COMMS GATE command=OpenTicket'));
     }
 
-    // ---------------------------------------------------------------
-    // m1 — Capsule: bloqueio antes só existia em silêncio
-    // ---------------------------------------------------------------
-
-    public function test_blocked_capsule_write_is_audited(): void
+    public function test_destructive_target_blocks_are_audited_before_cancel_or_delete(): void
     {
-        $capsule = new CapsuleClient();
-        $capsule->setWritableForTests(false);
-
-        try {
-            $capsule->insert('mod_mgcrm_contacts', ['name' => 'Ana', 'email' => 'ana@example.com']);
-            $this->fail('write deveria estar bloqueado');
-        } catch (\InvalidArgumentException) {
-            // esperado
-        }
-
-        $this->assertTrue(
-            ActivityLogSpy::hasEntryContaining('MCP DB WRITE BLOCKED'),
-            'bloqueio de write CRM precisa deixar rastro'
+        $calls = [];
+        $api = $this->client(
+            ['destructive' => true, 'allowlist_clientids' => [5]],
+            function (string $cmd, array $params) use (&$calls) {
+                $calls[] = $cmd;
+                if ($cmd === 'GetOrders') {
+                    return ['result' => 'success', 'orders' => ['order' => [[
+                        'id' => (int) $params['id'],
+                        'userid' => 99,
+                    ]]]];
+                }
+                if ($cmd === 'GetQuotes') {
+                    return ['result' => 'success', 'quotes' => ['quote' => [[
+                        'id' => (int) $params['quoteid'],
+                        'userid' => 99,
+                    ]]]];
+                }
+                return ['result' => 'success'];
+            }
         );
-    }
 
-    #[DataProvider('capsuleWriteProvider')]
-    public function test_every_blocked_capsule_operation_is_audited(string $operation, callable $invoke): void
-    {
-        $capsule = new CapsuleClient();
-        $capsule->setWritableForTests(false);
-
-        try {
-            $invoke($capsule);
-            $this->fail("{$operation} deveria estar bloqueado");
-        } catch (\InvalidArgumentException) {
-            // esperado
+        foreach ([
+            fn() => (new OrderTools($api))->cancelOrder(orderid: 12, confirm: true),
+            fn() => (new QuoteTools($api))->deleteQuote(quoteid: 7, confirm: true),
+        ] as $attempt) {
+            try {
+                $attempt();
+                $this->fail('alvo fora da allowlist deveria ser negado');
+            } catch (\RuntimeException $exception) {
+                $this->assertStringContainsString('write_target_not_allowed', $exception->getMessage());
+            }
         }
 
-        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP DB WRITE BLOCKED'));
-    }
-
-    public static function capsuleWriteProvider(): array
-    {
-        return [
-            'INSERT' => ['INSERT', fn(CapsuleClient $c) => $c->insert('mod_mgcrm_contacts', ['name' => 'x'])],
-            'UPDATE' => ['UPDATE', fn(CapsuleClient $c) => $c->update('mod_mgcrm_contacts', ['id' => 1], ['name' => 'x'])],
-            'DELETE' => ['DELETE', fn(CapsuleClient $c) => $c->delete('mod_mgcrm_contacts', ['id' => 1])],
-        ];
-    }
-
-    // ---------------------------------------------------------------
-    // m1.1 — desfecho das três mutações Capsule
-    // ---------------------------------------------------------------
-
-    /**
-     * Sem WHMCS bootstrapado, `Capsule::table()` não existe: a mutação lança e
-     * precisa deixar desfecho — antes ficava só o log de início.
-     */
-    #[DataProvider('capsuleWriteProvider')]
-    public function test_capsule_mutation_exception_emits_outcome(string $operation, callable $invoke): void
-    {
-        $capsule = new CapsuleClient();
-        $capsule->setWritableForTests(true);
-
-        try {
-            $invoke($capsule);
-            $this->fail("{$operation} deveria lançar sem o Capsule do WHMCS");
-        } catch (\Throwable) {
-            // esperado
-        }
-
-        $outcome = ActivityLogSpy::matching('MCP DB EXCEPTION');
-        $this->assertCount(1, $outcome, "faltou desfecho de exceção em {$operation}");
-        $this->assertStringNotContainsString('Ana', $outcome[0], 'desfecho não repete dados');
-    }
-
-    /** Desfecho de sucesso, com a contagem de linhas e sem repetir dados. */
-    public function test_capsule_mutation_success_emits_outcome_without_repeating_data(): void
-    {
-        $capsule = $this->capsuleWithFakeExecutor(static fn(): int => 3);
-
-        $rows = $capsule->insert('mod_mgcrm_contacts', ['name' => 'Ana', 'email' => 'ana@example.com']);
-
-        $this->assertSame(3, $rows);
-        $outcome = ActivityLogSpy::matching('MCP DB OK');
-        $this->assertCount(1, $outcome);
-        $this->assertStringContainsString('meta: {}', $outcome[0]);
-        $this->assertStringNotContainsString('Ana', $outcome[0]);
-        $this->assertStringNotContainsString('ana@example.com', $outcome[0]);
-    }
-
-    public function test_capsule_start_and_outcome_share_a_correlation_id(): void
-    {
-        $capsule = $this->capsuleWithFakeExecutor(static fn(): int => 1);
-        $capsule->insert('mod_mgcrm_contacts', ['name' => 'Ana']);
-
-        $start = ActivityLogSpy::matching('MCP DB INSERT')[0] ?? '';
-        $ok = ActivityLogSpy::matching('MCP DB OK')[0] ?? '';
-
-        $this->assertSame(1, preg_match('/\[corr:([0-9a-f]{8})\]/', $start, $m));
-        $this->assertStringContainsString("[corr:{$m[1]}]", $ok);
-    }
-
-    /** Erro do driver não leva a mensagem crua ao Activity Log. */
-    public function test_capsule_driver_message_never_reaches_activity_log(): void
-    {
-        $capsule = $this->capsuleWithFakeExecutor(static function (): int {
-            throw new \RuntimeException('SQLSTATE[28000] user=root password=hunter2SuperSecret');
-        });
-
-        try {
-            $capsule->insert('mod_mgcrm_contacts', ['name' => 'Ana']);
-        } catch (\RuntimeException) {
-            // esperado
-        }
-
-        $log = implode("\n", ActivityLogSpy::entries());
-        $this->assertTrue(ActivityLogSpy::hasEntryContaining('MCP DB EXCEPTION'));
-        $this->assertStringNotContainsString('hunter2SuperSecret', $log);
-        $this->assertStringNotContainsString('SQLSTATE', $log);
-    }
-
-    /** CapsuleClient com o executor de banco substituído pelo seam dedicado. */
-    private function capsuleWithFakeExecutor(callable $executor): CapsuleClient
-    {
-        $capsule = new CapsuleClient();
-        $capsule->setWritableForTests(true);
-        $capsule->setExecutorForTests($executor);
-
-        return $capsule;
-    }
-
-    public function test_blocked_capsule_write_logs_metadata_only(): void
-    {
-        $capsule = new CapsuleClient();
-        $capsule->setWritableForTests(false);
-
-        try {
-            $capsule->insert('mod_mgcrm_contacts', [
-                'name' => 'Ana',
-                'note' => 'POISON 123.456.789-00 tok_secret',
-            ]);
-        } catch (\InvalidArgumentException) {
-            // esperado
-        }
-
-        $entry = ActivityLogSpy::matching('MCP DB WRITE BLOCKED')[0];
-        $this->assertStringContainsString('name', $entry, 'nome do campo é metadado');
-        foreach (['Ana', 'POISON', '123.456.789-00', 'tok_secret'] as $secret) {
-            $this->assertStringNotContainsString($secret, $entry, "vazou '{$secret}'");
-        }
+        $this->assertSame(['GetOrders', 'GetQuotes'], $calls);
+        $this->assertCount(1, ActivityLogSpy::matching('MCP API BLOCKED BY TARGET ALLOWLIST command=CancelOrder'));
+        $this->assertCount(1, ActivityLogSpy::matching('MCP API BLOCKED BY TARGET ALLOWLIST command=DeleteQuote'));
     }
 
     // ---------------------------------------------------------------
