@@ -41,16 +41,26 @@ endpoint em produção, e um cuidado **arquitetural** com o modelo de uso do MCP
       | Cancelar pedido | gate **DESTRUCTIVE** | off |
       | Apagar quote | gate **DESTRUCTIVE** | off |
       | Converter quote → fatura | gate **FINANCIAL** (`AcceptQuote`) | off |
-      | Editar quote / reply de ticket | gate **WRITE** | **on** |
+      | Editar quote / reply de ticket | gate **WRITE** | off |
+
+      **Todas as classes nascem off** — `gateEnabled()` passa `default: false`
+      para todas, WRITE inclusive. Sem `nt_mcp_enable_write = '1'` o addon é
+      read-only na prática (confirmado ao vivo no desenv em 2026-08-23: reply
+      de ticket morre com `MCP API BLOCKED BY GATE`). Valor canônico é `'1'`;
+      `ConfigFlag` **não** aceita `'on'`/`'true'`/`'yes'`.
+
+      **A ordem dos dois controles importa**: o gate de CLASSE roda primeiro;
+      a allowlist por alvo (#14) só é consultada depois. Com a classe off,
+      a allowlist é irrelevante e o log nunca mostra
+      `BLOCKED BY TARGET ALLOWLIST` — só `BLOCKED BY GATE`. Para exercitar o
+      gate #14 é preciso ligar a classe antes.
 
       `nt_mcp_write_allowlist_clientids` / `nt_mcp_write_allowlist_ticketids`
-      (gate #14) **vêm vazias por padrão = sem trava de alvo** — lista vazia
-      não desliga comando nenhum. Não "restringir pelo allowlist" o que o gate
-      de classe já recusa: DESTRUCTIVE e FINANCIAL continuam **off** em prod.
-      O risco real é o que passa hoje: reply de ticket e edit de quote rodam
-      com WRITE on + allowlist vazia. **WRITE on + lista vazia é o desenv, não
-      é prod.** Primeiro corte: ou WRITE off (read-only), ou WRITE on somente
-      DEPOIS de allowlist preenchida + teste ao vivo do gate #14.
+      **vêm vazias por padrão = sem trava de alvo** — lista vazia não desliga
+      comando nenhum. Não "restringir pelo allowlist" o que o gate de classe
+      já recusa. Sequência segura em prod: manter WRITE off no dia 1; ligar
+      WRITE **somente** depois da allowlist preenchida e do teste #14 ao vivo
+      em staging/desenv.
 - [ ] **Teste ao vivo do gate #14 (pré-requisito para WRITE em prod)** — só em
       staging/desenv, em objeto descartável, nunca em cliente real:
       1. criar ticket (e quote, se for testar) de lixo;
@@ -78,9 +88,10 @@ endpoint em produção, e um cuidado **arquitetural** com o modelo de uso do MCP
 ## ⚠️ Cuidado arquitetural — o blast radius do MCP
 
 Um único token de longa duração pode dar ao LLM acesso às **64 tools**.
-DESTRUCTIVE, FINANCIAL, COST e COMMS ficam desligados por padrão — mas **WRITE
-vem LIGADO por padrão**: para rollout read-only é preciso desligá-lo
-explicitamente (`nt_mcp_readonly` ou `nt_mcp_enable_write` off). As duas
+**Todas as classes de efeito colateral nascem desligadas** — WRITE, DESTRUCTIVE,
+FINANCIAL, COST e COMMS. Sem opt-in explícito (`nt_mcp_enable_* = '1'`) o
+addon é read-only na prática, que é exatamente o estado desejado no dia 1.
+Não presumir que WRITE está ligado só porque a tool aparece no catálogo. As duas
 operações destrutivas publicadas (`whmcs_cancel_order` e `whmcs_delete_quote`)
 exigem também `confirm=true`. Notificações só ocorrem com `notify_client=true`
 e gate COMMS.
