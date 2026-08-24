@@ -10,6 +10,7 @@ use NtMcp\Tests\Support\FakeAdminIdentityResolver;
 use NtMcp\Tests\Support\FakeCapsule;
 use NtMcp\Tests\Support\FakeCrmQueryPort;
 use NtMcp\Tests\Support\FakeCrmSchemaProbe;
+use NtMcp\Whmcs\AuthorizationException;
 use NtMcp\Whmcs\LocalApiClient;
 use Nyholm\Psr7\Factory\Psr17Factory;
 use PHPUnit\Framework\Attributes\Test;
@@ -755,6 +756,66 @@ final class McpSdkAdapterTest extends TestCase
         $this->assertStringNotContainsString('SECRET', $fullBody);
         $this->assertStringNotContainsString('dsn=', $fullBody);
         $this->assertStringNotContainsString('mysql://', $fullBody);
+    }
+
+    /**
+     * Issue #29 end-to-end: a recusa de gate tem que chegar ao cliente COM o
+     * motivo, e não como o -32603 genérico do teste acima. Prova o wiring do
+     * AuthorizationAwareReferenceHandler no builder — o teste unitário do
+     * decorator não cobre se ele está de fato ligado.
+     */
+    #[Test]
+    public function authorization_denial_reaches_the_client_with_the_reason(): void
+    {
+        $api = new LocalApiClient('testadmin');
+        $api->setGates(['write' => true]);
+        $api->setCallable(static function ($cmd, $params) {
+            throw new AuthorizationException(
+                "LocalApiClient: command 'AddTicketReply' is blocked "
+                . '(write_target_not_allowed: ticketid=30 fora da allowlist de escrita).'
+            );
+        });
+        $api->setAdminIdResolver(static fn($_) => 7);
+
+        $adapter = new McpSdkAdapter($api, $this->baseDir, $this->tempDir);
+        $factory = new Psr17Factory();
+
+        $initRequest = $factory->createServerRequest('POST', 'https://localhost/mcp.php')
+            ->withHeader('Content-Type', 'application/json')
+            ->withBody($factory->createStream(json_encode([
+                'jsonrpc' => '2.0',
+                'id' => 1,
+                'method' => 'initialize',
+                'params' => [
+                    'protocolVersion' => '2025-06-18',
+                    'capabilities' => (object) [],
+                    'clientInfo' => ['name' => 'test', 'version' => '1'],
+                ],
+            ])));
+
+        $sessionId = $adapter->handle($initRequest)->getHeaderLine('Mcp-Session-Id');
+
+        $callRequest = $factory->createServerRequest('POST', 'https://localhost/mcp.php')
+            ->withHeader('Content-Type', 'application/json')
+            ->withHeader('Mcp-Session-Id', $sessionId)
+            ->withBody($factory->createStream(json_encode([
+                'jsonrpc' => '2.0',
+                'id' => 3,
+                'method' => 'tools/call',
+                'params' => [
+                    'name' => 'whmcs_get_client',
+                    'arguments' => ['clientid' => 5],
+                ],
+            ])));
+
+        $body = json_decode((string) $adapter->handle($callRequest)->getBody(), true);
+
+        // Não é erro de protocolo: é resultado de tool marcado como erro.
+        $this->assertArrayNotHasKey('error', $body, 'recusa de gate não deve virar erro JSON-RPC');
+        $this->assertTrue($body['result']['isError'] ?? false);
+        $text = $body['result']['content'][0]['text'] ?? '';
+        $this->assertStringContainsString('write_target_not_allowed', $text);
+        $this->assertStringContainsString('AddTicketReply', $text);
     }
 
     #[Test]

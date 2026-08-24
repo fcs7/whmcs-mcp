@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace NtMcp\Mcp;
 
 use Mcp\Capability\Discovery\DiscoveryState;
+use Mcp\Capability\Registry\ReferenceHandler;
 use Mcp\Schema\Enum\ProtocolVersion;
 use Mcp\Schema\ServerCapabilities;
 use Mcp\Server as McpServer;
@@ -62,7 +63,7 @@ use Psr\Log\LoggerInterface;
 final class McpSdkAdapter implements ServerAdapterInterface
 {
     public const SERVER_NAME = 'NT Web WHMCS MCP Server';
-    public const SERVER_VERSION = '2.2.6';
+    public const SERVER_VERSION = '2.2.7';
     public const MAX_BODY_BYTES = 1048576;
     public const SESSION_TTL = 3600;
     public const ELEMENTS_CACHE_FILE = 'mcp_elements.json';
@@ -163,6 +164,9 @@ final class McpSdkAdapter implements ServerAdapterInterface
             ->setCapabilities(self::capabilities())
             ->setContainer($container)
             ->setLogger($logger)
+            // Issue #29: sem isto, toda recusa de gate vira `-32603 Error while
+            // executing tool` e o motivo fica só no Activity Log.
+            ->setReferenceHandler(new AuthorizationAwareReferenceHandler(new ReferenceHandler($container)))
             ->setDiscovery(
                 $this->baseDir,
                 ['Tools'],
