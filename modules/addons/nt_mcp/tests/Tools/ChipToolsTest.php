@@ -82,6 +82,24 @@ final class ChipToolsTest extends TestCase
         $this->assertIsToolError($tools->saveLpa(42, 'LPA:1$x'), 'nt_chips_unavailable');
     }
 
+    /**
+     * O fallback de autoload aponta para o addon IRMÃO. Um nível errado no
+     * `dirname()` não quebra teste nenhum sozinho: `is_dir()` falha em
+     * silêncio e tudo vira `nt_chips_unavailable` mesmo com o nt_chips
+     * instalado — que foi exatamente o bug encontrado ao conferir o servidor.
+     */
+    #[Test]
+    public function the_sibling_addon_path_points_outside_nt_mcp(): void
+    {
+        $path = ChipBridge::siblingAddonSrc();
+        // src/Whmcs/ChipBridge.php → 3 níveis até a raiz do addon nt_mcp.
+        $addonRoot = dirname((new \ReflectionClass(ChipBridge::class))->getFileName(), 3);
+
+        $this->assertStringEndsWith('/nt_chips/src', $path);
+        $this->assertSame(dirname($addonRoot) . '/nt_chips/src', $path, 'precisa ser IRMÃO do nt_mcp');
+        $this->assertStringNotContainsString(basename($addonRoot) . '/nt_chips', $path);
+    }
+
     // ---------------------------------------------------------------
     // find
     // ---------------------------------------------------------------

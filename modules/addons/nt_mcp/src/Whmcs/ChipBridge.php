@@ -66,7 +66,7 @@ class ChipBridge
         }
         self::$autoloaderRegistered = true;
 
-        $src = dirname(__DIR__, 2) . '/nt_chips/src';
+        $src = self::siblingAddonSrc();
         if (!is_dir($src)) {
             return;
         }
@@ -81,6 +81,18 @@ class ChipBridge
                 require_once $file;
             }
         });
+    }
+
+    /**
+     * `src/` do addon irmão: daqui (`.../nt_mcp/src/Whmcs`) são TRÊS níveis até
+     * `modules/addons`. Dois levariam a `nt_mcp/nt_chips/src`, que não existe —
+     * o fallback simplesmente não faria nada e o erro só apareceria como
+     * `nt_chips_unavailable` num WHMCS onde o addon está instalado. Fica
+     * público para o teste travar o caminho.
+     */
+    public static function siblingAddonSrc(): string
+    {
+        return dirname(__DIR__, 3) . '/nt_chips/src';
     }
 
     // ---------------------------------------------------------------
