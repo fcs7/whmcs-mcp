@@ -46,6 +46,11 @@ class ChipGuard
      * = sem restrição; configurada porém ilegível = lista vazia = nega tudo.
      * Serviço sem dono resolvível (id inexistente) também nega — sem dono não
      * dá para afirmar que o alvo está autorizado.
+     *
+     * Divergência DELIBERADA em relação ao #14 do `LocalApiClient`: lá `userid`
+     * 0 é ticket guest, caso legítimo que segue sem checagem de cliente. Um
+     * `tblhosting.userid` 0 não é guest, é registro órfão — não existe serviço
+     * sem dono — então aqui ele cai na negação junto com o resto.
      */
     public function assertClientAllowed(string $operation, ?int $clientId, ?AuditMetadata $metadata = null): void
     {

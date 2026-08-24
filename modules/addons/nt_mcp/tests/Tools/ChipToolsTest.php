@@ -264,28 +264,37 @@ final class ChipToolsTest extends TestCase
     // ---------------------------------------------------------------
 
     #[Test]
-    public function validate_play_stores_the_status_inferred_from_the_payload(): void
+    public function validate_play_reports_the_status_the_nt_chips_classifier_returned(): void
     {
-        $bridge = new FakeChipBridge();
-        $bridge->byIccid['8955170000000000001'] = $this->chip(['play_status' => null]);
-        $bridge->playResponse = ['ok' => true, 'payload' => ['situacao' => 'ALOCADO'], 'reason' => null];
+        foreach (['alocado', 'provisionavel', 'invalido', 'erro'] as $status) {
+            $bridge = new FakeChipBridge();
+            $bridge->byIccid['8955170000000000001'] = $this->chip(['play_status' => null]);
+            $bridge->playResponse = ['ok' => true, 'status' => $status, 'reason' => null];
 
-        $payload = $this->payload($this->tools($bridge)->validatePlay('8955170000000000001'));
+            $payload = $this->payload($this->tools($bridge)->validatePlay('8955170000000000001'));
 
-        $this->assertSame('alocado', $payload['play_status']);
-        $this->assertSame('alocado', $bridge->playStatusWrites[42]);
+            $this->assertSame($status, $payload['play_status']);
+            $this->assertSame(42, $bridge->validated, 'a validação tem de ir pelo chip_id resolvido');
+        }
     }
 
+    /**
+     * A classificação é do nt_chips justamente porque "ICCID já alocado" (409,
+     * `success:false`) e "não alocado" só se distinguem lendo o payload com o
+     * contrato da Play. A tool não pode inventar `alocado` — é o único valor
+     * que destrava o vínculo com o serviço.
+     */
     #[Test]
-    public function validate_play_never_infers_alocado_from_an_unknown_payload(): void
+    public function validate_play_does_not_reinterpret_the_classifier_verdict(): void
     {
         $bridge = new FakeChipBridge();
         $bridge->byIccid['8955170000000000001'] = $this->chip(['play_status' => null]);
-        $bridge->playResponse = ['ok' => true, 'payload' => ['mensagem' => 'resposta inesperada'], 'reason' => null];
+        $bridge->playResponse = ['ok' => true, 'status' => 'invalido', 'reason' => null];
 
         $payload = $this->payload($this->tools($bridge)->validatePlay('8955170000000000001'));
 
-        $this->assertSame('erro', $payload['play_status']);
+        $this->assertSame('invalido', $payload['play_status']);
+        $this->assertStringNotContainsString('alocado na Play', $payload['message']);
     }
 
     #[Test]
@@ -293,7 +302,7 @@ final class ChipToolsTest extends TestCase
     {
         $bridge = new FakeChipBridge();
         $bridge->byIccid['8955170000000000001'] = $this->chip();
-        $bridge->playResponse = ['ok' => false, 'payload' => [], 'reason' => 'corr-123'];
+        $bridge->playResponse = ['ok' => false, 'status' => null, 'reason' => 'corr-123'];
 
         $payload = $this->assertIsToolError(
             $this->tools($bridge)->validatePlay('8955170000000000001'),
@@ -301,7 +310,6 @@ final class ChipToolsTest extends TestCase
         );
 
         $this->assertSame('corr-123', $payload['correlation_id']);
-        $this->assertSame([], $bridge->playStatusWrites);
     }
 
     // ---------------------------------------------------------------
@@ -409,9 +417,9 @@ final class FakeChipBridge extends ChipBridge
     public bool $assignResult = true;
     public array $iccidWrites = [];
     public array $lpaWrites = [];
-    public array $playStatusWrites = [];
     public array $assignments = [];
-    public array $playResponse = ['ok' => true, 'payload' => ['status' => 'alocado'], 'reason' => null];
+    public ?int $validated = null;
+    public array $playResponse = ['ok' => true, 'status' => 'alocado', 'reason' => null];
 
     public function available(): bool
     {
@@ -471,8 +479,6 @@ final class FakeChipBridge extends ChipBridge
 
     public function updatePlayStatus(int $chipId, string $status): bool
     {
-        $this->playStatusWrites[$chipId] = $status;
-
         return true;
     }
 
@@ -485,8 +491,10 @@ final class FakeChipBridge extends ChipBridge
         return $this->assignResult;
     }
 
-    public function consultarStatusIccid(string $iccid): array
+    public function validateAgainstPlay(int $chipId): array
     {
+        $this->validated = $chipId;
+
         return $this->playResponse;
     }
 }

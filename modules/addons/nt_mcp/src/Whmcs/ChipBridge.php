@@ -172,25 +172,38 @@ class ChipBridge
     }
 
     /**
-     * Consulta o status do ICCID na Play Tecnologia.
+     * Valida o chip contra a Play e PERSISTE o `play_status` resultante.
      *
-     * @return array{ok:bool,payload:array<array-key,mixed>,reason:?string}
-     *         `ok=false` com `reason` quando o token não está configurado ou o
-     *         transporte falhou — é condição de operação, não bug: a tool
-     *         devolve envelope explicando, em vez de -32603 genérico.
+     * A classificação é do nt_chips (`AtivacaoService::validarChip()` →
+     * `classificarIccid()`) de propósito: ela discrimina pelo campo estruturado
+     * `success` da Play, trata o 409 "ICCID já alocado" (que vem com
+     * `success:false` e ainda assim significa alocado) e falha fechado em
+     * resposta desconhecida. Reimplementar isso aqui daria duas leituras
+     * divergentes do mesmo payload — e a que errasse para `alocado` liberaria
+     * o vínculo com um ICCID que a Play recusou.
+     *
+     * `validarChip()` também exige operadora com `suporte_play` e chip não
+     * arquivado, e grava o status — a tool só reporta.
+     *
+     * @return array{ok:bool,status:?string,reason:?string}
+     *         `ok=false` quando o token da Play não está configurado ou o
+     *         transporte falhou: condição de operação, não bug, então vira
+     *         envelope explicando em vez de -32603 genérico.
      */
-    public function consultarStatusIccid(string $iccid): array
+    public function validateAgainstPlay(int $chipId): array
     {
         try {
-            $client = new \NtChips\PlayApiClient(\NtChips\PlayApiClient::tokenFromConfig());
-            $payload = $client->consultarStatusIccid($iccid);
+            $service = new \NtChips\AtivacaoService(
+                new \NtChips\PlayApiClient(\NtChips\PlayApiClient::tokenFromConfig())
+            );
+            $status = $service->validarChip($chipId);
         } catch (\Throwable $e) {
             $correlationId = Diagnostics::report(Diagnostics::CATEGORY_UNHANDLED, 'chip_play_lookup', $e);
 
-            return ['ok' => false, 'payload' => [], 'reason' => $correlationId];
+            return ['ok' => false, 'status' => null, 'reason' => $correlationId];
         }
 
-        return ['ok' => true, 'payload' => $payload, 'reason' => null];
+        return ['ok' => true, 'status' => $status, 'reason' => null];
     }
 
     // ---------------------------------------------------------------

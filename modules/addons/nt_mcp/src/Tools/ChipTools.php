@@ -175,9 +175,10 @@ class ChipTools
 
     #[McpTool(
         name: 'whmcs_chip_validate_play',
-        description: 'Requer o addon NT Chips e o gate WRITE. Consulta o ICCID na API da Play Tecnologia e grava o '
-            . 'play_status resultante no chip. Só chip com play_status=alocado pode ser atribuído a um serviço. '
-            . 'Token da Play ausente ou API fora do ar devolve play_validation_unavailable.'
+        description: 'Requer o addon NT Chips e o gate WRITE. Valida o ICCID na API da Play Tecnologia e grava o '
+            . 'play_status: alocado (linha existe — libera o vínculo com um serviço), provisionavel (ICCID válido '
+            . 'mas linha ainda não ativada), invalido (Play não reconhece) ou erro. Exige operadora com suporte '
+            . 'Play. Token ausente ou API fora do ar devolve play_validation_unavailable.'
     )]
     #[Schema(additionalProperties: false)]
     public function validatePlay(string $iccid): string|CallToolResult
@@ -200,7 +201,7 @@ class ChipTools
         $metadata = AuditMetadata::ids(['chip_id' => $chipId]);
         $this->guard->assertWriteAllowed('whmcs_chip_validate_play', $metadata);
 
-        $lookup = $this->chips->consultarStatusIccid($iccid);
+        $lookup = $this->chips->validateAgainstPlay($chipId);
         if (!$lookup['ok']) {
             return self::error(
                 'play_validation_unavailable',
@@ -210,8 +211,7 @@ class ChipTools
             );
         }
 
-        $status = self::inferPlayStatus($lookup['payload']);
-        $this->chips->updatePlayStatus($chipId, $status);
+        $status = $lookup['status'];
 
         LocalApiClient::auditLog(ActivityEvent::DB_UPDATE, $metadata, command: 'whmcs_chip_validate_play');
 
@@ -219,9 +219,12 @@ class ChipTools
             'result' => 'success',
             'chip_id' => $chipId,
             'play_status' => $status,
-            'message' => $status === 'alocado'
-                ? 'ICCID validado na Play.'
-                : "Play respondeu com status '{$status}'.",
+            'message' => match ($status) {
+                'alocado' => 'ICCID alocado na Play: o chip pode ser vinculado a um serviço.',
+                'provisionavel' => 'ICCID válido porém ainda não alocado — a linha precisa ser ativada antes.',
+                'invalido' => 'A Play não reconhece este ICCID.',
+                default => 'A Play devolveu resposta inesperada; status gravado como erro.',
+            },
         ]);
     }
 
@@ -385,27 +388,6 @@ class ChipTools
         }
 
         return null;
-    }
-
-    /**
-     * Mapeia a resposta da Play para o vocabulário de `play_status` do
-     * nt_chips. O payload não tem contrato estável, então a leitura é
-     * defensiva e o desfecho desconhecido vira `erro` — nunca `alocado`, que
-     * é o único valor que destrava o vínculo.
-     *
-     * @param array<array-key,mixed> $payload
-     */
-    private static function inferPlayStatus(array $payload): string
-    {
-        $flat = strtolower(ToolJson::encodeCompact($payload));
-
-        foreach (['alocado', 'provisionavel', 'invalido'] as $known) {
-            if (str_contains($flat, $known)) {
-                return $known;
-            }
-        }
-
-        return 'erro';
     }
 
     private static function unavailable(): CallToolResult
