@@ -158,7 +158,7 @@ Legenda de risco:
 | # | Tool | Comando | Gate | Default | Risco | Descrição |
 |---|------|---------|------|---------|-------|-----------|
 | 60 | `whmcs_list_tickets` | GetTickets | READ | on | 🟢 | fields=lite (default) sem identidade/CC/anexos; full é opt-in; default une Open+Customer-Reply |
-| 61 | `whmcs_get_ticket` | GetTicket | READ | on | 🟢 | Detalhes e histórico; use ticketid (id interno) OU tid (número exibido) |
+| 61 | `whmcs_get_ticket` | GetTicket | READ | on | 🟢 | Detalhes e histórico; use ticketid (id interno) OU tid (número exibido); fields=lite (default) remove name/email/cc do ticket e de cada reply/note, fields=full é opt-in |
 | 62 | `whmcs_open_ticket` | OpenTicket | WRITE | on | 🟡 | Abre novo ticket; sem clientid exige `allow_guest=true`; notify_client=true requer COMMS |
 | 63 | `whmcs_reply_ticket` | AddTicketReply | WRITE | on | 🟡 | Responde ticket; name/email/clientid só em ticket guest; notify_client=true requer COMMS |
 | 64 | `whmcs_update_ticket` | UpdateTicket | WRITE | on | 🟡 | Atualiza status/prioridade/dept |

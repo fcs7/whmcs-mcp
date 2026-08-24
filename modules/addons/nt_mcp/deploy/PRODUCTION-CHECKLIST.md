@@ -24,11 +24,29 @@ endpoint em produção, e um cuidado **arquitetural** com o modelo de uso do MCP
 - [ ] **Trusted proxies** — atrás de proxy (Plesk/nginx), setar
       `nt_mcp_trusted_proxies` (ex.: `127.0.0.1,::1`). Sem isso, rate limiting e
       IP allowlist usam o IP do proxy, não do cliente (ver `src/Http/IpResolver.php`).
-- [ ] **Admin user** — setar `nt_mcp_admin_user` para um admin **real** de
-      `tbladmins`, com role de privilégio mínimo e somente os departamentos de
-      suporte que o conector deve enxergar. Não reutilizar o admin/token do desenv.
+- [ ] **Admin user** — setar `nt_mcp_admin_user` para um admin **dedicado** de
+      `tbladmins`, criado especificamente para o MCP de produção, com role de
+      privilégio mínimo. **Nunca reusar uma role de admin do desenv** — no
+      ambiente de desenv o admin usado (`DesenvNT`, id 3) tem decriptar cartão,
+      login-as-owner e apagar cliente/fatura, privilégios que nenhum token de
+      MCP deveria carregar em produção. Confirmar que o admin está atribuído
+      aos **departamentos reais** de produção (o desenv só tem "General
+      Enquiries", o que mascara gap de assignment — em prod, tickets fora dos
+      depts do admin do token não aparecem/não são respondíveis).
+- [ ] **Allowlist de write por alvo** — `nt_mcp_write_allowlist_clientids` e
+      `nt_mcp_write_allowlist_ticketids` (gate #14) **vêm vazias por padrão =
+      sem trava**. Antes de habilitar escrita em prod, restringir a objetos
+      conhecidos/de teste: cancelar pedido, apagar/editar quote, converter
+      quote, reply de ticket. Testar o gate **ao vivo** só em objeto
+      descartável de staging/desenv (nunca em prod): configurar a allowlist,
+      tentar um write fora dela e confirmar `write_target_not_allowed` +
+      entrada em Activity Log ("MCP API BLOCKED BY TARGET ALLOWLIST"). Esse
+      teste nunca foi exercitado ao vivo até o reteste #27.
 - [ ] **Ambiente** — configurar `nt_mcp_expected_host` com o hostname de
-      produção e confirmar `system_host` no início de cada sessão.
+      produção e confirmar `system_host` no início de cada sessão. Conector e
+      host são por ambiente — nunca reaproveitar token/conector do desenv em
+      prod. Após deploy que reinicia o MCP (restart/opcache), a sessão HTTP
+      morre; reconectar via card de reconnect do conector, não é bug.
 - [ ] **IP allowlist (opcional, recomendado)** — restringir o endpoint:
       `nt_mcp_allowed_ips = '203.0.113.10,198.51.100.0/24'`.
 - [ ] **TLS** — confirmar HTTPS válido (o endpoint rejeita HTTP com 421).

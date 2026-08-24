@@ -315,6 +315,73 @@ class TicketToolsTest extends TestCase
         $tools->getTicket(ticketid: 30, tid: '084535');
     }
 
+    public function test_get_ticket_defaults_to_lite_and_strips_pii(): void
+    {
+        $tools = $this->makeTools(function () {
+            return [
+                'result' => 'success',
+                'ticketid' => 30,
+                'tid' => '084535',
+                'userid' => 12,
+                'subject' => 'Test ticket',
+                'name' => 'Cliente Fulano',
+                'email' => 'fulano@example.com',
+                'cc' => 'copia@example.com',
+                'replies' => [
+                    'reply' => [
+                        ['message' => 'Olá', 'name' => 'Cliente Fulano', 'email' => 'fulano@example.com', 'date' => '2026-08-01'],
+                    ],
+                ],
+                'notes' => [
+                    'note' => [
+                        ['message' => 'nota interna', 'name' => 'Admin', 'email' => 'admin@example.com'],
+                    ],
+                ],
+            ];
+        });
+
+        $json = $tools->getTicket(ticketid: 30);
+        $result = json_decode($json, true);
+
+        $this->assertArrayNotHasKey('name', $result);
+        $this->assertArrayNotHasKey('email', $result);
+        $this->assertArrayNotHasKey('cc', $result);
+        $this->assertSame(12, $result['userid']);
+        $this->assertSame('Test ticket', $result['subject']);
+        $this->assertArrayNotHasKey('name', $result['replies']['reply'][0]);
+        $this->assertArrayNotHasKey('email', $result['replies']['reply'][0]);
+        $this->assertSame('Olá', $result['replies']['reply'][0]['message']);
+        $this->assertArrayNotHasKey('name', $result['notes']['note'][0]);
+        $this->assertArrayNotHasKey('email', $result['notes']['note'][0]);
+    }
+
+    public function test_get_ticket_full_keeps_pii(): void
+    {
+        $tools = $this->makeTools(function () {
+            return [
+                'result' => 'success',
+                'ticketid' => 30,
+                'name' => 'Cliente Fulano',
+                'email' => 'fulano@example.com',
+            ];
+        });
+
+        $json = $tools->getTicket(ticketid: 30, fields: 'full');
+        $result = json_decode($json, true);
+
+        $this->assertSame('Cliente Fulano', $result['name']);
+        $this->assertSame('fulano@example.com', $result['email']);
+    }
+
+    public function test_get_ticket_rejects_invalid_fields(): void
+    {
+        $tools = $this->makeTools();
+
+        $this->expectException(\InvalidArgumentException::class);
+
+        $tools->getTicket(ticketid: 30, fields: 'medium');
+    }
+
     public function test_list_tickets_adds_display_id_from_tid(): void
     {
         $tools = $this->makeTools(function () {

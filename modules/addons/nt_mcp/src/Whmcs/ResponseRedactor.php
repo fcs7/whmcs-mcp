@@ -31,6 +31,15 @@ final class ResponseRedactor
         'status', 'priority', 'lastreply', 'flag', 'service',
     ];
 
+    /**
+     * PII direta no nível do ticket e de cada reply/note de GetTicket —
+     * DROP (não allowlist) porque o corpo/histórico completo precisa
+     * sobreviver intacto; `unset` de chave ausente é no-op, então
+     * name/email/cc nunca criam campo fantasma mesmo se um payload não os
+     * trouxer.
+     */
+    private const TICKET_DETAIL_LITE_DROP = ['name', 'email', 'cc'];
+
     /** PII direta presente no nível do pedido, mas não nos seus line items. */
     private const ORDER_LITE_DROP = [
         'name', 'firstname', 'lastname', 'fullname', 'companyname', 'email',
@@ -526,6 +535,34 @@ final class ResponseRedactor
     public static function ticketListLiteView(array &$result): void
     {
         self::projectListRows($result, ['tickets', 'ticket'], self::TICKET_LIST_LITE_KEEP);
+    }
+
+    /**
+     * Remove PII direta de whmcs_get_ticket: nível raiz e cada reply/note em
+     * replies.reply / notes.note. Mantém corpo, status, datas e histórico
+     * completo — só derruba identidade (name/email/cc).
+     */
+    public static function ticketDetailLiteView(array &$result): void
+    {
+        self::dropKeys($result, self::TICKET_DETAIL_LITE_DROP);
+
+        if (isset($result['replies']['reply']) && is_array($result['replies']['reply'])) {
+            foreach ($result['replies']['reply'] as &$reply) {
+                if (is_array($reply)) {
+                    self::dropKeys($reply, self::TICKET_DETAIL_LITE_DROP);
+                }
+            }
+            unset($reply);
+        }
+
+        if (isset($result['notes']['note']) && is_array($result['notes']['note'])) {
+            foreach ($result['notes']['note'] as &$note) {
+                if (is_array($note)) {
+                    self::dropKeys($note, self::TICKET_DETAIL_LITE_DROP);
+                }
+            }
+            unset($note);
+        }
     }
 
     /** Remove PII direta de pedidos, preservando integralmente os line items. */

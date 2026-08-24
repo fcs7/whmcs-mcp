@@ -120,15 +120,19 @@ class TicketTools
         return ToolJson::encode($result);
     }
 
-    #[McpTool(name: 'whmcs_get_ticket', description: 'Obtém detalhes e histórico de um ticket. Use ticketid (id interno, ex.: 30) OU tid (número exibido, ex.: 084535) — informe exatamente um.')]
-    public function getTicket(int $ticketid = 0, string $tid = ''): string
+    #[McpTool(name: 'whmcs_get_ticket', description: 'Obtém detalhes e histórico de um ticket. Use ticketid (id interno, ex.: 30) OU tid (número exibido, ex.: 084535) — informe exatamente um. fields=lite (default) remove name/email/cc do ticket e de cada reply/note; fields=full é opt-in explícito.')]
+    public function getTicket(int $ticketid = 0, string $tid = '', #[Schema(enum: ['lite', 'full'])] string $fields = 'lite'): string
     {
+        self::assertFields($fields);
         if (($ticketid > 0) === ($tid !== '')) {
             throw new \InvalidArgumentException('Informe exatamente um de: ticketid (id interno) ou tid (número exibido)');
         }
         $params = $ticketid > 0 ? ['ticketid' => $ticketid] : ['ticketnum' => $tid];
         $result = $this->api->call('GetTicket', $params);
         $this->addDisplayIds($result);
+        if ($fields === 'lite' && ($result['result'] ?? null) === 'success') {
+            ResponseRedactor::ticketDetailLiteView($result);
+        }
         return ToolJson::encode($result);
     }
 

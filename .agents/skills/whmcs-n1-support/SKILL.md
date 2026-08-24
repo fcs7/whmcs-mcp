@@ -66,14 +66,17 @@ whmcs_get_ticket ticketid=<id interno>
 ```
 
 - Aceita `id` interno ou `tid` (#NNNNNN); a resposta sempre traz `display_id`.
-- Ler todas as `replies` antes de decidir. Última resposta é do cliente?
-  Há anexo? Há pedido explícito?
+- Default `fields=lite`: remove `name`/`email`/`cc` do ticket e de cada
+  reply/note. Ler todas as `replies` antes de decidir. Última resposta é do
+  cliente? Há anexo? Há pedido explícito?
 
 ### 3. Identidade do cliente
 
 - `ticket.userid` = `tblclients.id` (NÃO `owner_user_id`).
 - `userid = 0` ⇒ **ticket guest**. Não chamar `whmcs_get_client` (estoura
-  `not_found` ou pega cliente errado). Usar `name`/`email` do próprio ticket.
+  `not_found` ou pega cliente errado). Precisa de `name`/`email` para
+  responder → chamar `whmcs_get_ticket ticketid=<id> fields=full` (a lite
+  não traz identidade nenhuma).
 - `userid > 0` ⇒ `whmcs_get_client clientid=<userid>` (view lite, somente
   IDs/metadados/status/moeda/stats, sem nome ou e-mail). Só pedir `fields=full` se a triagem
   realmente exigir e dizer por quê.
