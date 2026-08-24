@@ -7,7 +7,7 @@ Repo: `git@github.com:fcs7/whmcs-mcp.git`
 
 ```bash
 cd modules/addons/nt_mcp
-composer install --ignore-platform-req=ext-iconv
+composer install --ignore-platform-req=ext-iconv   # OBRIGATÓRIO em worktree novo: vendor/ não é versionado
 ./vendor/bin/phpunit --testdox                    # tests
 composer audit                                    # check dependency CVEs
 rg -o "name: '[a-z_0-9]+'" src/Tools/*.php | wc -l  # 70 tools total (rg -o '#\[McpTool' dá 72: conta os comentários "sem #[McpTool]" de QuoteTools.php e ChipTools.php)
@@ -23,6 +23,8 @@ lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY
 # SecureFileSessionStoreTest não bloqueia a escrita, e sem php.ini os args entram no stack trace,
 # fazendo o CrmExceptionTest ver "PDOException" no (string) da exceção. Duas falhas ambientais.
 docker run --rm -v "$PWD:/app" -w /app -u 1000:1000 php:8.3-cli-bookworm php -d zend.exception_ignore_args=1 vendor/bin/phpunit
+# Lint na versão do desenv (8.1) — a suite roda em 8.3 e o php local é 8.5; nenhum pega sintaxe 8.2+
+docker run --rm -v "$PWD:/app" -w /app php:8.1-cli-bookworm sh -c 'find src -name "*.php" -exec php -l {} \;' | grep -v "^No syntax errors"
 # Verify desenv: download deployed tools and count MCP attributes (usa o mesmo
 # $FTP_PASS carregado acima)
 lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY_CERTIFICATE:-yes}; set ftp:ssl-force ${FTP_SSL_FORCE:-yes}; set ftp:ssl-protect-data ${FTP_SSL_FORCE:-yes}; mirror /httpdocs/modules/addons/nt_mcp/src/Tools/ /tmp/nt_mcp_desenv_check/src/Tools/; bye" 191.7.26.232 && test -f /tmp/nt_mcp_desenv_check/src/Tools/CrmTools.php && rg -o '#\[McpTool' /tmp/nt_mcp_desenv_check/src/Tools/*.php | wc -l
@@ -67,6 +69,7 @@ lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY
 
 ## Conventions
 
+- Nome de tool DEVE começar com `whmcs_` — `McpSdkAdapterTest` assere o prefixo em TODAS, inclusive em domínio que não é WHMCS (por isso `whmcs_chip_*` e não `chip_*`).
 - Tools: `#[McpTool]` (from `Mcp\Capability\Attribute\McpTool`) — retornam `json_encode(..., JSON_PRETTY_PRINT)`
 - CRM READ tools usam `#[Schema(additionalProperties:false)]` + `#[Schema(minimum:…)]` e retornam `CallToolResult::error()` para envelopes de erro
 - LocalAPI tools injetam `LocalApiClient`; CRM tools injetam `MgCrmRepository`
@@ -123,7 +126,7 @@ lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY
 - **WHMCS LocalAPI não é uniforme na chave de outcome** (2026-08-23) — a maioria dos comandos devolve `result: success|error`, mas `GetInvoice` (confirmado; possivelmente outros) devolve `status` no lugar. `LocalApiClient` lê `$result['result'] ?? $result['status'] ?? null` — `status` só é fallback quando `result` está AUSENTE, nunca sobrepõe. Se outro comando parecer cair sempre no ramo "indeterminado"/downstream mesmo com erro classificável no `ErrorClassifier`, suspeitar desta inconsistência primeiro.
 - **Debug de fatal/hang sem SSH neste Plesk** — `logs/error_log` (raiz FTP) e `logs/php-fpm_error.log` não capturam `error_log()` explícito de forma confiável (o segundo fica permanentemente em 0 bytes; `ini_get('error_log')` retorna vazio = stderr, que não chega em nenhum log acessível via FTP). Único método que funciona: subir script PHP temporário (nome aleatório + segredo aleatório na query string, deletado logo após o uso — aprovado caso a caso pelo usuário, não é o backdoor que este arquivo proíbe) que replica o trecho suspeito com `display_errors=1` e ecoa o resultado direto na resposta HTTP. Mesma técnica serve pra `opcache_reset()` quando não há acesso ao painel Plesk pra restart do PHP-FPM.
 - **Integração nt_chips: NUNCA dar require no `vendor/autoload.php` do nt_chips** — o build de produção deles roda PHP-Scoper com `Illuminate\` e `Psr\` FORA da lista de prefixados; carregar aquele vendor registra uma segunda cópia dessas interfaces e cai no mesmo fatal silencioso de "declaration compatibility" dos gotchas de PSR acima. Com o addon ATIVO o `hooks.php` dele já registra o autoloader no `init.php`, então `class_exists('\NtChips\ChipRepository')` resolve sozinho; o fallback de `ChipBridge` registra um `spl_autoload_register` só para o prefixo `NtChips\` → `modules/addons/nt_chips/src/`. As três classes usadas (`ChipRepository`, `PlayApiClient`, `AtivacaoService`) dependem só da Capsule do WHMCS e de curl nativo. nt_chips pede PHP >=8.2 no composer, mas essas três usam só `match` (8.0) e readonly property (8.1) — rodam no 8.1 do desenv. Nomes reais que divergem do óbvio: `setLpaCode()` (não `saveLpa`), `setIccid()` com CAS, `serviceOccupant()` que exclui o próprio chip (é o que torna o assign idempotente). E a armadilha pior: `PlayApiClient::consultarStatusIccid()` é consulta de LINHA (devolve `msisdn` de chip já ativado) — quem produz `play_status` é `checarIccid()`, classificado por `AtivacaoService::classificarIccid()` (discrimina pelo `success` da Play; o 409 "ICCID já alocado" vem com `success:false` e ainda assim é `alocado`, então precisa ser testado ANTES do catch-all). Não reimplementar essa leitura: errar para `alocado` libera o vínculo com ICCID que a Play recusou. Use `AtivacaoService::validarChip($chipId)`, que já persiste o status.
-- **Adicionar/remover tool ou comando do `ALLOWED_COMMANDS` quebra testes de contagem hardcoded** — `McpSdkAdapterTest` (2x), `FileElementCacheTest` (2x), `LocalApiClientTest` (3x: total de comandos, órfãos, distribuição READ/WRITE/...), `LocalApiClientGateTest` (lista de comandos "removidos" testados como rejeitados). Não são regressão real — são o contrato sendo travado de propósito; atualizar os números junto com a tool nova, não só o código de produção.
+- **Adicionar/remover tool ou comando do `ALLOWED_COMMANDS` quebra testes de contagem hardcoded** — `McpEndpointHttpTest` (1x), `McpSdkAdapterTest` (3x asserts em 2 métodos), `FileElementCacheTest` (2x), `LocalApiClientTest` (3x: total de comandos, órfãos, distribuição READ/WRITE/...), `LocalApiClientGateTest` (lista de comandos "removidos" testados como rejeitados). O número também está no NOME de dois métodos (`tools_list_returns_exactly_N_tools_with_whmcs_prefix`, `warm_cache_still_lists_N_tools`) — renomear junto. Não são regressão real — são o contrato sendo travado de propósito; atualizar os números junto com a tool nova, não só o código de produção.
 - **Admin session path-scoping** — cookies admin só são enviados para `/admin/*`, não funcionam em `/modules/addons/`
 - **CLIENTAREA vs ADMINAREA** — `define('CLIENTAREA', true)` carrega sessão cliente; para sessão admin usar redirect ao painel admin
 - **Addon access control** — cada addon precisa permissão explícita por role group (Setup > Addon Modules > Configure > Access Control)
