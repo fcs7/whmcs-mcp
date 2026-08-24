@@ -406,6 +406,11 @@ class ResponseRedactorTest extends TestCase
             'GetClientGroups'  => ['GetClientGroups', 'groups'],
             'GetClientsAddons' => ['GetClientsAddons', 'addons'],
             'GetPromotions'    => ['GetPromotions', 'promotions'],
+            'GetOrders'        => ['GetOrders', 'orders'],
+            'GetTransactions'  => ['GetTransactions', 'transactions'],
+            'GetTickets'       => ['GetTickets', 'tickets'],
+            'GetClients'       => ['GetClients', 'clients'],
+            'GetProducts'      => ['GetProducts', 'products'],
         ];
     }
 

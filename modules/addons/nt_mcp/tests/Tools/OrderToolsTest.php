@@ -549,10 +549,12 @@ class OrderToolsTest extends TestCase
         $data = json_decode($tools->getProducts(), true);
         $this->assertArrayNotHasKey('product', $data['products']);
 
-        // products ausente
+        // products ausente: desde o inventário #17 (desenv, 2026-08-23),
+        // GetProducts está em GUARANTEED_LIST_KEYS — a coleção omitida volta
+        // como [] em vez de sumir do payload.
         $tools = $this->makeTools(fn() => ['result' => 'success']);
         $data = json_decode($tools->getProducts(), true);
-        $this->assertArrayNotHasKey('products', $data);
+        $this->assertSame([], $data['products']);
     }
 
     private function bulkyCatalogFixture(int $count = 20): array

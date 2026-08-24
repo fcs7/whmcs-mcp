@@ -153,6 +153,14 @@ final class ResponseRedactor
         'GetClientGroups'  => ['groups'],
         'GetClientsAddons' => ['addons'],
         'GetPromotions'    => ['promotions'],
+        // Inventário live do desenv (#17, 2026-08-23): cada um destes omitiu a
+        // chave inteira com filtro de zero resultado, e o NOME foi confirmado
+        // numa segunda passada com payload não-vazio — nunca por heurística.
+        'GetOrders'        => ['orders'],
+        'GetTransactions'  => ['transactions'],
+        'GetTickets'       => ['tickets'],
+        'GetClients'       => ['clients'],
+        'GetProducts'      => ['products'],
     ];
 
     /**

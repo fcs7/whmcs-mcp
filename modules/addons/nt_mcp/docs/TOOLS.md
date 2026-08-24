@@ -270,20 +270,42 @@ O WHMCS omite a chave da coleção inteira em alguns comandos quando não há re
 | `GetToDoItems` | `todoitems` | payload real desenv (gotcha CLAUDE.md, 2026-08-23) |
 | `GetClientGroups` | `groups` | payload real desenv (gotcha CLAUDE.md, 2026-08-23) |
 | `GetClientsAddons` | `addons` | payload real desenv (gotcha CLAUDE.md, 2026-08-23) |
-| `GetPromotions` | `promotions` | já na constante; reconfirmar no reteste #27 |
+| `GetPromotions` | `promotions` | inventário live desenv, 2026-08-23 |
+| `GetOrders` | `orders` | inventário live desenv, 2026-08-23 |
+| `GetTransactions` | `transactions` | inventário live desenv, 2026-08-23 |
+| `GetTickets` | `tickets` | inventário live desenv, 2026-08-23 |
+| `GetClients` | `clients` | inventário live desenv, 2026-08-23 |
+| `GetProducts` | `products` | inventário live desenv, 2026-08-23 |
 
 Cada linha tem teste próprio em `ResponseRedactorTest` (data provider
 `guaranteedListKeys`); a constante e o provider são comparados por reflexão, então
 adicionar uma chave sem caso de teste falha a suite.
 
-**Inventário pendente** (comando a comando do `ALLOWED_COMMANDS`, rodando cada um no
-desenv com filtro que devolva zero): `GetInvoices`, `GetOrders`, `GetQuotes`,
-`GetTransactions`, `GetTickets`, `GetClients`, `GetClientsProducts`, `GetClientsDomains`,
-`GetProducts`, `GetProjects`, `GetAnnouncements`, `GetSupportDepartments`,
-`GetSupportStatuses`, `GetTicketPredefinedCats`, `GetTicketPredefinedReplies`,
+### Inventário live — resultado (#17, desenv, 2026-08-23)
+
+Cada comando READ do `ALLOWED_COMMANDS` foi chamado com filtro que devolve zero
+resultado; os que omitiram a coleção tiveram o NOME da chave confirmado numa
+segunda passada com payload não-vazio (nunca por heurística).
+
+**Omitem a chave → entraram na constante:** `GetOrders`, `GetTransactions`,
+`GetTickets`, `GetClients`, `GetProducts` (além das 5 já mapeadas).
+
+**Devolvem `[]` corretamente (nada a fazer):** `GetInvoices`, `GetQuotes`,
+`GetProjects`, `GetAnnouncements`, `GetSupportDepartments`, `GetSupportStatuses`,
 `GetCurrencies`, `GetPaymentMethods`, `GetOrderStatuses`, `GetActivityLog`,
-`GetTLDPricing`. Inventário live é gate do reteste #27; resultado entra na tabela acima com data. Até lá o cliente trata
-`!key` e `key.length === 0` como equivalentes.
+`GetTLDPricing`.
+
+**Devolvem `""` → já cobertos por `EMPTY_STRING_MEANS_EMPTY_LIST`:**
+`GetClientsProducts` (`products`), `GetClientsDomains` (`domains`).
+
+**Inconclusivos** — omitiram a chave, mas a instalação de desenv não tem dado
+para confirmar o nome com payload não-vazio: `GetTicketPredefinedCats`,
+`GetTicketPredefinedReplies`. **Não** foram adicionados: chave com nome
+adivinhado cria campo fantasma, que é pior que a ausência. Reconfirmar numa
+instalação que tenha categorias/respostas predefinidas cadastradas.
+
+Para os inconclusivos, o cliente deve continuar tratando `!key` e
+`key.length === 0` como equivalentes.
 
 ## Risco identificado
 
