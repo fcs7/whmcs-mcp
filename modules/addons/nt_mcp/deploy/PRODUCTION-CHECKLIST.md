@@ -33,15 +33,36 @@ endpoint em produção, e um cuidado **arquitetural** com o modelo de uso do MCP
       aos **departamentos reais** de produção (o desenv só tem "General
       Enquiries", o que mascara gap de assignment — em prod, tickets fora dos
       depts do admin do token não aparecem/não são respondíveis).
-- [ ] **Allowlist de write por alvo** — `nt_mcp_write_allowlist_clientids` e
-      `nt_mcp_write_allowlist_ticketids` (gate #14) **vêm vazias por padrão =
-      sem trava**. Antes de habilitar escrita em prod, restringir a objetos
-      conhecidos/de teste: cancelar pedido, apagar/editar quote, converter
-      quote, reply de ticket. Testar o gate **ao vivo** só em objeto
-      descartável de staging/desenv (nunca em prod): configurar a allowlist,
-      tentar um write fora dela e confirmar `write_target_not_allowed` +
-      entrada em Activity Log ("MCP API BLOCKED BY TARGET ALLOWLIST"). Esse
-      teste nunca foi exercitado ao vivo até o reteste #27.
+- [ ] **Allowlist de alvo ≠ gate de classe** — são **dois controles
+      diferentes**; confundi-los vira erro operacional. O que segura cada ação:
+
+      | Ação | Controle que realmente segura | Default no código |
+      |---|---|---|
+      | Cancelar pedido | gate **DESTRUCTIVE** | off |
+      | Apagar quote | gate **DESTRUCTIVE** | off |
+      | Converter quote → fatura | gate **FINANCIAL** (`AcceptQuote`) | off |
+      | Editar quote / reply de ticket | gate **WRITE** | **on** |
+
+      `nt_mcp_write_allowlist_clientids` / `nt_mcp_write_allowlist_ticketids`
+      (gate #14) **vêm vazias por padrão = sem trava de alvo** — lista vazia
+      não desliga comando nenhum. Não "restringir pelo allowlist" o que o gate
+      de classe já recusa: DESTRUCTIVE e FINANCIAL continuam **off** em prod.
+      O risco real é o que passa hoje: reply de ticket e edit de quote rodam
+      com WRITE on + allowlist vazia. **WRITE on + lista vazia é o desenv, não
+      é prod.** Primeiro corte: ou WRITE off (read-only), ou WRITE on somente
+      DEPOIS de allowlist preenchida + teste ao vivo do gate #14.
+- [ ] **Teste ao vivo do gate #14 (pré-requisito para WRITE em prod)** — só em
+      staging/desenv, em objeto descartável, nunca em cliente real:
+      1. criar ticket (e quote, se for testar) de lixo;
+      2. setar as allowlists **só** com esse id;
+      3. reply **dentro** da lista → ok;
+      4. reply **fora** → `write_target_not_allowed` + Activity Log
+         ("MCP API BLOCKED BY TARGET ALLOWLIST");
+      5. opcional: cancel_order/delete_quote **fora** da lista com DESTRUCTIVE
+         temporário → deve morrer no gate de alvo ANTES da LocalAPI.
+      Guest (`userid` 0) não é checado pela lista de clientes — para guest a
+      trava é a lista de tickets. Limpar allowlist e objetos de lixo depois.
+      Não repetir o teste em prod. Nunca exercitado ao vivo até o reteste #27.
 - [ ] **Ambiente** — configurar `nt_mcp_expected_host` com o hostname de
       produção e confirmar `system_host` no início de cada sessão. Conector e
       host são por ambiente — nunca reaproveitar token/conector do desenv em
@@ -56,11 +77,32 @@ endpoint em produção, e um cuidado **arquitetural** com o modelo de uso do MCP
 
 ## ⚠️ Cuidado arquitetural — o blast radius do MCP
 
-Um único token de longa duração pode dar ao LLM acesso às **64 tools**. Os gates
-WRITE, DESTRUCTIVE, FINANCIAL e COMMS ficam desligados por padrão; manter todos
-desligados durante o rollout read-only. As duas operações destrutivas publicadas
-(`whmcs_cancel_order` e `whmcs_delete_quote`) exigem também `confirm=true`.
-Notificações só ocorrem com `notify_client=true` e gate COMMS.
+Um único token de longa duração pode dar ao LLM acesso às **64 tools**.
+DESTRUCTIVE, FINANCIAL, COST e COMMS ficam desligados por padrão — mas **WRITE
+vem LIGADO por padrão**: para rollout read-only é preciso desligá-lo
+explicitamente (`nt_mcp_readonly` ou `nt_mcp_enable_write` off). As duas
+operações destrutivas publicadas (`whmcs_cancel_order` e `whmcs_delete_quote`)
+exigem também `confirm=true`. Notificações só ocorrem com `notify_client=true`
+e gate COMMS.
+
+**Não contar com hooks do lado do IDE/plugin como trava**: confirmações
+configuradas no cliente (ex.: hooks do plugin Cursor referenciando
+`suspend_service`/`terminate_service`/`accept_order` — nomes que nem são a
+superfície atual) não existem em outros clientes (bots, Claude.ai). A trava
+real é do servidor: gate de classe + allowlist de alvo + role do admin.
+
+**Ordem de go-live recomendada:**
+
+1. Role + admin + Bearer token exclusivos de prod (nunca reusar desenv).
+2. Conector/OAuth/`nt_mcp_expected_host` exclusivos de prod.
+3. nginx/CORS/trusted proxies/IP allowlist no host de prod.
+4. DESTRUCTIVE/FINANCIAL off; allowlists de cliente/ticket **não vazias**.
+5. Teste do gate #14 no desenv em objeto descartável (item P0 acima).
+6. Conferir superfícies lite (`get_ticket`/`get_client` default lite — mesmo
+   em lite, o CORPO da mensagem pode conter PII de assinatura; lite remove só
+   identidade estrutural).
+7. Dia 1 em prod: **read-only** (WRITE off). Ligar WRITE só depois dos passos
+   4–5, se o fluxo N1 exigir resposta de ticket.
 
 Risco de **prompt injection** ("tríade letal"): o mesmo token lê conteúdo
 não-confiável de terceiros (tickets, notas de cliente, CRM) **e** executa ações
