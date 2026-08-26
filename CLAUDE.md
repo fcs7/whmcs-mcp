@@ -28,6 +28,11 @@ docker run --rm -v "$PWD:/app" -w /app php:8.1-cli-bookworm sh -c 'find src -nam
 # Verify desenv: download deployed tools and count MCP attributes (usa o mesmo
 # $FTP_PASS carregado acima)
 lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY_CERTIFICATE:-yes}; set ftp:ssl-force ${FTP_SSL_FORCE:-yes}; set ftp:ssl-protect-data ${FTP_SSL_FORCE:-yes}; mirror /httpdocs/modules/addons/nt_mcp/src/Tools/ /tmp/nt_mcp_desenv_check/src/Tools/; bye" 191.7.26.232 && test -f /tmp/nt_mcp_desenv_check/src/Tools/CrmTools.php && rg -o '#\[McpTool' /tmp/nt_mcp_desenv_check/src/Tools/*.php | wc -l
+# Testar tools ao vivo via MCP Inspector CLI (precisa Bearer token do dashboard admin nt_mcp).
+# URL termina em .php (não /mcp) => --transport é obrigatório; com --transport, usar --server-url (não posicional).
+npx -y @modelcontextprotocol/inspector --cli --transport http --server-url "https://<host>/modules/addons/nt_mcp/mcp.php" \
+  --header "Authorization: Bearer $TOKEN" --method tools/list
+# tools/call: acrescentar --method tools/call --tool-name <nome> --tool-arg chave=valor
 ```
 
 ## Architecture
@@ -165,3 +170,5 @@ lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY
 - **`deploy/htaccess-well-known.conf`** — regras RewriteRule a inserir no `.htaccess` da raiz WHMCS (antes das regras WHMCS existentes) para que Claude.ai auto-descubra o OAuth 2.1 via RFC 8414 (`/.well-known/oauth-authorization-server`); sem esse passo, Custom Connector do Claude.ai não consegue descobrir os endpoints
 - **Trusted proxy unificado (WO-TP)** — `IpResolver` reusa o IP resolvido pelo WHMCS (`\App::getClientIp()`) e mescla a lista nativa `TrustedProxyIps` (aba Security) ∪ `nt_mcp_trusted_proxies`. Consequências: (i) proxies da lista NATIVA também autorizam `X-Forwarded-Proto` e `NT_MCP_ALLOW_HTTP` no `TlsEnforcer` — liste só proxies próprios na aba Security; (ii) o caminho nativo honra o "Proxy IP Header" (ex.: CF-Connecting-IP), mas o fallback só lê `X-Forwarded-For`; (iii) se a chave nativa não for `TrustedProxyIps` na versão instalada, a unificação vira no-op — observável pelo error_log "X-Forwarded-For present but no trusted proxies configured". `nt_mcp_trusted_proxies` é agora opcional/aditivo
 - **Config obrigatória pré-deploy** — `nt_mcp_admin_user` DEVE estar setado antes do deploy (senão 401 fail-closed, ver WO-7); operador também configura `nt_mcp_allowed_ips`, `nt_mcp_cors_origins`, e (opcionais) `nt_mcp_expected_host` (isolamento desenv/prod), `nt_mcp_trusted_proxies` / Trusted Proxies nativo do WHMCS
+- **MCP Inspector CLI ecoa a `Authorization` header em texto puro** na linha `npm notice run npx` do stdout — nunca `cat`/exibir saída bruta do Inspector sem antes `grep -v "$TOKEN" | sed "s#$TOKEN#<redacted>#g"`; guardar o token em arquivo `chmod 600` fora de `/tmp` compartilhado, nunca inline no comando exibido
+- **`whmcs_get_project` espera `projectid`**, não `project_id` — confirmado em bateria ao vivo 2026-08-26
