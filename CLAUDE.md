@@ -15,8 +15,11 @@ rg -o "name: '[a-z_0-9]+'" src/Tools/*.php | wc -l  # 68 tools total (rg -o '#\[
 lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror -R --only-newer --exclude .git/ --exclude vendor/ --exclude tests/ --exclude data/ --exclude .phpunit.cache/ --exclude .omc/ --exclude .full-review/ --exclude .security-hardening/ --exclude .security-hardening-archive-20260329/ . /httpdocs/modules/addons/nt_mcp/; bye" desenv.ntweb.com.br
 # Deploy com vendor/ (troca de lib SDK — sem --exclude vendor/)
 lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror -R --only-newer --exclude .git/ --exclude tests/ --exclude data/ --exclude vendor/bin/ --exclude .phpunit.cache/ --exclude .omc/ --exclude .full-review/ --exclude .security-hardening/ --exclude .security-hardening-archive-20260329/ . /httpdocs/modules/addons/nt_mcp/; bye" desenv.ntweb.com.br
-# Testes de subprocesso (McpEndpointHttpTest, DiagnosticBoundaryTest) falham no PHP 8.5 local — rodar em container:
-docker run --rm -v "$PWD:/app" -w /app php:8.3-cli-bookworm php vendor/bin/phpunit
+# Testes de subprocesso (McpEndpointHttpTest, DiagnosticBoundaryTest) falham no PHP 8.5 local — rodar em container.
+# Os 2 flags são OBRIGATÓRIOS: sem `-u 1000:1000` root escreve em arquivo 0444 e SecureFileSessionStoreTest falha;
+# com zend.exception_ignore_args=0 os args vazam no trace e CrmExceptionTest::test_the_cause_is_never_chained falha.
+docker run --rm -u 1000:1000 -v "$PWD:/app" -w /app php:8.3-cli-bookworm \
+  php -d zend.exception_ignore_args=1 vendor/bin/phpunit
 # Verify desenv: download deployed tools and count MCP attributes
 lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror /httpdocs/modules/addons/nt_mcp/src/Tools/ /tmp/nt_mcp_desenv_check/src/Tools/; bye" desenv.ntweb.com.br && test -f /tmp/nt_mcp_desenv_check/src/Tools/CrmTools.php && rg -o '#\[McpTool' /tmp/nt_mcp_desenv_check/src/Tools/*.php | wc -l
 ```
@@ -125,7 +128,7 @@ lftp -u desenvnt5442 -e "set ssl:verify-certificate no; mirror /httpdocs/modules
 - **Nunca criar debug/token files no servidor** — `debug-log.php` e `mcp-make-token.php` são backdoors; usar WHMCS Activity Log
 - **Sempre comparar git vs prod** antes e depois de deploy — servidor pode ter arquivos extras ou versões antigas
 - **lftp requer senha interativa** — sem senha, falha silenciosamente ("assume anonymous login")
-- **`mcp/sdk` pinado em 0.7.1** (pre-1.0) — v0.6→v0.7 renomeou classes (`HttpTransportHandler` → `StreamableHttpTransport`, etc.); subir de versão só em branch dedicada
+- **`mcp/sdk` pinado em 0.7.1** (pre-1.0) — v0.6→v0.7 renomeou classes (`HttpTransportHandler` → `StreamableHttpTransport`, etc.); subir de versão só em branch dedicada. **v0.8.0 já existe (2026-08-24, `php ^8.1` — compatível)**: breaking = transporte HTTP stateless, que remove a premissa do `SessionLock`; upgrade em branch `t1/mcp-sdk-0.8` só depois de main atualizada
 - **`php-http/discovery` é plugin composer** — `allow-plugins` já no composer.json; sem isso, `composer install` falha
 - **Deploy com troca de lib PRECISA incluir `vendor/`** — o comando padrão exclui vendor; usar comando "deploy com vendor/" listado em Commands
 - **`data/sessions/`, `data/cache/` e `data/session-locks/` devem ser excluídos do deploy e são 0700** — sessões dinâmicas + cache de discovery + locks; excluir sempre (o comando padrão já exclui `data/`)
