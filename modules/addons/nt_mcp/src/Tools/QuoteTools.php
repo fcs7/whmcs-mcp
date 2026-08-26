@@ -96,16 +96,22 @@ class QuoteTools
     }
 
     /**
-     * @param string $validuntil  Validade do orçamento. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY nao sao aceitos por serem ambiguos.
+     * `validuntil` é obrigatório na `CreateQuote` real do WHMCS (confirmado
+     * na doc oficial) — a assinatura antiga o tornava opcional e a chamada
+     * sem ele voltava `downstream_error` genérico (ErrorClassifier não tem
+     * padrão pra `CreateQuote`, então a mensagem real do WHMCS nunca chegava
+     * ao chamador). Bug real fechado na bateria ao vivo de 2026-08-26.
+     *
+     * @param string $validuntil  Validade do orçamento (OBRIGATÓRIO pela API do WHMCS). Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY nao sao aceitos por serem ambiguos.
      * @param string $datecreated Data de criação. Aceita YYYY-MM-DD ou ISO-8601 date-time (ex.: 2026-08-10 ou 2026-08-10T00:00:00Z). Formatos localizados como DD/MM/YYYY nao sao aceitos por serem ambiguos.
      */
-    #[McpTool(name: 'whmcs_create_quote', description: 'Cria um novo orçamento')]
+    #[McpTool(name: 'whmcs_create_quote', description: 'Cria um novo orçamento. validuntil é obrigatório (exigido pela API do WHMCS).')]
     public function createQuote(
         string $subject,
         string $stage,
         string $proposal,
+        string $validuntil,
         int $userid = 0,
-        string $validuntil = '',
         int $currencyid = 0,
         string $datecreated = '',
         string $customernotes = '',
@@ -113,8 +119,8 @@ class QuoteTools
         array $lineitems = []
     ): string {
         $params = ['subject' => $subject, 'stage' => $stage, 'proposal' => $proposal];
+        $params['validuntil'] = $this->toLocalized($validuntil, 'validuntil');
         if ($userid > 0) $params['userid'] = $userid;
-        if ($validuntil !== '') $params['validuntil'] = $this->toLocalized($validuntil, 'validuntil');
         if ($currencyid > 0) $params['currency'] = $currencyid;
         if ($datecreated !== '') $params['datecreated'] = $this->toLocalized($datecreated, 'datecreated');
         if ($customernotes !== '') $params['customernotes'] = $customernotes;
@@ -208,10 +214,22 @@ class QuoteTools
         // explícito quanto no valor HERDADO de GetQuotes (que responde em Y-m-d).
         // Ambos passam pela mesma ponte, senão a duplicação reintroduz o formato
         // errado justamente pelo caminho que ninguém digita.
+        //
+        // `validuntil` é OBRIGATÓRIO na CreateQuote real do WHMCS (bug real
+        // fechado na bateria ao vivo de 2026-08-26 — mesma raiz do fix em
+        // createQuote()). A cotação de origem pode não ter validade definida
+        // (zero-date nulificada por ResponseRedactor) e nesse caso não há
+        // valor pra herdar; falha explícita aqui, sem inventar uma data que
+        // o chamador não pediu.
         $validUntilValue = $validuntil !== '' ? $validuntil : (string)($source['validuntil'] ?? '');
-        if ($validUntilValue !== '') {
-            $newQuote['validuntil'] = $this->toLocalized($validUntilValue, 'validuntil');
+        if ($validUntilValue === '') {
+            return ToolJson::encode([
+                'result' => 'error',
+                'quoteid' => $quoteid,
+                'message' => 'CreateQuote exige validuntil e a cotação de origem não tem validade definida — informe o parâmetro validuntil explicitamente.',
+            ]);
         }
+        $newQuote['validuntil'] = $this->toLocalized($validUntilValue, 'validuntil');
 
         $dateCreatedValue = $datecreated !== '' ? $datecreated : (string)($source['datecreated'] ?? '');
         if ($dateCreatedValue !== '') {
