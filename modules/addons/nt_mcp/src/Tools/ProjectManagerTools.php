@@ -117,7 +117,16 @@ class ProjectManagerTools
     #[McpTool(name: 'whmcs_end_task_timer', description: 'Para cronômetro de uma tarefa')]
     public function endTaskTimer(int $projectid, int $taskid, int $adminid): string
     {
-        return ToolJson::encode($this->api->call('EndTaskTimer', compact('projectid', 'taskid', 'adminid')));
+        // A superfície pública usa `taskid`, igual às demais tools de tarefa.
+        // A LocalAPI EndTaskTimer, porém, chama esse MESMO valor de `timerid`.
+        // Confirmado ao vivo no desenv: `taskid` falha; `timerid` encerra o
+        // timer iniciado por StartTaskTimer (que, inconsistentemente, aceita
+        // `taskid`).
+        return ToolJson::encode($this->api->call('EndTaskTimer', [
+            'projectid' => $projectid,
+            'timerid' => $taskid,
+            'adminid' => $adminid,
+        ]));
     }
 
     #[McpTool(name: 'whmcs_add_project_message', description: 'Adiciona mensagem/comentário a um projeto')]

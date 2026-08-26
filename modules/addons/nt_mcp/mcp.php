@@ -239,8 +239,15 @@ require_once __DIR__ . '/vendor/autoload.php';
 //    `init.php`, para cobrir também o bootstrap do WHMCS/DB.
 \NtMcp\Whmcs\Diagnostics::installExceptionHandler('mcp_endpoint', $ntMcpMarkFailure);
 
-// 3. Inicializar WHMCS (3 niveis: addons/nt_mcp -> modules -> whmcs root)
-define('CLIENTAREA', true);
+// 3. Inicializar WHMCS (3 niveis: addons/nt_mcp -> modules -> whmcs root).
+//
+// Este é um endpoint de serviço autenticado, não uma página da área do
+// cliente. Definir CLIENTAREA aqui muda o comportamento da LocalAPI AddClient:
+// o WHMCS aplica a fronteira de cadastro público e rejeita até payloads válidos
+// com uma mensagem genérica de recuperação de conta. O mesmo payload fora do
+// contexto CLIENTAREA foi confirmado ao vivo e cria o cliente normalmente.
+// oauth.php continua definindo CLIENTAREA porque ali o bootstrap de sessão do
+// fluxo público é intencional.
 try {
     require_once __DIR__ . '/../../../init.php';
 } catch (\Throwable $e) {

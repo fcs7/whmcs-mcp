@@ -13,8 +13,9 @@ namespace NtMcp\Whmcs;
  * Regras que tornam isto seguro — todas necessárias:
  *
  *  1. O casamento é por padrão **exato e ancorado** (`^...$`, sobre a mensagem
- *     normalizada). Substring frouxa classificaria errado uma mensagem cuja
- *     parte variável contivesse a frase-alvo.
+ *     normalizada). A única família parametrizada também é ancorada e cobre o
+ *     template documentado de custom field obrigatório da AddClient; o nome
+ *     dinâmico do campo nunca sai do classificador.
  *  2. A redução ao enum é IMEDIATA: nada além do enum sai desta classe. O texto
  *     do WHMCS é inspecionado só em memória e nunca é copiado para retorno,
  *     exceção, log, contexto ou fallback.
@@ -135,6 +136,23 @@ final class ErrorClassifier
     ];
 
     /**
+     * Templates oficiais cujo texto contém um valor configurado pelo operador.
+     * Mantidos separados de PATTERNS para que a tabela principal continue
+     * composta apenas por frases literais auditáveis.
+     *
+     * @var array<string, array<int, array{0:string,1:string,2:string}>>
+     */
+    private const PARAMETERIZED_PATTERNS = [
+        'AddClient' => [
+            [
+                '/^you did not provide required custom field value for [^,\r\n]{1,160}(?:, you did not provide required custom field value for [^,\r\n]{1,160}){0,49}\z/u',
+                'client_field_required',
+                self::VALIDATION,
+            ],
+        ],
+    ];
+
+    /**
      * Classifica sem devolver NADA derivado do texto.
      *
      * `$params` são os parâmetros da própria chamada. Suas chaves e valores
@@ -163,6 +181,12 @@ final class ErrorClassifier
                 if (preg_match($pattern, $normalized) === 1) {
                     return self::seal($code, $category);
                 }
+            }
+        }
+
+        foreach (self::PARAMETERIZED_PATTERNS[$command] ?? [] as [$pattern, $code, $category]) {
+            if (preg_match($pattern, $normalized) === 1) {
+                return self::seal($code, $category);
             }
         }
 

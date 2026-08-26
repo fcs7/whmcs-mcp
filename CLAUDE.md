@@ -98,7 +98,10 @@ lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY
 - Trusted proxy IP: `IpResolver::resolve()` — usa `\App::getClientIp()` do WHMCS quando disponível (coherence guard contra spoof em conexão direta); `isTrustedProxy()` mescla Trusted Proxies nativo (aba Security, chave `TrustedProxyIps`) ∪ `nt_mcp_trusted_proxies` (aditivo/opcional); fallback rightmost-untrusted XFF
 - Content-Length guard: Server.php rejeita >1MB; transport maxBodyBytes = 1 MiB (hard limit)
 - Batch JSON-RPC rejeitado antes do SDK (rate limit por request): invalid requests → 400 -32600
-- customfields: json_encode (sem serialize), max 50 fields, 8KB, scalar-only
+- `customfields` público entra como JSON (máx. 50 campos/8KB, valores somente
+  escalares/null), mas `AddClient`/`UpdateClient` exigem na LocalAPI o wire
+  format legado Base64 de array PHP serializada. Só serializar DEPOIS dessa
+  validação fechada; o conector nunca faz `unserialize()` do input do chamador.
 - Passwords stripped de responses (ClientTools, ServiceTools)
 - Audit log: API calls logados com params sensíveis redactados
 - Admin action audit: logActivity() em regenerate_token, revoke_token, remove_client (ações destrutivas UI)
@@ -129,6 +132,14 @@ lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY
 - **Adicionar/remover tool ou comando do `ALLOWED_COMMANDS` quebra testes de contagem hardcoded** — `McpEndpointHttpTest` (1x), `McpSdkAdapterTest` (3x asserts em 2 métodos), `FileElementCacheTest` (2x), `LocalApiClientTest` (3x: total de comandos, órfãos, distribuição READ/WRITE/...), `LocalApiClientGateTest` (lista de comandos "removidos" testados como rejeitados). O número também está no NOME de dois métodos (`tools_list_returns_exactly_N_tools_with_whmcs_prefix`, `warm_cache_still_lists_N_tools`) — renomear junto. Não são regressão real — são o contrato sendo travado de propósito; atualizar os números junto com a tool nova, não só o código de produção.
 - **Admin session path-scoping** — cookies admin só são enviados para `/admin/*`, não funcionam em `/modules/addons/`
 - **CLIENTAREA vs ADMINAREA** — `define('CLIENTAREA', true)` carrega sessão cliente; para sessão admin usar redirect ao painel admin
+- **`mcp.php` NÃO é CLIENTAREA** — o endpoint MCP é serviço autenticado. Definir
+  `CLIENTAREA` antes do bootstrap faz a `AddClient` válida cair na fronteira de
+  cadastro público do WHMCS e voltar a mensagem genérica de recuperação de
+  conta. Confirmado ao vivo em 2026-08-26: o payload idêntico funciona sem a
+  constante. `oauth.php` continua CLIENTAREA de propósito.
+- **Timers do Project Manager usam nomes inconsistentes** — `StartTaskTimer`
+  recebe `taskid`, mas `EndTaskTimer` exige a chave `timerid` para o MESMO ID da
+  tarefa. A interface MCP mantém `taskid` e traduz apenas a chamada de término.
 - **Addon access control** — cada addon precisa permissão explícita por role group (Setup > Addon Modules > Configure > Access Control)
 - **Deploy** — via `lftp` com `set ssl:verify-certificate no` (SSH indisponível no Plesk)
 - **Não commitar debug logs** — nunca usar `@file_put_contents('/tmp/...')` em código; usar logging estruturado
