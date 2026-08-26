@@ -84,10 +84,10 @@ final class AuditMetadata
 
     /** Campos cujo VALOR pode ser registrado — e só como inteiro. */
     private const ID_FIELDS = [
-        'addonid', 'adminid', 'catid', 'clientid', 'contact_id', 'contactid',
+        'addonid', 'adminid', 'catid', 'chip_id', 'clientid', 'contact_id', 'contactid',
         'currency', 'currencyid', 'deptid', 'domainid', 'groupid', 'id', 'invoiceid',
-        'itemid', 'limitnum', 'limitstart', 'orderid', 'pid', 'projectid', 'quoteid',
-        'relatedid', 'serviceid', 'taskid', 'ticketid', 'userid',
+        'itemid', 'limitnum', 'limitstart', 'operadora_id', 'orderid', 'pid', 'projectid',
+        'quoteid', 'relatedid', 'service_id', 'serviceid', 'taskid', 'ticketid', 'userid',
     ];
 
     /** Campos cujo VALOR pode ser registrado — e só como booleano. */
