@@ -229,8 +229,8 @@ class LocalApiClientTest extends TestCase
     }
 
     // ---------------------------------------------------------------
-    // Contrato do allowlist: exatamente os 51 comandos requeridos pelas
-    // 64 tools canônicas, todos com classificação explícita.
+    // Contrato do allowlist: exatamente os 55 comandos LocalAPI requeridos
+    // pelas tools canônicas; ChipTools usa ChipGuard e não passa por aqui.
     // ---------------------------------------------------------------
 
     /** @return array<string> */
@@ -247,7 +247,7 @@ class LocalApiClientTest extends TestCase
             ->getReflectionConstant('COMMAND_CLASS')->getValue();
     }
 
-    public function test_allowed_commands_match_64_tool_profile(): void
+    public function test_allowed_commands_match_canonical_tool_profile(): void
     {
         $commands = self::allowedCommands();
 
@@ -306,7 +306,8 @@ class LocalApiClientTest extends TestCase
 
     /**
      * Nenhum comando órfão e nenhuma tool chamando comando ausente: o allowlist
-     * é exatamente o conjunto de comandos que as 64 tools realmente invocam.
+     * é exatamente o conjunto de comandos LocalAPI que as 70 tools invocam.
+     * As seis ChipTools não chamam `LocalApiClient::call()`.
      */
     public function test_allowlist_matches_exactly_the_commands_the_tools_call(): void
     {

@@ -100,6 +100,8 @@ final class CorsHandler
             'authorization',
             'mcp-protocol-version',
             'mcp-session-id',
+            'mcp-method',
+            'mcp-name',
         ];
         $seen = [];
         foreach (explode(',', $requested) as $header) {

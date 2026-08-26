@@ -85,6 +85,7 @@ class QuoteToolsTest extends TestCase
             subject: 'New quote',
             stage: 'Draft',
             proposal: 'Proposal',
+            validuntil: '2026-09-01',
             userid: 7,
             currencyid: 2,
             lineitems: [[
@@ -156,7 +157,7 @@ class QuoteToolsTest extends TestCase
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('class WRITE disabled');
 
-        $tools->createQuote(subject: 'x', stage: 'Draft', proposal: 'p');
+        $tools->createQuote(subject: 'x', stage: 'Draft', proposal: 'p', validuntil: '2026-09-01');
     }
 
     // ---------------------------------------------------------------
@@ -217,6 +218,31 @@ class QuoteToolsTest extends TestCase
         $lineitems = unserialize(base64_decode($createParams['lineitems']));
         $this->assertArrayNotHasKey('id', $lineitems[0]);
         $this->assertSame('Hosting', $lineitems[0]['desc']);
+    }
+
+    public function test_duplicate_quote_returns_error_when_source_and_override_validuntil_are_empty(): void
+    {
+        $calls = [];
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$calls) {
+            $calls[] = ['cmd' => $cmd, 'params' => $params];
+
+            if ($cmd === 'GetQuotes') {
+                // Zero-date nulificada por ResponseRedactor: `validuntil`
+                // simplesmente ausente do payload de origem.
+                return self::quoteResponse(extra: ['validuntil' => null]);
+            }
+
+            return ['result' => 'success', 'quoteid' => 11];
+        });
+
+        $json = $tools->duplicateQuote(quoteid: 10);
+        $result = json_decode($json, true);
+
+        $this->assertSame('error', $result['result']);
+        $this->assertSame(10, $result['quoteid']);
+        $this->assertStringContainsString('validuntil', $result['message']);
+        // Falha ANTES do segundo efeito — nunca chama CreateQuote sem validuntil.
+        $this->assertSame(['GetQuotes'], array_column($calls, 'cmd'));
     }
 
     public function test_duplicate_quote_returns_error_when_quote_not_found(): void

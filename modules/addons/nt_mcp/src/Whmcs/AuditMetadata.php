@@ -61,7 +61,7 @@ final class AuditMetadata
 
     /**
      * Campos cujo NOME pode ser registrado. Curada a partir dos parâmetros que
-     * as 64 tools realmente enviam. Um campo novo aparece como
+     * as 70 tools realmente enviam. Um campo novo aparece como
      * `unknown_fields` até ser adicionado aqui conscientemente.
      */
     private const KNOWN_FIELDS = [

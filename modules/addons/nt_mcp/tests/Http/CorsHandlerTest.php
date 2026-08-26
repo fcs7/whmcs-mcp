@@ -193,7 +193,8 @@ class CorsHandlerTest extends TestCase
             'duplicate exact' => ['Content-Type, Content-Type', false],
             'duplicate case-insensitive' => ['Content-Type, content-type', false],
             'duplicate with OWS' => [" Content-Type\t,\t CONTENT-TYPE ", false],
-            'allowed case and OWS' => [" authorization ,\tCONTENT-type, McP-PrOtOcOl-VeRsIoN , mcp-session-ID ", true],
+            'allowed case and OWS' => [" authorization ,\tCONTENT-type, McP-PrOtOcOl-VeRsIoN , mcp-session-ID , MCP-Method, mcp-name ", true],
+            'modern method and name' => ['MCP-Protocol-Version, MCP-Method, MCP-Name', true],
             'Last-Event-ID remains denied' => ['Last-Event-ID', false],
             'trailing comma' => ['Content-Type,', false],
             'CRLF' => ["Content-Type\r\nX-Poison: yes", false],
@@ -204,6 +205,10 @@ class CorsHandlerTest extends TestCase
     {
         $decision = CorsDecision::proceed('*', ['MCP-Session-Id'], 'POST, DELETE, OPTIONS');
         $this->assertSame('POST, DELETE, OPTIONS', $decision->headers()['Access-Control-Allow-Methods']);
+        $this->assertSame(
+            'Content-Type, Authorization, MCP-Protocol-Version, MCP-Session-Id, MCP-Method, MCP-Name',
+            $decision->headers()['Access-Control-Allow-Headers']
+        );
     }
 
     public function test_preflight_for_delete_is_allowed_under_mcp_profile_only(): void

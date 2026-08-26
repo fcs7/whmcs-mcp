@@ -149,18 +149,29 @@ class ClientTools
     }
 
     /**
-     * SECURITY FIX (S2A-02): Validate custom fields to prevent oversized
-     * payloads and non-scalar values.  Use json_encode instead of serialize
-     * to avoid latent deserialization surface in the WHMCS processing pipeline.
+     * SECURITY FIX (S2A-02): validate the caller's JSON before translating it
+     * to the legacy wire format required by AddClient/UpdateClient.
+     *
+     * WHMCS requires a Base64-encoded PHP array here. Base64(JSON) looks
+     * plausible but is not decoded by the LocalAPI, so every required custom
+     * field remains empty. `serialize()` is safe at this boundary because the
+     * decoded tree is capped and restricted to arrays of scalar/null values;
+     * no caller-supplied object can enter the serialized payload, and this
+     * connector never unserializes it.
      */
     private static function validateAndEncodeCustomFields(string $customfields): string
     {
-        $decoded = json_decode($customfields, true);
-        if (!is_array($decoded)) {
+        $decodedObject = json_decode($customfields);
+        if (json_last_error() !== JSON_ERROR_NONE) {
             throw new \InvalidArgumentException(
                 'customfields must be a valid JSON object, got: ' . json_last_error_msg()
             );
         }
+        if (!is_object($decodedObject)) {
+            throw new \InvalidArgumentException('customfields must be a JSON object, not an array or scalar');
+        }
+
+        $decoded = get_object_vars($decodedObject);
         if (count($decoded) > 50 || strlen($customfields) > 8192) {
             throw new \InvalidArgumentException('customfields exceeds size limits (max 50 fields, 8KB)');
         }
@@ -171,7 +182,7 @@ class ClientTools
                 );
             }
         }
-        return base64_encode(json_encode($decoded));
+        return base64_encode(serialize($decoded));
     }
 
     #[McpTool(name: 'whmcs_get_client_products', description: 'Lista produtos/serviços ativos de um cliente')]

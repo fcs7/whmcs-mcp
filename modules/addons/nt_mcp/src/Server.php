@@ -158,12 +158,13 @@ class Server
         $request = self::buildRequest($method, $input);
 
         // ------------------------------------------------------------------
-        // 5. Lock por sessão. O FileSessionStore do SDK não serializa
+        // 5. Lock só na era legada. O FileSessionStore do SDK não serializa
         //    requests concorrentes com o mesmo Mcp-Session-Id (lost update e
         //    resposta de A entregue a B). Segura o lock até DEPOIS do emit:
         //    no caminho SSE o body consome a sessão durante a emissão.
-        //    initialize (sem header) cria UUID novo e não precisa de lock.
-        //    Sem lock = fail-closed (503 + Retry-After), nunca "tenta assim".
+        //    initialize e requests stateless 2026-07-28 não carregam esse
+        //    header e não precisam de lock. Sem lock quando exigido =
+        //    fail-closed (503 + Retry-After), nunca "tenta assim".
         // ------------------------------------------------------------------
         $sessionHeader = trim((string) ($_SERVER['HTTP_MCP_SESSION_ID'] ?? ''));
         $lock = null;

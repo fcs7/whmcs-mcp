@@ -33,6 +33,16 @@ class ClientToolsValidationTest extends TestCase
         $tools->createClient('John', 'Doe', 'john@example.com', 'pass123', customfields: 'not-json');
     }
 
+    public function test_create_client_rejects_json_array_customfields(): void
+    {
+        $tools = $this->makeTools();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('must be a JSON object');
+
+        $tools->createClient('John', 'Doe', 'john@example.com', 'pass123', customfields: '["valor"]');
+    }
+
     public function test_create_client_rejects_oversized_customfields(): void
     {
         $tools = $this->makeTools();
@@ -74,12 +84,20 @@ class ClientToolsValidationTest extends TestCase
 
     public function test_create_client_accepts_valid_customfields(): void
     {
-        $tools = $this->makeTools();
+        $capturedParams = null;
+        $tools = $this->makeTools(function (string $cmd, array $params) use (&$capturedParams) {
+            $capturedParams = $params;
+            return ['result' => 'success', 'clientid' => 1];
+        });
 
         $result = $tools->createClient('John', 'Doe', 'john@example.com', 'pass123', customfields: '{"4":"valor"}');
 
         $decoded = json_decode($result, true);
         $this->assertSame('success', $decoded['result']);
+        $this->assertSame(
+            base64_encode(serialize(['4' => 'valor'])),
+            $capturedParams['customfields']
+        );
     }
 
     public function test_create_client_accepts_null_customfield_values(): void
@@ -127,7 +145,7 @@ class ClientToolsValidationTest extends TestCase
 
         $tools->updateClient(42, customfields: '{"4":"CPF"}');
 
-        $this->assertSame(base64_encode(json_encode(['4' => 'CPF'])), $capturedParams['customfields']);
+        $this->assertSame(base64_encode(serialize(['4' => 'CPF'])), $capturedParams['customfields']);
     }
 
     public function test_update_client_rejects_invalid_customfields(): void
@@ -137,6 +155,16 @@ class ClientToolsValidationTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
 
         $tools->updateClient(42, customfields: 'not-json');
+    }
+
+    public function test_update_client_rejects_json_array_customfields(): void
+    {
+        $tools = $this->makeTools();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('must be a JSON object');
+
+        $tools->updateClient(42, customfields: '["valor"]');
     }
 
     public function test_create_client_sends_companyname_and_suppresses_email_by_default(): void

@@ -87,7 +87,7 @@ endpoint em produção, e um cuidado **arquitetural** com o modelo de uso do MCP
 
 ## ⚠️ Cuidado arquitetural — o blast radius do MCP
 
-Um único token de longa duração pode dar ao LLM acesso às **64 tools**.
+Um único token de longa duração pode dar ao LLM acesso às **70 tools**.
 **Todas as classes de efeito colateral nascem desligadas** — WRITE, DESTRUCTIVE,
 FINANCIAL, COST e COMMS. Sem opt-in explícito (`nt_mcp_enable_* = '1'`) o
 addon é read-only na prática, que é exatamente o estado desejado no dia 1.
