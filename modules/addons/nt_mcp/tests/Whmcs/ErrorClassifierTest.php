@@ -47,6 +47,12 @@ class ErrorClassifierTest extends TestCase
         return [
             'email duplicado'     => ['AddClient', 'Email Address Already Exists', 'client_email_exists', ErrorClassifier::CONFLICT],
             'email inválido'      => ['AddClient', 'Invalid Email Address', 'client_email_invalid', ErrorClassifier::VALIDATION],
+            'custom field obrigatório' => [
+                'AddClient',
+                'You did not provide required custom field value for Número Endereço, You did not provide required custom field value for CPF ou CNPJ',
+                'client_field_required',
+                ErrorClassifier::VALIDATION,
+            ],
             'cliente inexistente' => ['GetClientsDetails', 'Client Not Found', 'client_not_found', ErrorClassifier::NOT_FOUND],
             'quote inexistente'   => ['AcceptQuote', 'Quote ID Not Found', 'quote_not_found', ErrorClassifier::NOT_FOUND],
             'quote já aceita'     => ['AcceptQuote', 'Quote Already Accepted', 'quote_already_accepted', ErrorClassifier::CONFLICT],
@@ -181,6 +187,20 @@ class ErrorClassifierTest extends TestCase
     public function test_classifier_table_still_contains_exactly_37_closed_patterns(): void
     {
         $this->assertCount(37, self::allClassifierPatternsProvider());
+    }
+
+    public function test_required_custom_field_template_is_scoped_to_add_client(): void
+    {
+        $message = 'You did not provide required custom field value for CPF ou CNPJ';
+
+        $this->assertSame(
+            'client_field_required',
+            ErrorClassifier::classify('AddClient', $message)['code']
+        );
+        $this->assertSame(
+            'downstream_error',
+            ErrorClassifier::classify('UpdateClient', $message)['code']
+        );
     }
 
     public static function allClassifierPatternsProvider(): array

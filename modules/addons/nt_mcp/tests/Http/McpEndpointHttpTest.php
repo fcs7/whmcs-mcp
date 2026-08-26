@@ -12,6 +12,16 @@ final class McpEndpointHttpTest extends TestCase
 {
     private const TOKEN = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
+    public function test_mcp_endpoint_does_not_bootstrap_as_client_area_but_oauth_still_does(): void
+    {
+        $module = dirname(__DIR__, 2);
+        $mcp = (string) file_get_contents($module . '/mcp.php');
+        $oauth = (string) file_get_contents($module . '/oauth.php');
+
+        $this->assertStringNotContainsString("define('CLIENTAREA', true)", $mcp);
+        $this->assertStringContainsString("define('CLIENTAREA', true)", $oauth);
+    }
+
     /** @var list<string> */
     private array $sandboxes = [];
 
