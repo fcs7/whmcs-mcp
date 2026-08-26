@@ -14,8 +14,9 @@ class LocalApiClient
     // WhoAmI, DecryptPassword, CreateSsoToken, etc.
     //
     // T1: reduzido de 73 para os comandos efetivamente requeridos pela
-    // superfície canônica (hoje 55 comandos para 64 tools — a contagem exata
-    // é travada por teste, não por este comentário). Comandos de custo/provisionamento
+    // superfície canônica (hoje 55 comandos LocalAPI para 70 tools; as 6 de
+    // chips não passam por esta allowlist). A contagem exata é travada por
+    // teste, não por este comentário. Comandos de custo/provisionamento
     // (ModuleSuspend, UpgradeProduct, DomainRegister, AcceptOrder, AddOrder...),
     // de comunicação (SendEmail, SendQuote) e lookups auxiliares saíram do
     // allowlist — não foram apenas desligados por gate.

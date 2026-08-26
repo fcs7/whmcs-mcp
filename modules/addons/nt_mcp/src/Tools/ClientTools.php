@@ -161,12 +161,17 @@ class ClientTools
      */
     private static function validateAndEncodeCustomFields(string $customfields): string
     {
-        $decoded = json_decode($customfields, true);
-        if (!is_array($decoded)) {
+        $decodedObject = json_decode($customfields);
+        if (json_last_error() !== JSON_ERROR_NONE) {
             throw new \InvalidArgumentException(
                 'customfields must be a valid JSON object, got: ' . json_last_error_msg()
             );
         }
+        if (!is_object($decodedObject)) {
+            throw new \InvalidArgumentException('customfields must be a JSON object, not an array or scalar');
+        }
+
+        $decoded = get_object_vars($decodedObject);
         if (count($decoded) > 50 || strlen($customfields) > 8192) {
             throw new \InvalidArgumentException('customfields exceeds size limits (max 50 fields, 8KB)');
         }

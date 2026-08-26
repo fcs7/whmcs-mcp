@@ -1,11 +1,12 @@
-# Catálogo de Tools — NT MCP (64 tools)
+# Catálogo de Tools — NT MCP (70 tools)
 
-> Atualizado em 2026-08-23. Fonte de verdade: atributos `#[McpTool(...)]` em
-> `src/Tools/*.php` + gate mapping em `src/Whmcs/LocalApiClient.php`.
-> Contagem verificada: `grep -oh "name: '[a-z_0-9]*'" src/Tools/*.php | sort -u | wc -l` = **64**.
+> Atualizado em 2026-08-26. Fonte de verdade: atributos `#[McpTool(...)]` em
+> `src/Tools/*.php`; gates LocalAPI em `src/Whmcs/LocalApiClient.php` e gates das
+> `whmcs_chip_*` em `src/Whmcs/ChipGuard.php`, com acesso via `ChipBridge.php`.
+> Contagem verificada: `grep -oh "name: '[a-z_0-9]*'" src/Tools/*.php | sort -u | wc -l` = **70**.
 
-Este documento lista **todas as 64 tools** uma a uma, com o comando WHMCS que
-cada uma invoca (ou a origem CRM para tools de CRM), a classe do gate de segurança (WO-2),
+Este documento lista **todas as 70 tools** uma a uma, com o comando WHMCS que
+cada uma invoca (ou a integração direta usada por CRM e NT Chips), a classe do gate de segurança (WO-2),
 se está **ligada por padrão**, e o **nível de risco** — para avaliar a necessidade de cada
 tool e decidir cortes.
 
@@ -19,7 +20,7 @@ decide se a chamada passa:
 | Classe | Default | Config para habilitar | Significado |
 |--------|---------|-----------------------|-------------|
 | `READ` | ✅ sempre on | — | Somente consulta |
-| `WRITE` | ✅ **on** | `nt_mcp_enable_write` (on) | Modifica dados reversíveis |
+| `WRITE` | ⛔ **off** | `nt_mcp_enable_write=1` (opt-in) | Modifica dados reversíveis |
 | `DESTRUCTIVE` | ⛔ off | `nt_mcp_enable_destructive` | Irreversível (exige confirm=true) |
 | `FINANCIAL` | ⛔ off | `nt_mcp_enable_financial` | Efeito financeiro (gera fatura) |
 | `CRM-READ` | ✅ sempre on | — | Leitura do schema real do ModulesGarden CRM via `MgCrmRepository` |
@@ -29,8 +30,10 @@ Todo comando precisa estar na allowlist (`ALLOWED_COMMANDS`) e possuir classific
 ausência em qualquer uma das duas estruturas nega a chamada.
 Impersonação (`adminid`/`adminusername`) é clampada ao admin do token.
 
-**Ponto de atenção:** `WRITE` é **on por padrão**. Tools de classe WRITE que
-mexem no serviço do cliente rodam sem opt-in explícito — ver seção "Risco identificado".
+**Ponto de atenção:** toda classe não-READ, inclusive `WRITE`, fica **desligada por padrão**.
+Habilitar escrita exige `nt_mcp_enable_write=1` em `tblconfiguration`; não há campo para
+esses gates no painel do addon. `ConfigFlag` aceita apenas os valores canônicos `'1'` e
+`'0'`: `'on'`, `'yes'` e `'true'` são inválidos e mantêm o bloqueio fail-closed.
 
 Legenda de risco:
 - 🟢 **READ** — sem risco
@@ -56,14 +59,14 @@ Legenda de risco:
 |---|------|---------|------|---------|-------|-----------|
 | 6 | `whmcs_list_clients` | GetClients | READ | on | 🟢 | fields=lite (default) mantém ID/data/grupo/status sem identidade; full é opt-in |
 | 7 | `whmcs_get_client` | GetClientsDetails | READ | on | 🟢 | fields=lite (default): somente IDs/metadados/status/moeda/stats, sem identidade; full: PII explícita, sem segredos/IP/cartão |
-| 8 | `whmcs_create_client` | AddClient | WRITE | on | 🟡 | Cria cliente (customfields JSON); notify_client=true requer COMMS |
-| 9 | `whmcs_update_client` | UpdateClient | WRITE | on | 🟡 | Atualiza cliente |
+| 8 | `whmcs_create_client` | AddClient | WRITE | ⛔ off | 🟡 | Cria cliente (customfields JSON); notify_client=true requer COMMS |
+| 9 | `whmcs_update_client` | UpdateClient | WRITE | ⛔ off | 🟡 | Atualiza cliente |
 | 10 | `whmcs_get_client_products` | GetClientsProducts | READ | on | 🟢 | Produtos/serviços do cliente |
 | 11 | `whmcs_get_client_domains` | GetClientsDomains | READ | on | 🟢 | Domínios do cliente |
 | 12 | `whmcs_get_client_invoices` | GetInvoices | READ | on | 🟢 | Mesmo contrato lite/full de list_invoices, filtrado por cliente |
 | 13 | `whmcs_get_contacts` | GetContacts | READ | on | 🟢 | Contatos/sub-contas |
-| 14 | `whmcs_add_contact` | AddContact | WRITE | on | 🟡 | Adiciona contato |
-| 15 | `whmcs_update_contact` | UpdateContact | WRITE | on | 🟡 | Atualiza contato |
+| 14 | `whmcs_add_contact` | AddContact | WRITE | ⛔ off | 🟡 | Adiciona contato |
+| 15 | `whmcs_update_contact` | UpdateContact | WRITE | ⛔ off | 🟡 | Atualiza contato |
 | 16 | `whmcs_get_client_groups` | GetClientGroups | READ | on | 🟢 | Grupos de clientes |
 | 17 | `whmcs_get_clients_addons` | GetClientsAddons | READ | on | 🟢 | Addons contratados |
 
@@ -97,7 +100,7 @@ Legenda de risco:
 | 27 | `whmcs_list_orders` | GetOrders | READ | on | 🟢 | fields=lite (default) remove PII direta do cliente; full é opt-in; line items preservados |
 | 28 | `whmcs_get_order` | GetOrders | READ | on | 🟢 | fields=lite (default) remove PII direta do cliente; segredos/IP/fraud dump nunca saem |
 | 29 | `whmcs_cancel_order` | CancelOrder | DESTRUCTIVE | ⛔ off | 🟠 | **Cancela pedido — irreversível, exige confirm=true** |
-| 30 | `whmcs_pending_order` | PendingOrder | WRITE | on | 🟡 | Coloca pedido em status pendente |
+| 30 | `whmcs_pending_order` | PendingOrder | WRITE | ⛔ off | 🟡 | Coloca pedido em status pendente |
 | 31 | `whmcs_get_products` | GetProducts | READ | on | 🟢 | Lista produtos com fields=lite (default), envelope ≤40 KB e cursor `next_limitstart`; `product_url` só com `fields=full` + `include_urls=true`, sempre relativa |
 | 32 | `whmcs_get_order_statuses` | GetOrderStatuses | READ | on | 🟢 | Status de pedido configurados + contagem |
 | 33 | `whmcs_get_promotions` | GetPromotions | READ | on | 🟢 | Promoções/cupons; filtro opcional por código |
@@ -108,13 +111,13 @@ Legenda de risco:
 |---|------|---------|------|---------|-------|-----------|
 | 34 | `whmcs_list_projects` | GetProjects | READ | on | 🟢 | completed omitido = todos; false = incompletos; true = concluídos |
 | 35 | `whmcs_get_project` | GetProject | READ | on | 🟢 | Projeto + tarefas |
-| 36 | `whmcs_create_project` | CreateProject | WRITE | on | 🟡 | Cria projeto |
-| 37 | `whmcs_update_project` | UpdateProject | WRITE | on | 🟡 | Atualiza projeto |
-| 38 | `whmcs_add_project_task` | AddProjectTask | WRITE | on | 🟡 | Adiciona tarefa |
-| 39 | `whmcs_update_project_task` | UpdateProjectTask | WRITE | on | 🟡 | Atualiza tarefa |
-| 40 | `whmcs_start_task_timer` | StartTaskTimer | WRITE | on | 🟡 | Inicia cronômetro |
-| 41 | `whmcs_end_task_timer` | EndTaskTimer | WRITE | on | 🟡 | Para cronômetro |
-| 42 | `whmcs_add_project_message` | AddProjectMessage | WRITE | on | 🟡 | Adiciona mensagem/comentário |
+| 36 | `whmcs_create_project` | CreateProject | WRITE | ⛔ off | 🟡 | Cria projeto |
+| 37 | `whmcs_update_project` | UpdateProject | WRITE | ⛔ off | 🟡 | Atualiza projeto |
+| 38 | `whmcs_add_project_task` | AddProjectTask | WRITE | ⛔ off | 🟡 | Adiciona tarefa |
+| 39 | `whmcs_update_project_task` | UpdateProjectTask | WRITE | ⛔ off | 🟡 | Atualiza tarefa |
+| 40 | `whmcs_start_task_timer` | StartTaskTimer | WRITE | ⛔ off | 🟡 | Inicia cronômetro |
+| 41 | `whmcs_end_task_timer` | EndTaskTimer | WRITE | ⛔ off | 🟡 | Para cronômetro |
+| 42 | `whmcs_add_project_message` | AddProjectMessage | WRITE | ⛔ off | 🟡 | Adiciona mensagem/comentário |
 
 ## QuoteTools (7)
 
@@ -122,9 +125,9 @@ Legenda de risco:
 |---|------|---------|------|---------|-------|-----------|
 | 43 | `whmcs_list_quotes` | GetQuotes | READ | on | 🟢 | fields=lite (default) sem PII direta, client reduzido; shape estável e is_orphan=true sem cliente |
 | 44 | `whmcs_get_quote` | GetQuotes | READ | on | 🟢 | Mesmo contrato lite/full e normalização da listagem |
-| 45 | `whmcs_create_quote` | CreateQuote | WRITE | on | 🟡 | Cria orçamento |
-| 46 | `whmcs_update_quote` | UpdateQuote | WRITE | on | 🟡 | Atualiza orçamento |
-| 47 | `whmcs_duplicate_quote` | GetQuotes (read) + CreateQuote (write) | WRITE | on | 🟡 | Duplica cotação com overrides |
+| 45 | `whmcs_create_quote` | CreateQuote | WRITE | ⛔ off | 🟡 | Cria orçamento |
+| 46 | `whmcs_update_quote` | UpdateQuote | WRITE | ⛔ off | 🟡 | Atualiza orçamento |
+| 47 | `whmcs_duplicate_quote` | GetQuotes (read) + CreateQuote (write) | WRITE | ⛔ off | 🟡 | Duplica cotação com overrides |
 | 48 | `whmcs_convert_quote_to_invoice` | AcceptQuote + UpdateInvoice | FINANCIAL | ⛔ off | 🟠 | **Converte cotação em fatura — efeito financeiro, não idempotente** |
 | 49 | `whmcs_delete_quote` | DeleteQuote | DESTRUCTIVE | ⛔ off | 🟠 | **Exclui cotação — irreversível, exige confirm=true** |
 
@@ -150,7 +153,7 @@ Legenda de risco:
 | 55 | `whmcs_get_activity_log` | GetActivityLog | READ | on | 🟢 | Log de atividades (filtra Hooks Debug, auto-scan de páginas ruidosas, `scan_capped` se o teto bater) |
 | 56 | `whmcs_get_admin_details` | GetAdminDetails | READ | on | 🟢 | Admin autenticado; inclui `system_host` (hostname) para validação de ambiente |
 | 57 | `whmcs_get_todo_items` | GetToDoItems | READ | on | 🟢 | Itens To-Do administrativos |
-| 58 | `whmcs_update_todo_item` | UpdateToDoItem | WRITE | on | 🟡 | Atualiza item To-Do (interno) |
+| 58 | `whmcs_update_todo_item` | UpdateToDoItem | WRITE | ⛔ off | 🟡 | Atualiza item To-Do (interno) |
 | 59 | `whmcs_get_currencies` | GetCurrencies | READ | on | 🟢 | Moedas configuradas |
 
 ## TicketTools (5)
@@ -159,9 +162,25 @@ Legenda de risco:
 |---|------|---------|------|---------|-------|-----------|
 | 60 | `whmcs_list_tickets` | GetTickets | READ | on | 🟢 | fields=lite (default) sem identidade/CC/anexos; full é opt-in; default une Open+Customer-Reply |
 | 61 | `whmcs_get_ticket` | GetTicket | READ | on | 🟢 | Detalhes e histórico; use ticketid (id interno) OU tid (número exibido); fields=lite (default) remove name/email/cc do ticket e de cada reply/note, fields=full é opt-in |
-| 62 | `whmcs_open_ticket` | OpenTicket | WRITE | on | 🟡 | Abre novo ticket; sem clientid exige `allow_guest=true`; notify_client=true requer COMMS |
-| 63 | `whmcs_reply_ticket` | AddTicketReply | WRITE | on | 🟡 | Responde ticket; name/email/clientid só em ticket guest; notify_client=true requer COMMS |
-| 64 | `whmcs_update_ticket` | UpdateTicket | WRITE | on | 🟡 | Atualiza status/prioridade/dept |
+| 62 | `whmcs_open_ticket` | OpenTicket | WRITE | ⛔ off | 🟡 | Abre novo ticket; sem clientid exige `allow_guest=true`; notify_client=true requer COMMS |
+| 63 | `whmcs_reply_ticket` | AddTicketReply | WRITE | ⛔ off | 🟡 | Responde ticket; name/email/clientid só em ticket guest; notify_client=true requer COMMS |
+| 64 | `whmcs_update_ticket` | UpdateTicket | WRITE | ⛔ off | 🟡 | Atualiza status/prioridade/dept |
+
+## ChipTools (6) — integração direta com o addon NT Chips
+
+| # | Tool | Origem | Gate | Default | Risco | Descrição |
+|---|------|--------|------|---------|-------|-----------|
+| 65 | `whmcs_chip_find` | ChipBridge / nt_chips | READ | on | 🟢 | Busca por ICCID, serviço ou cliente; nunca expõe LPA nem dados de PDF |
+| 66 | `whmcs_chip_register` | ChipBridge / nt_chips | WRITE | ⛔ off | 🟡 | Cadastra chip físico ou virtual no estoque |
+| 67 | `whmcs_chip_set_iccid` | ChipBridge / nt_chips | WRITE | ⛔ off | 🟡 | Grava ICCID em placeholder físico elegível |
+| 68 | `whmcs_chip_validate_play` | ChipBridge / API Play | WRITE | ⛔ off | 🟡 | Valida o ICCID na Play e persiste `play_status` |
+| 69 | `whmcs_chip_assign_service` | ChipBridge / nt_chips | WRITE | ⛔ off | 🟠 | Vincula chip ao serviço; exige `confirm=true` e respeita allowlist do cliente dono |
+| 70 | `whmcs_chip_save_lpa` | ChipBridge / nt_chips | WRITE | ⛔ off | 🟠 | Grava LPA de eSIM sem jamais devolvê-lo na resposta |
+
+> As cinco escritas de chip não passam pela LocalAPI, pois não há comando WHMCS para
+> esse domínio. `ChipGuard` aplica `nt_mcp_readonly`, `nt_mcp_enable_write` e, no vínculo
+> a serviço, a allowlist de clientes. Se o addon `nt_chips` não estiver disponível, as
+> seis tools permanecem descobertas e retornam um erro de capacidade estruturado.
 
 ---
 
@@ -188,15 +207,16 @@ Guia rápido para evitar confundir IDs:
 
 | Gate | Qtde | Default | Tools |
 |------|------|---------|-------|
-| READ | 38 | on | consultas LocalAPI — sem risco |
-| WRITE | 19 | **on** | administrativas reversíveis |
+| READ | 39 | on | consultas LocalAPI/NT Chips — sem risco |
+| WRITE | 24 | ⛔ **off** | administrativas reversíveis — opt-in via `nt_mcp_enable_write=1` |
 | DESTRUCTIVE | 2 | ⛔ off | cancel_order, delete_quote (exigem confirm=true) |
 | FINANCIAL | 1 | ⛔ off | convert_quote_to_invoice (não idempotente) |
 | CRM-READ | 4 | on | leituras do CRM mgCRM2 (MgCrmRepository) |
-| **Total** | **64** | | |
+| **Total** | **70** | | |
 
 > **Nota:** COMMS é um gate ortogonal acionado por `notify_client=true`; não acrescenta
 > tools à contagem. AddClient, OpenTicket e AddTicketReply continuam em suas classes base.
+> As cinco tools mutáveis de chips estão incluídas na classe WRITE.
 
 ---
 
@@ -318,6 +338,7 @@ e comunicação (`SendEmail`, `SendQuote`) **não estão sequer na allowlist**
 Comandos mutáveis presentes têm gates desligados por padrão. Em particular:
 - `CancelOrder` e `DeleteQuote` → DESTRUCTIVE (gate opt-in + `confirm=true`)
 - `OpenTicket` + `AddTicketReply` → WRITE; `notify_client=true` exige também COMMS
+- `whmcs_chip_assign_service` → WRITE + `confirm=true` + allowlist do cliente dono
 
 ---
 

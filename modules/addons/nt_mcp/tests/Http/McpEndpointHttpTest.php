@@ -346,6 +346,77 @@ final class McpEndpointHttpTest extends TestCase
         $this->assertSame($sessionId, $call['headers']['mcp-session-id'] ?? null);
     }
 
+    public function test_real_stateless_discover_list_and_call_need_no_session(): void
+    {
+        $root = $this->sandbox(settings: ['nt_mcp_cors_origins' => 'https://client.example']);
+        $server = $this->startServer($root);
+        $baseHeaders = [
+            'Authorization' => 'Bearer ' . self::TOKEN,
+            'Origin' => 'https://client.example',
+            'Content-Type' => 'application/json',
+            'Accept' => 'application/json, text/event-stream',
+            'MCP-Protocol-Version' => '2026-07-28',
+        ];
+
+        $preflight = $this->request($server, 'OPTIONS', [
+            'Origin' => 'https://client.example',
+            'Access-Control-Request-Method' => 'POST',
+            'Access-Control-Request-Headers' => 'authorization, content-type, mcp-protocol-version, mcp-method, mcp-name',
+        ]);
+        $this->assertSame(204, $preflight['status']);
+        $this->assertStringContainsString('MCP-Method', $preflight['headers']['access-control-allow-headers'] ?? '');
+        $this->assertStringContainsString('MCP-Name', $preflight['headers']['access-control-allow-headers'] ?? '');
+
+        $meta = [
+            'io.modelcontextprotocol/protocolVersion' => '2026-07-28',
+            'io.modelcontextprotocol/clientCapabilities' => new \stdClass(),
+            'io.modelcontextprotocol/clientInfo' => ['name' => 'http-modern', 'version' => '1.0'],
+        ];
+        $discover = $this->request(
+            $server,
+            'POST',
+            $baseHeaders + ['Mcp-Method' => 'server/discover'],
+            json_encode([
+                'jsonrpc' => '2.0', 'id' => 11, 'method' => 'server/discover',
+                'params' => ['_meta' => $meta],
+            ], JSON_UNESCAPED_SLASHES),
+        );
+        $discoverPayload = $this->assertSnapshotResponse($discover, 11);
+        $this->assertSame(['2026-07-28'], $discoverPayload['result']['supportedVersions'] ?? null);
+        $this->assertArrayNotHasKey('mcp-session-id', $discover['headers']);
+
+        $list = $this->request(
+            $server,
+            'POST',
+            $baseHeaders + ['Mcp-Method' => 'tools/list'],
+            json_encode([
+                'jsonrpc' => '2.0', 'id' => 12, 'method' => 'tools/list',
+                'params' => ['_meta' => $meta],
+            ], JSON_UNESCAPED_SLASHES),
+        );
+        $listPayload = $this->assertSnapshotResponse($list, 12);
+        $this->assertCount(70, $listPayload['result']['tools'] ?? []);
+        $this->assertArrayNotHasKey('mcp-session-id', $list['headers']);
+
+        $call = $this->request(
+            $server,
+            'POST',
+            $baseHeaders + ['Mcp-Method' => 'tools/call', 'Mcp-Name' => 'whmcs_list_clients'],
+            json_encode([
+                'jsonrpc' => '2.0', 'id' => 13, 'method' => 'tools/call',
+                'params' => [
+                    'name' => 'whmcs_list_clients',
+                    'arguments' => ['limitnum' => 1],
+                    '_meta' => $meta,
+                ],
+            ], JSON_UNESCAPED_SLASHES),
+        );
+        $callPayload = $this->assertSnapshotResponse($call, 13);
+        $this->assertFalse($callPayload['result']['isError'] ?? true);
+        $this->assertSame('complete', $callPayload['result']['resultType'] ?? null);
+        $this->assertArrayNotHasKey('mcp-session-id', $call['headers']);
+    }
+
     /**
      * DELETE encerra a sessão (SDK) e precisa passar pelo preflight do browser:
      * OPTIONS com Access-Control-Request-Method: DELETE → 204 com o perfil
@@ -402,7 +473,7 @@ final class McpEndpointHttpTest extends TestCase
         $bad = $this->request($server, 'POST', $headers + ['MCP-Protocol-Version' => 'not-a-version'], json_encode(['jsonrpc' => '2.0', 'id' => 2, 'method' => 'ping']));
         $this->assertSame(400, $bad['status']);
         $this->assertSame('application/json', $bad['headers']['content-type'] ?? null);
-        $this->assertSame(-32602, json_decode($bad['body'], true)['error']['code'] ?? null);
+        $this->assertSame(-32022, json_decode($bad['body'], true)['error']['code'] ?? null);
         $this->assertSame((string) strlen($bad['body']), $bad['headers']['content-length'] ?? null);
 
         $good = $this->request($server, 'POST', $headers + ['MCP-Protocol-Version' => '2025-11-25'], json_encode(['jsonrpc' => '2.0', 'id' => 3, 'method' => 'ping']));
@@ -522,6 +593,8 @@ final class McpEndpointHttpTest extends TestCase
         $values = var_export(array_replace($defaults, $settings), true);
         $throw = var_export($throwSetting, true);
         $rateFile = var_export($root . '/transient.json', true);
+        $sourceDir = var_export(dirname(__DIR__, 2) . '/src', true);
+        $sandboxDataDir = var_export($module . '/data', true);
         $secureCode = $secure ? '$_SERVER[\'HTTPS\'] = \'on\';' : 'unset($_SERVER[\'HTTPS\'], $_SERVER[\'HTTP_X_FORWARDED_PROTO\']);';
         $requestedHeadersCode = $forcedRequestedHeaders === null
             ? ''
@@ -544,7 +617,10 @@ final class McpEndpointHttpTest extends TestCase
             . 'public function store(string $key, string $value, int $ttl): void { $all = is_file(' . $rateFile . ') ? json_decode((string) file_get_contents(' . $rateFile . '), true) : []; '
             . 'if (!is_array($all)) { $all = []; } $all[$key] = $value; file_put_contents(' . $rateFile . ', json_encode($all), LOCK_EX); } } } '
             . 'namespace { ' . $secureCode . $requestedHeadersCode . $bootstrapPoison . $shutdownPoison
-            . 'function localAPI(string $command, array $params = [], string $admin = ""): array { return ["result" => "success", "command" => $command, "admin" => $admin]; } }';
+            . 'function localAPI(string $command, array $params = [], string $admin = ""): array { return ["result" => "success", "command" => $command, "admin" => $admin]; } '
+            . '\\NtMcp\\Server::setDataDir(' . $sandboxDataDir . '); '
+            . '\\NtMcp\\Server::setAdapterFactory(static fn(string $admin): \\NtMcp\\Mcp\\ServerAdapterInterface => new \\NtMcp\\Mcp\\McpSdkAdapter('
+            . 'new \\NtMcp\\Whmcs\\LocalApiClient($admin), ' . $sourceDir . ', ' . $sandboxDataDir . ')); }';
         file_put_contents($root . '/init.php', $bootstrap);
 
         $this->sandboxes[] = $root;

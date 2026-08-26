@@ -606,6 +606,38 @@ final class McpSdkAdapterTest extends TestCase
         return $request->withBody($factory->createStream(json_encode($payload)));
     }
 
+    private function modernRpc(
+        string $method,
+        array $params = [],
+        ?string $name = null,
+        array $headers = [],
+    ): \Psr\Http\Message\ServerRequestInterface {
+        $factory = new Psr17Factory();
+        $params['_meta'] = [
+            'io.modelcontextprotocol/protocolVersion' => McpSdkAdapter::MODERN_PROTOCOL_VERSION->value,
+            'io.modelcontextprotocol/clientCapabilities' => (object) [],
+            'io.modelcontextprotocol/clientInfo' => ['name' => 'test-modern', 'version' => '1.0'],
+        ];
+        $request = $factory->createServerRequest('POST', 'https://localhost/mcp.php')
+            ->withHeader('Content-Type', 'application/json')
+            ->withHeader('Accept', 'application/json, text/event-stream')
+            ->withHeader('MCP-Protocol-Version', McpSdkAdapter::MODERN_PROTOCOL_VERSION->value)
+            ->withHeader('Mcp-Method', $method);
+        if ($name !== null) {
+            $request = $request->withHeader('Mcp-Name', $name);
+        }
+        foreach ($headers as $header => $value) {
+            $request = $request->withHeader($header, $value);
+        }
+
+        return $request->withBody($factory->createStream(json_encode([
+            'jsonrpc' => '2.0',
+            'id' => 91,
+            'method' => $method,
+            'params' => $params,
+        ])));
+    }
+
     // ------------------------------------------------------------------
     // MCP-Protocol-Version (B) e versão efetiva (D)
     // ------------------------------------------------------------------
@@ -619,19 +651,19 @@ final class McpSdkAdapterTest extends TestCase
         $response = $adapter->handle($this->rpc($sessionId, ['jsonrpc' => '2.0', 'id' => 2, 'method' => 'ping'], ['MCP-Protocol-Version' => 'not-a-version']));
         $this->assertSame(400, $response->getStatusCode());
         $body = json_decode((string) $response->getBody(), true);
-        $this->assertSame(-32602, $body['error']['code'] ?? null);
+        $this->assertSame(-32022, $body['error']['code'] ?? null);
         $this->assertStringContainsString('Unsupported', $body['error']['message'] ?? '');
 
         $future = $adapter->handle($this->rpc($sessionId, ['jsonrpc' => '2.0', 'id' => 2, 'method' => 'ping'], ['MCP-Protocol-Version' => '2026-07-28']));
-        $this->assertSame(400, $future->getStatusCode(), 'versão inexistente no SDK 0.7.1 não é aceita');
+        $this->assertSame(400, $future->getStatusCode(), 'header moderno com envelope legado precisa ser recusado');
     }
 
     #[Test]
-    public function every_sdk_protocol_version_is_accepted_in_header(): void
+    public function every_handshake_protocol_version_is_accepted_in_header(): void
     {
         $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
         $sessionId = $this->initialize($adapter);
-        $cases = array_map(static fn(\Mcp\Schema\Enum\ProtocolVersion $v) => $v->value, \Mcp\Schema\Enum\ProtocolVersion::cases());
+        $cases = array_map(static fn(\Mcp\Schema\Enum\ProtocolVersion $v) => $v->value, \Mcp\Schema\Enum\ProtocolVersion::handshakeVersions());
         $this->assertSame(['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25'], $cases);
 
         foreach ($cases as $version) {
@@ -641,6 +673,71 @@ final class McpSdkAdapterTest extends TestCase
             $this->assertSame(2, $body['id'] ?? null, $version);
             $this->assertArrayHasKey('result', $body, $version);
         }
+    }
+
+    #[Test]
+    public function modern_server_discover_advertises_the_pinned_stateless_version_without_session(): void
+    {
+        $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
+        $response = $adapter->handle($this->modernRpc('server/discover'));
+        $body = json_decode((string) $response->getBody(), true);
+
+        $this->assertSame(200, $response->getStatusCode(), json_encode($body));
+        $this->assertSame('', $response->getHeaderLine('Mcp-Session-Id'));
+        $this->assertSame('complete', $body['result']['resultType'] ?? null);
+        $this->assertSame(
+            [McpSdkAdapter::MODERN_PROTOCOL_VERSION->value],
+            $body['result']['supportedVersions'] ?? null
+        );
+        $this->assertSame(McpSdkAdapter::SERVER_VERSION, $body['result']['_meta']['io.modelcontextprotocol/serverInfo']['version'] ?? null);
+        $this->assertArrayHasKey('tools', $body['result']['capabilities'] ?? []);
+    }
+
+    #[Test]
+    public function modern_tools_list_needs_no_initialize_and_creates_no_session(): void
+    {
+        $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
+        $response = $adapter->handle($this->modernRpc('tools/list'));
+        $body = json_decode((string) $response->getBody(), true);
+
+        $this->assertSame(200, $response->getStatusCode(), json_encode($body));
+        $this->assertSame('', $response->getHeaderLine('Mcp-Session-Id'));
+        $this->assertSame('complete', $body['result']['resultType'] ?? null);
+        $this->assertCount(70, $body['result']['tools'] ?? []);
+        $this->assertSame([], glob($this->tempDir . '/sessions/*') ?: []);
+    }
+
+    #[Test]
+    public function modern_tools_call_uses_the_same_handlers_and_local_api(): void
+    {
+        $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
+        $response = $adapter->handle($this->modernRpc(
+            'tools/call',
+            ['name' => 'whmcs_get_client', 'arguments' => ['clientid' => 5, 'fields' => 'full']],
+            'whmcs_get_client',
+        ));
+        $body = json_decode((string) $response->getBody(), true);
+        $payload = json_decode((string) ($body['result']['content'][0]['text'] ?? ''), true);
+
+        $this->assertSame(200, $response->getStatusCode(), json_encode($body));
+        $this->assertSame('complete', $body['result']['resultType'] ?? null);
+        $this->assertFalse($body['result']['isError'] ?? true);
+        $this->assertSame('GetClientsDetails', $payload['cmd'] ?? null);
+    }
+
+    #[Test]
+    public function modern_standard_headers_must_match_the_json_rpc_body(): void
+    {
+        $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
+        $response = $adapter->handle($this->modernRpc(
+            'tools/call',
+            ['name' => 'whmcs_get_client', 'arguments' => ['clientid' => 5]],
+            'different-tool',
+        ));
+        $body = json_decode((string) $response->getBody(), true);
+
+        $this->assertSame(400, $response->getStatusCode());
+        $this->assertSame(-32020, $body['error']['code'] ?? null);
     }
 
     #[Test]

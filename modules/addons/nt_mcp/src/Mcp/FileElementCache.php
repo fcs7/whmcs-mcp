@@ -13,7 +13,7 @@ use Psr\SimpleCache\CacheInterface;
 /**
  * PSR-16 mínimo, de arquivo único, para o cache de discovery do SDK.
  *
- * O SDK guarda ali um `DiscoveryState` (as 64 tools refletidas dos atributos)
+ * O SDK guarda ali um `DiscoveryState` (as 70 tools refletidas dos atributos)
  * — estado derivado do código, idempotente de reconstruir. Por isso NÃO há
  * lock: escrita é atômica (tmp + rename) e uma corrida entre dois cold starts
  * só custa um scan duplicado. O arquivo vive em data/cache (0700, negado pelo

@@ -65,7 +65,9 @@ final class CorsDecision
 
         $headers = [
             'Access-Control-Allow-Methods' => $methods,
-            'Access-Control-Allow-Headers' => 'Content-Type, Authorization, MCP-Protocol-Version, MCP-Session-Id',
+            // Handshake-era clients use MCP-Session-Id; stateless 2026-07-28
+            // clients mirror the JSON-RPC method/subject in MCP-Method/Name.
+            'Access-Control-Allow-Headers' => 'Content-Type, Authorization, MCP-Protocol-Version, MCP-Session-Id, MCP-Method, MCP-Name',
         ];
         if ($origin !== null) {
             if ($origin !== '*' && !self::isSafeOrigin($origin)) {
