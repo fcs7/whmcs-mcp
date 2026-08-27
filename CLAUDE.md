@@ -33,6 +33,10 @@ lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY
 npx -y @modelcontextprotocol/inspector --cli --transport http --server-url "https://<host>/modules/addons/nt_mcp/mcp.php" \
   --header "Authorization: Bearer $TOKEN" --method tools/list
 # tools/call: acrescentar --method tools/call --tool-name <nome> --tool-arg chave=valor
+# GOTCHA: --tool-arg coage valor 100%-numérico pra integer (quebra phonenumber/iccid:
+# "Expected string, received integer") — usar --tool-args-json '{"campo":"valor"}'.
+# GOTCHA: >10 chamadas npx do Inspector em sequência rápida = falhas silenciosas
+# esporádicas (stdout vazio, exit 0); rerodar a chamada isolada resolve sempre.
 ```
 
 ## Architecture
