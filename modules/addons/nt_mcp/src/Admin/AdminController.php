@@ -12,6 +12,7 @@ use NtMcp\Whmcs\AuditMetadata;
 use Illuminate\Database\Capsule\Manager as Capsule;
 use NtMcp\Security\CsrfProtection;
 use NtMcp\Whmcs\AdminSession;
+use NtMcp\Whmcs\ConfigFlag;
 use NtMcp\Whmcs\SystemUrl;
 
 /**
@@ -134,6 +135,49 @@ final class AdminController
                         $flashClass   = 'danger';
                     }
                 }
+            } elseif (isset($_POST['save_gate_config'])) {
+                $keys = array_merge(GateConfigAction::TOGGLE_KEYS, GateConfigAction::ALLOWLIST_KEYS);
+                $currentValues = [];
+                foreach ($keys as $key) {
+                    $currentValues[$key] = \WHMCS\Config\Setting::getValue($key);
+                }
+
+                $result = GateConfigAction::fromPost($_POST, $currentValues);
+                if (!$result['ok']) {
+                    $flashMessage = 'Erro: ' . $result['error'];
+                    $flashClass   = 'danger';
+                } elseif ($result['changes'] === []) {
+                    $flashMessage = 'Nenhuma alteracao nos gates.';
+                    $flashClass   = 'info';
+                } else {
+                    try {
+                        foreach ($result['changes'] as $key => $change) {
+                            \WHMCS\Config\Setting::setValue($key, $change['new']);
+                        }
+
+                        // Auditoria: valor NOVO de cada toggle alterado (bool) e
+                        // TAMANHO das allowlists alteradas — nunca os ids em si.
+                        $auditParams = ['adminid' => $currentAdminId];
+                        foreach ($result['changes'] as $key => $change) {
+                            if (in_array($key, GateConfigAction::ALLOWLIST_KEYS, true)) {
+                                $auditParams[$key] = $change['new'] === '' ? [] : explode(',', $change['new']);
+                            } else {
+                                $auditParams[$key] = $change['new'] === '1';
+                            }
+                        }
+                        ActivityLog::record(
+                            ActivityEvent::ADMIN_GATE_CONFIG_CHANGED,
+                            AuditMetadata::forParams($auditParams)
+                        );
+
+                        $flashMessage = 'Gates atualizados: ' . implode(', ', array_keys($result['changes'])) . '.';
+                        $flashClass   = 'success';
+                    } catch (\Throwable $ex) {
+                        Diagnostics::report(Diagnostics::CATEGORY_ADMIN_UI, 'gate_config_save', $ex);
+                        $flashMessage = 'Erro ao salvar gates. Verifique o log de erros.';
+                        $flashClass   = 'danger';
+                    }
+                }
             }
 
             // Store flash in session and redirect via JS (headers already sent in WHMCS _output)
@@ -206,6 +250,30 @@ final class AdminController
             Diagnostics::report(Diagnostics::CATEGORY_ADMIN_UI, 'oauth_data_load', $ex);
             if ($flashMessage === '') {
                 $flashMessage = 'Aviso: Nao foi possivel carregar dados OAuth. Verifique a conexao com o banco.';
+                $flashClass   = 'warning';
+            }
+        }
+
+        // Painel de gates: estado cru → ConfigFlag por toggle (a UI mostra
+        // Invalid como fail-closed em vez de fingir "desligado"), CSV cru das
+        // allowlists. Fora de um WHMCS bootstrapado nada disso é alcançado.
+        $gateToggles    = [];
+        $gateAllowlists = [];
+        try {
+            foreach (GateConfigAction::TOGGLE_KEYS as $key) {
+                $gateToggles[$key] = ConfigFlag::parse(\WHMCS\Config\Setting::getValue($key));
+            }
+            foreach (GateConfigAction::ALLOWLIST_KEYS as $key) {
+                $gateAllowlists[$key] = trim((string) (\WHMCS\Config\Setting::getValue($key) ?? ''));
+            }
+        } catch (\Throwable $ex) {
+            Diagnostics::report(Diagnostics::CATEGORY_ADMIN_UI, 'gate_config_load', $ex);
+            $gateToggles    = [];
+            $gateAllowlists = [];
+            // Sem estado carregado o template desarma o Salvar; o flash explica
+            // o porquê (mesmo padrão do bloco OAuth acima).
+            if ($flashMessage === '') {
+                $flashMessage = 'Aviso: Nao foi possivel carregar o estado dos gates. Recarregue a pagina antes de salvar.';
                 $flashClass   = 'warning';
             }
         }

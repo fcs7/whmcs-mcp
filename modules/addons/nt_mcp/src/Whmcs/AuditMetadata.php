@@ -80,6 +80,12 @@ final class AuditMetadata
         'status', 'subject', 'supportemails', 'task', 'taskid', 'tax_id', 'taxrate',
         'ticketid', 'ticketids', 'title', 'transid', 'type', 'user', 'userid',
         'validuntil', 'where', 'data',
+        // Painel de gates do dashboard admin: nomes das PRÓPRIAS chaves de
+        // config (conjunto fechado nosso, sem dado externo) para auditar o que
+        // o operador alterou.
+        'nt_mcp_readonly', 'nt_mcp_enable_write', 'nt_mcp_enable_destructive',
+        'nt_mcp_enable_financial', 'nt_mcp_enable_cost', 'nt_mcp_enable_comms',
+        'nt_mcp_write_allowlist_clientids', 'nt_mcp_write_allowlist_ticketids',
     ];
 
     /** Campos cujo VALOR pode ser registrado — e só como inteiro. */
@@ -95,10 +101,16 @@ final class AuditMetadata
         'completed', 'confirm', 'generalemails', 'ignore_dept_assignments',
         'includeCountsByStatus', 'invoiceemails', 'markdown', 'noemail',
         'productemails', 'supportemails',
+        'nt_mcp_readonly', 'nt_mcp_enable_write', 'nt_mcp_enable_destructive',
+        'nt_mcp_enable_financial', 'nt_mcp_enable_cost', 'nt_mcp_enable_comms',
     ];
 
     /** Campos de coleção: registra-se o tamanho, nunca o conteúdo. */
-    private const COUNT_FIELDS = ['lineitems', 'customfields', 'ticketids'];
+    private const COUNT_FIELDS = [
+        'lineitems', 'customfields', 'ticketids',
+        // Allowlists de alvo: registra QUANTOS ids, nunca quais.
+        'nt_mcp_write_allowlist_clientids', 'nt_mcp_write_allowlist_ticketids',
+    ];
 
     // Consultas de allowlist usadas pelo render final do Activity Log.
     public static function isKnownField(string $name): bool

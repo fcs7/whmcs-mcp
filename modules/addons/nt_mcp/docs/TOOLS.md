@@ -31,9 +31,12 @@ ausência em qualquer uma das duas estruturas nega a chamada.
 Impersonação (`adminid`/`adminusername`) é clampada ao admin do token.
 
 **Ponto de atenção:** toda classe não-READ, inclusive `WRITE`, fica **desligada por padrão**.
-Habilitar escrita exige `nt_mcp_enable_write=1` em `tblconfiguration`; não há campo para
-esses gates no painel do addon. `ConfigFlag` aceita apenas os valores canônicos `'1'` e
-`'0'`: `'on'`, `'yes'` e `'true'` são inválidos e mantêm o bloqueio fail-closed.
+Os gates e as allowlists de alvo são configuráveis no painel **"Gates de Efeito Colateral"**
+do dashboard do addon (Addon Modules > NT MCP Server) — a UI grava sempre o valor canônico
+e audita cada alteração no Activity Log (`MCP ADMIN GATE CONFIG CHANGED`). Por baixo continua
+`nt_mcp_enable_write=1` em `tblconfiguration`, e `ConfigFlag` aceita apenas os valores
+canônicos `'1'` e `'0'`: `'on'`, `'yes'` e `'true'` são inválidos e mantêm o bloqueio
+fail-closed (o painel mostra esse estado como "Valor inválido — fail-closed").
 
 Legenda de risco:
 - 🟢 **READ** — sem risco

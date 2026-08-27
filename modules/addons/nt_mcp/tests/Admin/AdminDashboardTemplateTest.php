@@ -4,10 +4,60 @@ declare(strict_types=1);
 
 namespace NtMcp\Tests\Admin;
 
+use NtMcp\Admin\GateConfigAction;
+use NtMcp\Whmcs\ConfigFlag;
 use PHPUnit\Framework\TestCase;
 
 final class AdminDashboardTemplateTest extends TestCase
 {
+    public function test_gate_panel_renders_toggles_badges_and_allowlists(): void
+    {
+        $html = $this->renderDashboard(
+            [],
+            gateToggles: [
+                'nt_mcp_readonly'           => ConfigFlag::Absent,
+                'nt_mcp_enable_write'       => ConfigFlag::On,
+                'nt_mcp_enable_destructive' => ConfigFlag::Off,
+                'nt_mcp_enable_financial'   => ConfigFlag::Invalid,
+                'nt_mcp_enable_cost'        => ConfigFlag::Absent,
+                'nt_mcp_enable_comms'       => ConfigFlag::Absent,
+            ],
+            gateAllowlists: [
+                'nt_mcp_write_allowlist_clientids' => '31,42',
+                'nt_mcp_write_allowlist_ticketids' => '',
+            ],
+        );
+
+        $this->assertStringContainsString('name="save_gate_config"', $html);
+        // WRITE ligado vem marcado; DESTRUCTIVE desligado vem desmarcado.
+        $this->assertStringContainsString('name="gate[nt_mcp_enable_write]" value="1" checked', $html);
+        $this->assertStringContainsString('name="gate[nt_mcp_enable_destructive]" value="1">', $html);
+        // Valor Invalid aparece como fail-closed, nunca como "desligado" comum.
+        $this->assertStringContainsString('fail-closed', $html);
+        $this->assertStringContainsString('name="nt_mcp_write_allowlist_clientids" value="31,42"', $html);
+    }
+
+    public function test_invalid_readonly_renders_checked_reflecting_fail_closed_effective_state(): void
+    {
+        $toggles = array_fill_keys(GateConfigAction::TOGGLE_KEYS, ConfigFlag::Absent);
+        $toggles['nt_mcp_readonly'] = ConfigFlag::Invalid;
+
+        $html = $this->renderDashboard([], gateToggles: $toggles);
+
+        // readonly é fail-closed: Invalid = efetivo LIGADO → checkbox marcado,
+        // senão um Save sem tocar em nada gravaria '0' e derrubaria o master.
+        $this->assertStringContainsString('name="gate[nt_mcp_readonly]" value="1" checked', $html);
+        $this->assertStringContainsString('fail-closed', $html);
+    }
+
+    public function test_gate_form_is_disarmed_when_state_failed_to_load(): void
+    {
+        $html = $this->renderDashboard([], gateToggles: [], gateAllowlists: []);
+
+        $this->assertStringNotContainsString('name="save_gate_config"', $html);
+        $this->assertStringContainsString('Não foi possível carregar o estado dos gates', $html);
+    }
+
     public function test_cleanup_button_is_shown_with_expired_count(): void
     {
         $html = $this->renderDashboard([
@@ -30,9 +80,18 @@ final class AdminDashboardTemplateTest extends TestCase
         $this->assertStringNotContainsString('Limpar expirados', $html);
     }
 
-    /** @param array<int, object> $oauthTokens */
-    private function renderDashboard(array $oauthTokens): string
-    {
+    /**
+     * @param array<int, object> $oauthTokens
+     * @param array<string, ConfigFlag> $gateToggles
+     * @param array<string, string> $gateAllowlists
+     */
+    private function renderDashboard(
+        array $oauthTokens,
+        ?array $gateToggles = null,
+        ?array $gateAllowlists = null,
+    ): string {
+        $gateToggles ??= array_fill_keys(GateConfigAction::TOGGLE_KEYS, ConfigFlag::Absent);
+        $gateAllowlists ??= array_fill_keys(GateConfigAction::ALLOWLIST_KEYS, '');
         $e = static fn(string $value): string => htmlspecialchars(
             $value,
             ENT_QUOTES | ENT_SUBSTITUTE,

@@ -5,8 +5,11 @@
  *
  * Variables in scope: $e, $mcpUrl, $currentAdminId, $currentAdminName,
  * $tokenHash, $tokenAdmin, $tokenCreated, $flashPlaintext, $flashMessage,
- * $flashClass, $csrf, $oauthTokens, $oauthClients, $hasAdminUserCol, $hasLastUsedAtCol
+ * $flashClass, $csrf, $oauthTokens, $oauthClients, $hasAdminUserCol, $hasLastUsedAtCol,
+ * $gateToggles (chave => ConfigFlag), $gateAllowlists (chave => CSV cru)
  */
+
+use NtMcp\Whmcs\ConfigFlag;
 
 $escapedUrl      = $e($mcpUrl);
 $escapedCsrf     = $e($csrf);
@@ -200,5 +203,85 @@ $cleanExpiredBtn = $expiredCount > 0
             </thead>
             <tbody><?= $clientsRows ?></tbody>
         </table>
+
+        <hr>
+        <h4>Gates de Efeito Colateral</h4>
+        <p class="text-muted"><small>
+            Controlam quais classes de tools o servidor MCP aceita. Tudo que não for READ nasce
+            <strong>bloqueado</strong>; ligar aqui grava o opt-in canônico (<code>1</code>) em
+            <code>tblconfiguration</code>. "Somente leitura" ligado sobrepõe qualquer gate individual.
+        </small></p>
+<?php
+$gateLabels = [
+    'nt_mcp_readonly'           => ['Somente leitura (master)', 'Bloqueia TODAS as classes de escrita, mesmo com gate individual ligado.'],
+    'nt_mcp_enable_write'       => ['WRITE', 'Criar/atualizar registros: tickets, projetos, contatos, chips, quotes (update).'],
+    'nt_mcp_enable_destructive' => ['DESTRUCTIVE', 'Excluir/cancelar: delete_quote, cancel_order.'],
+    'nt_mcp_enable_financial'   => ['FINANCIAL', 'Efeito financeiro: convert_quote_to_invoice (gera fatura).'],
+    'nt_mcp_enable_cost'        => ['COST', 'Comandos com custo externo.'],
+    'nt_mcp_enable_comms'       => ['COMMS', 'Comandos que disparam comunicação ao cliente.'],
+];
+$gateRows = '';
+foreach ($gateToggles as $gateKey => $gateFlag) {
+    [$gateLabel, $gateDesc] = $gateLabels[$gateKey] ?? [$gateKey, ''];
+    $stateBadge = match ($gateFlag) {
+        ConfigFlag::On      => '<span class="label label-success">Ligado</span>',
+        ConfigFlag::Off     => '<span class="label label-default">Desligado</span>',
+        ConfigFlag::Absent  => '<span class="label label-default">Desligado (default)</span>',
+        ConfigFlag::Invalid => '<span class="label label-danger">Valor inválido — fail-closed</span>',
+    };
+    // Estado EFETIVO, não o cru: readonly é a única flag fail-closed — Invalid
+    // conta como LIGADO, e o checkbox precisa refletir isso (um Save então
+    // canonicaliza 'true'→'1' em vez de derrubar o master switch pra '0').
+    $effectiveOn = $gateFlag === ConfigFlag::On
+        || ($gateKey === 'nt_mcp_readonly' && $gateFlag === ConfigFlag::Invalid);
+    $checked = $effectiveOn ? ' checked' : '';
+    $gateRows .= '<tr>'
+        . '<td><label style="font-weight:normal; margin:0;">'
+        . '<input type="checkbox" name="gate[' . $e($gateKey) . ']" value="1"' . $checked . '> '
+        . '<strong>' . $e($gateLabel) . '</strong></label></td>'
+        . '<td>' . $stateBadge . '</td>'
+        . '<td><small class="text-muted">' . $e($gateDesc) . '</small></td>'
+        . '</tr>';
+}
+$clientsAllow = $e($gateAllowlists['nt_mcp_write_allowlist_clientids'] ?? '');
+$ticketsAllow = $e($gateAllowlists['nt_mcp_write_allowlist_ticketids'] ?? '');
+?>
+<?php if ($gateToggles !== []): ?>
+        <form method="post">
+            <input type="hidden" name="_csrf_token" value="<?= $escapedCsrf ?>">
+            <table class="table table-bordered table-condensed" style="margin-bottom:10px;">
+                <thead>
+                    <tr><th style="width:30%;">Gate</th><th style="width:20%;">Estado atual</th><th>Libera</th></tr>
+                </thead>
+                <tbody><?= $gateRows ?></tbody>
+            </table>
+            <div class="row" style="margin-bottom:10px;">
+                <div class="col-md-6">
+                    <label for="nt-mcp-allow-clients">Allowlist de clientes (ids, CSV)</label>
+                    <input type="text" class="form-control" id="nt-mcp-allow-clients"
+                           name="nt_mcp_write_allowlist_clientids" value="<?= $clientsAllow ?>"
+                           placeholder="ex: 31,42 — vazio = sem restrição de alvo">
+                </div>
+                <div class="col-md-6">
+                    <label for="nt-mcp-allow-tickets">Allowlist de tickets (ids, CSV)</label>
+                    <input type="text" class="form-control" id="nt-mcp-allow-tickets"
+                           name="nt_mcp_write_allowlist_ticketids" value="<?= $ticketsAllow ?>"
+                           placeholder="ex: 30 — vazio = sem restrição de alvo">
+                </div>
+            </div>
+            <p class="text-muted"><small>
+                Allowlist preenchida: comandos de escrita só atingem os ids listados; qualquer outro alvo é
+                negado (<code>write_target_not_allowed</code>). Toda alteração é registrada no Activity Log.
+            </small></p>
+            <button type="submit" name="save_gate_config" value="1" class="btn btn-primary"
+                    onclick="return confirm('Salvar configuração dos gates?');">Salvar gates</button>
+        </form>
+<?php else: ?>
+        <?php /* Estado de gate ilegível: salvar aqui gravaria '0' em tudo e
+                 apagaria allowlists — sem estado carregado, sem botão. */ ?>
+        <div class="alert alert-warning">
+            Não foi possível carregar o estado dos gates. Recarregue a página antes de qualquer alteração.
+        </div>
+<?php endif; ?>
     </div>
 </div>

@@ -111,6 +111,27 @@ final class GateSettings
     /** @return int[] lista vazia quando qualquer token é inválido (nega tudo) */
     public static function parseIdCsv(string $raw, string $key): array
     {
+        $ids = self::parseIdCsvOrNull($raw);
+        if ($ids === null) {
+            self::auditConfig("invalid id in {$key} — failing closed");
+
+            return [];
+        }
+
+        return $ids;
+    }
+
+    /**
+     * Variante PURA para validação de FORMULÁRIO: null em token inválido, sem
+     * audit. `CONFIG_INVALID`/`CATEGORY_CONFIG_READ` significam "storage
+     * corrompido"; um typo digitado no painel (rejeitado antes de qualquer
+     * gravação) não pode poluir esse sinal — quem lê config armazenada continua
+     * usando `parseIdCsv()`, que audita.
+     *
+     * @return int[]|null null quando qualquer token é inválido
+     */
+    public static function parseIdCsvOrNull(string $raw): ?array
+    {
         $ids = [];
         foreach (explode(',', $raw) as $tok) {
             $tok = trim($tok);
@@ -118,9 +139,7 @@ final class GateSettings
                 continue;
             }
             if (!ctype_digit($tok) || (int) $tok <= 0) {
-                self::auditConfig("invalid id in {$key} — failing closed");
-
-                return [];
+                return null;
             }
             $ids[] = (int) $tok;
         }
