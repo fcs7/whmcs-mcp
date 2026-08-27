@@ -37,6 +37,27 @@ final class AdminDashboardTemplateTest extends TestCase
         $this->assertStringContainsString('name="nt_mcp_write_allowlist_clientids" value="31,42"', $html);
     }
 
+    public function test_invalid_readonly_renders_checked_reflecting_fail_closed_effective_state(): void
+    {
+        $toggles = array_fill_keys(GateConfigAction::TOGGLE_KEYS, ConfigFlag::Absent);
+        $toggles['nt_mcp_readonly'] = ConfigFlag::Invalid;
+
+        $html = $this->renderDashboard([], gateToggles: $toggles);
+
+        // readonly é fail-closed: Invalid = efetivo LIGADO → checkbox marcado,
+        // senão um Save sem tocar em nada gravaria '0' e derrubaria o master.
+        $this->assertStringContainsString('name="gate[nt_mcp_readonly]" value="1" checked', $html);
+        $this->assertStringContainsString('fail-closed', $html);
+    }
+
+    public function test_gate_form_is_disarmed_when_state_failed_to_load(): void
+    {
+        $html = $this->renderDashboard([], gateToggles: [], gateAllowlists: []);
+
+        $this->assertStringNotContainsString('name="save_gate_config"', $html);
+        $this->assertStringContainsString('Não foi possível carregar o estado dos gates', $html);
+    }
+
     public function test_cleanup_button_is_shown_with_expired_count(): void
     {
         $html = $this->renderDashboard([

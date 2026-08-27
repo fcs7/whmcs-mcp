@@ -66,11 +66,12 @@ final class GateConfigAction
                 continue;
             }
 
-            // Mesma regra de leitura do gate (ctype_digit, > 0). parseIdCsv
-            // devolve [] para QUALQUER token inválido; aqui isso vira recusa
-            // explícita em vez de "nega tudo" silencioso pós-gravação.
-            $ids = GateSettings::parseIdCsv($trimmed, $key);
-            if ($ids === []) {
+            // Mesma regra de leitura do gate (ctype_digit, > 0), mas na
+            // variante PURA: typo de formulário é recusa de validação, não o
+            // evento CONFIG_INVALID reservado pra storage corrompido. CSV só
+            // de vírgulas/espaços vira lista vazia = sem restrição.
+            $ids = GateSettings::parseIdCsvOrNull($trimmed);
+            if ($ids === null) {
                 return [
                     'ok'      => false,
                     'error'   => "Allowlist {$key} contém valor inválido — use apenas ids numéricos separados por vírgula. Nada foi salvo.",

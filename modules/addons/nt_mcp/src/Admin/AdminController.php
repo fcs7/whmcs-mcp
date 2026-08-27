@@ -270,6 +270,12 @@ final class AdminController
             Diagnostics::report(Diagnostics::CATEGORY_ADMIN_UI, 'gate_config_load', $ex);
             $gateToggles    = [];
             $gateAllowlists = [];
+            // Sem estado carregado o template desarma o Salvar; o flash explica
+            // o porquê (mesmo padrão do bloco OAuth acima).
+            if ($flashMessage === '') {
+                $flashMessage = 'Aviso: Nao foi possivel carregar o estado dos gates. Recarregue a pagina antes de salvar.';
+                $flashClass   = 'warning';
+            }
         }
 
         // Deliberate choice: PHP-native template (not Smarty) for explicit

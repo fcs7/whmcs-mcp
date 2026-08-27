@@ -129,6 +129,19 @@ final class GateConfigActionTest extends TestCase
         $this->assertArrayNotHasKey('nt_mcp_write_allowlist_clientids', $result['changes']);
     }
 
+    public function test_commas_only_allowlist_becomes_empty_string_not_error(): void
+    {
+        $current = $this->current(['nt_mcp_write_allowlist_clientids' => '31']);
+
+        $result = GateConfigAction::fromPost(
+            ['nt_mcp_write_allowlist_clientids' => ' , , '],
+            $current,
+        );
+
+        $this->assertTrue($result['ok']);
+        $this->assertSame('', $result['changes']['nt_mcp_write_allowlist_clientids']['new']);
+    }
+
     public function test_non_string_allowlist_payload_is_rejected(): void
     {
         $result = GateConfigAction::fromPost(

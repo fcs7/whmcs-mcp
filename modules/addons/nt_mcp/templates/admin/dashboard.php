@@ -229,7 +229,12 @@ foreach ($gateToggles as $gateKey => $gateFlag) {
         ConfigFlag::Absent  => '<span class="label label-default">Desligado (default)</span>',
         ConfigFlag::Invalid => '<span class="label label-danger">Valor inválido — fail-closed</span>',
     };
-    $checked = $gateFlag === ConfigFlag::On ? ' checked' : '';
+    // Estado EFETIVO, não o cru: readonly é a única flag fail-closed — Invalid
+    // conta como LIGADO, e o checkbox precisa refletir isso (um Save então
+    // canonicaliza 'true'→'1' em vez de derrubar o master switch pra '0').
+    $effectiveOn = $gateFlag === ConfigFlag::On
+        || ($gateKey === 'nt_mcp_readonly' && $gateFlag === ConfigFlag::Invalid);
+    $checked = $effectiveOn ? ' checked' : '';
     $gateRows .= '<tr>'
         . '<td><label style="font-weight:normal; margin:0;">'
         . '<input type="checkbox" name="gate[' . $e($gateKey) . ']" value="1"' . $checked . '> '
@@ -241,6 +246,7 @@ foreach ($gateToggles as $gateKey => $gateFlag) {
 $clientsAllow = $e($gateAllowlists['nt_mcp_write_allowlist_clientids'] ?? '');
 $ticketsAllow = $e($gateAllowlists['nt_mcp_write_allowlist_ticketids'] ?? '');
 ?>
+<?php if ($gateToggles !== []): ?>
         <form method="post">
             <input type="hidden" name="_csrf_token" value="<?= $escapedCsrf ?>">
             <table class="table table-bordered table-condensed" style="margin-bottom:10px;">
@@ -270,5 +276,12 @@ $ticketsAllow = $e($gateAllowlists['nt_mcp_write_allowlist_ticketids'] ?? '');
             <button type="submit" name="save_gate_config" value="1" class="btn btn-primary"
                     onclick="return confirm('Salvar configuração dos gates?');">Salvar gates</button>
         </form>
+<?php else: ?>
+        <?php /* Estado de gate ilegível: salvar aqui gravaria '0' em tudo e
+                 apagaria allowlists — sem estado carregado, sem botão. */ ?>
+        <div class="alert alert-warning">
+            Não foi possível carregar o estado dos gates. Recarregue a página antes de qualquer alteração.
+        </div>
+<?php endif; ?>
     </div>
 </div>
