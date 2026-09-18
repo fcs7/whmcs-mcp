@@ -1,13 +1,13 @@
-# Catálogo de Tools — NT MCP (74 tools)
+# Catálogo de Tools — NT MCP (79 tools)
 
 > Atualizado em 2026-09-18. Fonte de verdade: atributos `#[McpTool(...)]` em
 > `src/Tools/*.php`; gates LocalAPI em `src/Whmcs/LocalApiClient.php`, gates das
 > `whmcs_chip_*` em `src/Whmcs/ChipGuard.php` (acesso via `ChipBridge.php`) e gates das
 > `whmcs_translation_*` em `src/Translation/TranslationGuard.php` (acesso via
 > `EmailTemplateRepository.php`).
-> Contagem verificada: `grep -oh "name: '[a-z_0-9]*'" src/Tools/*.php | sort -u | wc -l` = **74**.
+> Contagem verificada: `grep -oh "name: '[a-z_0-9]*'" src/Tools/*.php | sort -u | wc -l` = **79**.
 
-Este documento lista **todas as 74 tools** uma a uma, com o comando WHMCS que
+Este documento lista **todas as 79 tools** uma a uma, com o comando WHMCS que
 cada uma invoca (ou a integração direta usada por CRM e NT Chips), a classe do gate de segurança (WO-2),
 se está **ligada por padrão**, e o **nível de risco** — para avaliar a necessidade de cada
 tool e decidir cortes.
@@ -220,6 +220,45 @@ Legenda de risco:
 
 ---
 
+## TranslationCatalogTools (5) — Fase 2: produto e grupo de produto
+
+| # | Tool | Origem | Gate | Default | Risco | Descrição |
+|---|------|--------|------|---------|-------|-----------|
+| 75 | `whmcs_translation_product_list` | DynamicTranslationRepository / tblproducts | READ | on | 🟢 | Lista produtos com `has_target`/`target_hash` por campo (`name`, `description` truncada a 200 chars); filtro opcional `gid` |
+| 76 | `whmcs_translation_product_get` | DynamicTranslationRepository / tblproducts | READ | on | 🟢 | Obtém até 10 produtos com texto-fonte COMPLETO por campo + tradução atual (ou `null`) + `target_hash` |
+| 77 | `whmcs_translation_product_set` | DynamicTranslationRepository | WRITE | ⛔ off | 🟡 | Grava até 20 traduções de campo (`name`/`description`) em lote (tudo-ou-nada); `confirm=false` é dry-run sem gate |
+| 78 | `whmcs_translation_product_group_list` | DynamicTranslationRepository / tblproductgroups | READ | on | 🟢 | Lista grupos de produto com texto-fonte COMPLETO (`name`, `headline`, `tagline`) e `has_target`/`target_hash` por campo |
+| 79 | `whmcs_translation_product_group_set` | DynamicTranslationRepository | WRITE | ⛔ off | 🟡 | Grava até 20 traduções de campo (`name`/`headline`/`tagline`) em lote (tudo-ou-nada); `confirm=false` é dry-run sem gate |
+
+> Mesmo desenho de `TranslationTools` (Fase 1): não passa pela LocalAPI (não existe
+> comando WHMCS de escrita para `tbldynamic_translations`). `DynamicTranslationRepository`
+> é a ÚNICA classe que toca a tabela, e `DynamicTranslationMap` é o catálogo FECHADO de
+> `kind`/`field` aceito (`product`: `name`/`description`; `product_group`:
+> `name`/`headline`/`tagline`) — Fase 3 só acrescenta entradas ali.
+>
+> **FATO CONFIRMADO no desenv**: `related_type` é o texto LITERAL com a string `{id}`
+> (nunca o id numérico substituído) — ex.: `product.{id}.name`. O id real fica em
+> `related_id`, coluna separada; o mesmo literal serve para qualquer produto/grupo daquele
+> campo.
+>
+> `target_language` aceita SOMENTE `'english'` nesta fase (`invalid_target_language` para
+> qualquer outro valor, recusado ANTES de qualquer consulta). Nesta fase só a tradução
+> PT→EN é suportada — sem o par de sentidos que a Fase 1 tem para e-mail.
+>
+> `_set` exige hash otimista (`expected_hash`) por item, valida com
+> `TranslationValidator::validateField()` (paridade Smarty/HTML quando presentes; campos
+> `text` — `name`/`headline`/`tagline` — têm limite de 255 caracteres; `description`
+> (`textarea`) não tem limite, só paridade HTML), recusa item duplicado no mesmo lote
+> (`duplicate_item`), grava backup JSONL do estado anterior em
+> `data/translation-backups/dynamic-<kind>-<target>-YYYYMMDD.jsonl` ANTES de cada escrita e
+> só passa por `TranslationGuard::assertWriteAllowed` quando `confirm=true`. `UPDATE` toca
+> somente a coluna `translation` (e `updated_at`, quando a coluna existe na instalação —
+> detectado por probe, nunca exigido). Pré-requisito: "Enable Dynamic Translations" ligado
+> no WHMCS (`whmcs_translation_status` informa o estado e, desde a Fase 2, também a
+> contagem de linhas de `tbldynamic_translations` por idioma e por `related_type`).
+
+---
+
 ## Qual ID usar
 
 Guia rápido para evitar confundir IDs:
@@ -243,17 +282,19 @@ Guia rápido para evitar confundir IDs:
 
 | Gate | Qtde | Default | Tools |
 |------|------|---------|-------|
-| READ | 42 | on | consultas LocalAPI/NT Chips/Tradução — sem risco |
-| WRITE | 25 | ⛔ **off** | administrativas reversíveis — opt-in via `nt_mcp_enable_write=1` |
+| READ | 45 | on | consultas LocalAPI/NT Chips/Tradução — sem risco |
+| WRITE | 27 | ⛔ **off** | administrativas reversíveis — opt-in via `nt_mcp_enable_write=1` |
 | DESTRUCTIVE | 2 | ⛔ off | cancel_order, delete_quote (exigem confirm=true) |
 | FINANCIAL | 1 | ⛔ off | convert_quote_to_invoice (não idempotente) |
 | CRM-READ | 4 | on | leituras do CRM mgCRM2 (MgCrmRepository) |
-| **Total** | **74** | | |
+| **Total** | **79** | | |
 
 > **Nota:** COMMS é um gate ortogonal acionado por `notify_client=true`; não acrescenta
 > tools à contagem. AddClient, OpenTicket e AddTicketReply continuam em suas classes base.
-> As cinco tools mutáveis de chips e `whmcs_translation_email_set` estão incluídas na
-> classe WRITE; as três leituras de tradução estão incluídas na classe READ.
+> As cinco tools mutáveis de chips, `whmcs_translation_email_set`,
+> `whmcs_translation_product_set` e `whmcs_translation_product_group_set` estão incluídas
+> na classe WRITE; as demais leituras de tradução (Fases 1 e 2) estão incluídas na classe
+> READ.
 
 ---
 

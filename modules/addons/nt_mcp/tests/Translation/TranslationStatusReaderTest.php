@@ -6,6 +6,7 @@ namespace NtMcp\Tests\Translation;
 
 use NtMcp\Translation\TranslationStatusReader;
 use NtMcp\Tests\Support\FakeCapsule;
+use NtMcp\Tests\Support\FakeCrmSchemaProbe;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
@@ -42,6 +43,36 @@ final class TranslationStatusReaderTest extends TestCase
         $reader = new TranslationStatusReader(static fn(): string => 'enabled');
 
         $this->assertSame('enabled', $reader->dynamicTranslationsEnabled());
+    }
+
+    #[Test]
+    public function dynamic_translation_counts_is_empty_when_table_is_absent(): void
+    {
+        $reader = new TranslationStatusReader(static fn(): string => 'unknown', new FakeCrmSchemaProbe([]));
+
+        $this->assertSame(['by_language' => [], 'by_related_type' => []], $reader->dynamicTranslationCounts());
+    }
+
+    #[Test]
+    public function dynamic_translation_counts_groups_by_language_and_related_type(): void
+    {
+        FakeCapsule::withRows('tbldynamic_translations', [
+            ['language' => 'english', 'related_type' => 'product.{id}.name'],
+            ['language' => 'english', 'related_type' => 'product.{id}.name'],
+            ['language' => 'english', 'related_type' => 'product.{id}.description'],
+            ['language' => 'portuguese-br', 'related_type' => 'product_group.{id}.name'],
+        ]);
+        $probe = new FakeCrmSchemaProbe(['tbldynamic_translations' => ['language', 'related_type']]);
+        $reader = new TranslationStatusReader(static fn(): string => 'unknown', $probe);
+
+        $counts = $reader->dynamicTranslationCounts();
+
+        $this->assertSame(['english' => 3, 'portuguese-br' => 1], $counts['by_language']);
+        $this->assertSame([
+            'product.{id}.description' => 1,
+            'product.{id}.name' => 2,
+            'product_group.{id}.name' => 1,
+        ], $counts['by_related_type']);
     }
 
     // -----------------------------------------------------------

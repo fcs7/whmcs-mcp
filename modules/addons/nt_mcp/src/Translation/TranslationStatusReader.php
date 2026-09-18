@@ -4,24 +4,33 @@ declare(strict_types=1);
 
 namespace NtMcp\Translation;
 
+use NtMcp\Crm\CapsuleSchemaProbe;
+use NtMcp\Crm\CrmSchemaProbe;
 use WHMCS\Database\Capsule;
 
 /**
  * Leitura auxiliar de `whmcs_translation_status`, fora de `tblemailtemplates`.
  *
  * Deliberadamente SEPARADA de `EmailTemplateRepository` (que é a ÚNICA classe
- * que toca `tblemailtemplates`): aqui o dado é `tblclients.language` — só
- * contagem por idioma, nenhum outro campo de cliente — e a leitura da flag
- * "Enable Dynamic Translations" do WHMCS.
+ * que toca `tblemailtemplates`) e de `DynamicTranslationRepository` (que é a
+ * ÚNICA classe que ESCREVE em `tbldynamic_translations`): aqui o dado é
+ * `tblclients.language` — só contagem por idioma, nenhum outro campo de
+ * cliente —, a leitura da flag "Enable Dynamic Translations" do WHMCS, e uma
+ * leitura AGREGADA e somente-leitura de `tbldynamic_translations` (contagem
+ * por idioma e por `related_type`) para confirmar ao vivo os formatos
+ * gravados pela Fase 2+.
  */
 final class TranslationStatusReader
 {
     /** @var callable():string */
     private $dynamicTranslationsProbe;
 
-    public function __construct(?callable $dynamicTranslationsProbe = null)
+    private CrmSchemaProbe $schemaProbe;
+
+    public function __construct(?callable $dynamicTranslationsProbe = null, ?CrmSchemaProbe $schemaProbe = null)
     {
         $this->dynamicTranslationsProbe = $dynamicTranslationsProbe ?? self::defaultProbe();
+        $this->schemaProbe = $schemaProbe ?? new CapsuleSchemaProbe();
     }
 
     /**
@@ -52,6 +61,42 @@ final class TranslationStatusReader
     public function dynamicTranslationsEnabled(): string
     {
         return (string) ($this->dynamicTranslationsProbe)();
+    }
+
+    /**
+     * Contagem por `language` e por `related_type` (os literais fechados de
+     * `DynamicTranslationMap`, ex.: `'product.{id}.name'`) em
+     * `tbldynamic_translations` — só tipos e contagens, nunca o texto
+     * traduzido. Tabela ausente (fase ainda não confirmada no desenv/prod, ou
+     * "Enable Dynamic Translations" nunca usado) devolve contagens vazias em
+     * vez de erro: esta leitura é panorama complementar de `status`, não um
+     * requisito para o restante do payload.
+     *
+     * @return array{by_language: array<string,int>, by_related_type: array<string,int>}
+     */
+    public function dynamicTranslationCounts(): array
+    {
+        $tableFact = $this->schemaProbe->hasTable(TranslationSchema::TABLE_DYNAMIC_TRANSLATIONS);
+        if (!$tableFact->isPresent()) {
+            return ['by_language' => [], 'by_related_type' => []];
+        }
+
+        $rows = Capsule::table(TranslationSchema::TABLE_DYNAMIC_TRANSLATIONS)
+            ->select(['language', 'related_type'])
+            ->get();
+
+        $byLanguage = [];
+        $byRelatedType = [];
+        foreach ($rows as $row) {
+            $language = (string) (is_array($row) ? ($row['language'] ?? '') : ($row->language ?? ''));
+            $relatedType = (string) (is_array($row) ? ($row['related_type'] ?? '') : ($row->related_type ?? ''));
+            $byLanguage[$language] = ($byLanguage[$language] ?? 0) + 1;
+            $byRelatedType[$relatedType] = ($byRelatedType[$relatedType] ?? 0) + 1;
+        }
+        ksort($byLanguage);
+        ksort($byRelatedType);
+
+        return ['by_language' => $byLanguage, 'by_related_type' => $byRelatedType];
     }
 
     private static function defaultProbe(): callable

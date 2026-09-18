@@ -179,4 +179,78 @@ final class TranslationValidatorTest extends TestCase
             $this->assertStringNotContainsString($secretBody, $error['detail']);
         }
     }
+
+    // -----------------------------------------------------------
+    // validateField() — Fase 2 (produto/grupo, um único texto por campo)
+    // -----------------------------------------------------------
+
+    #[Test]
+    public function field_accepts_matching_plain_text(): void
+    {
+        $errors = $this->validator()->validateField('Fibra Optica', 'Fiber Optic', 'text');
+
+        $this->assertSame([], $errors);
+    }
+
+    #[Test]
+    public function field_accepts_matching_html_in_textarea(): void
+    {
+        $errors = $this->validator()->validateField('<p>Descricao</p>', '<p>Description</p>', 'textarea');
+
+        $this->assertSame([], $errors);
+    }
+
+    #[Test]
+    public function field_rejects_empty_text(): void
+    {
+        $errors = $this->validator()->validateField('Fibra Optica', '   ', 'text');
+
+        $codes = array_column($errors, 'code');
+        $this->assertContains('empty_text', $codes);
+    }
+
+    #[Test]
+    public function field_rejects_text_over_255_chars_for_text_input_type(): void
+    {
+        $errors = $this->validator()->validateField('Fibra', str_repeat('a', 256), 'text');
+
+        $codes = array_column($errors, 'code');
+        $this->assertContains('text_too_long', $codes);
+    }
+
+    #[Test]
+    public function field_allows_more_than_255_chars_for_textarea(): void
+    {
+        $long = str_repeat('a', 300);
+        $errors = $this->validator()->validateField($long, $long, 'textarea');
+
+        $this->assertSame([], $errors);
+    }
+
+    #[Test]
+    public function field_rejects_html_tag_mismatch_in_textarea(): void
+    {
+        $errors = $this->validator()->validateField('<p>Corpo</p><div>rodape</div>', '<p>Body</p>', 'textarea');
+
+        $codes = array_column($errors, 'code');
+        $this->assertContains('html_tag_mismatch', $codes);
+    }
+
+    #[Test]
+    public function field_rejects_emoji(): void
+    {
+        $errors = $this->validator()->validateField('Fibra', "Fiber \u{1F600}", 'text');
+
+        $codes = array_column($errors, 'code');
+        $this->assertContains('unsupported_4byte_char', $codes);
+    }
+
+    #[Test]
+    public function field_rejects_invalid_utf8(): void
+    {
+        $errors = $this->validator()->validateField('Fibra', "Bad \xB1\x31", 'text');
+
+        $codes = array_column($errors, 'code');
+        $this->assertContains('invalid_utf8', $codes);
+    }
 }

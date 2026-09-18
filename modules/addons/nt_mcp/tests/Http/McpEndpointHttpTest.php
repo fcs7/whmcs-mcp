@@ -332,7 +332,7 @@ final class McpEndpointHttpTest extends TestCase
             'jsonrpc' => '2.0', 'id' => 2, 'method' => 'tools/list', 'params' => new \stdClass(),
         ]));
         $listPayload = $this->assertSnapshotResponse($list, 2);
-        $this->assertCount(74, $listPayload['result']['tools'] ?? []);
+        $this->assertCount(79, $listPayload['result']['tools'] ?? []);
         $this->assertSame($sessionId, $list['headers']['mcp-session-id'] ?? null);
 
         $call = $this->request($server, 'POST', $headers, json_encode([
@@ -395,7 +395,7 @@ final class McpEndpointHttpTest extends TestCase
             ], JSON_UNESCAPED_SLASHES),
         );
         $listPayload = $this->assertSnapshotResponse($list, 12);
-        $this->assertCount(74, $listPayload['result']['tools'] ?? []);
+        $this->assertCount(79, $listPayload['result']['tools'] ?? []);
         $this->assertArrayNotHasKey('mcp-session-id', $list['headers']);
 
         $call = $this->request(

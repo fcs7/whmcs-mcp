@@ -31,13 +31,21 @@ final class TranslationBackup
 
     /**
      * @param array<string, mixed> $entry Precisa conter `target_language`
-     *     (um dos literais de `EmailTemplateRepository::SUPPORTED_TARGET_LANGUAGES`)
-     *     — vira parte do nome do arquivo, então é validado por formato aqui
-     *     (defesa em profundidade; a checagem de literal suportado já
-     *     aconteceu no repositório antes de chamar `append()`).
+     *     (um dos literais suportados pelo repositório chamador) — vira parte
+     *     do nome do arquivo, então é validado por formato aqui (defesa em
+     *     profundidade; a checagem de literal suportado já aconteceu no
+     *     repositório antes de chamar `append()`).
+     * @param string $domain Prefixo do arquivo — `'emailtemplates'` (Fase 1,
+     *     default, preserva o nome de arquivo já em uso) ou `'dynamic-<kind>'`
+     *     (Fase 2+, ex.: `'dynamic-product'`). Mesma validação por formato do
+     *     `target_language` — nunca interpolado sem checagem.
      */
-    public function append(array $entry): void
+    public function append(array $entry, string $domain = 'emailtemplates'): void
     {
+        if ($domain === '' || preg_match('/^[a-z_-]+$/', $domain) !== 1) {
+            throw new \RuntimeException("translation backup: invalid domain '{$domain}'.");
+        }
+
         $target = (string) ($entry['target_language'] ?? '');
         if ($target === '' || preg_match('/^[a-z-]+$/', $target) !== 1) {
             throw new \RuntimeException("translation backup: invalid target_language '{$target}'.");
@@ -46,7 +54,7 @@ final class TranslationBackup
         $dir = rtrim($this->dataDir, '/') . '/translation-backups';
         $this->ensureDir($dir);
 
-        $file = $dir . '/emailtemplates-' . $target . '-' . gmdate('Ymd') . '.jsonl';
+        $file = $dir . '/' . $domain . '-' . $target . '-' . gmdate('Ymd') . '.jsonl';
         $line = json_encode($entry, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         if (!is_string($line)) {
             throw new \RuntimeException('translation backup: failed to encode entry.');

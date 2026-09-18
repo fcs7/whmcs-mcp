@@ -115,6 +115,26 @@ final class TranslationBackupTest extends TestCase
     }
 
     #[Test]
+    public function accepts_a_custom_domain_prefix_for_dynamic_translations(): void
+    {
+        $backup = new TranslationBackup($this->dir);
+
+        $backup->append(['id' => 7, 'target_language' => 'english'], 'dynamic-product');
+
+        $file = $this->dir . '/translation-backups/dynamic-product-english-' . gmdate('Ymd') . '.jsonl';
+        $this->assertFileExists($file);
+    }
+
+    #[Test]
+    public function throws_when_domain_has_an_unsafe_shape(): void
+    {
+        $backup = new TranslationBackup($this->dir);
+
+        $this->expectException(\RuntimeException::class);
+        $backup->append(['id' => 1, 'target_language' => 'english'], '../../etc');
+    }
+
+    #[Test]
     public function throws_when_directory_cannot_be_created(): void
     {
         // Um ARQUIVO no lugar onde o diretório deveria existir impede mkdir().

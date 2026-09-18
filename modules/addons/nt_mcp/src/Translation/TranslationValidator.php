@@ -79,6 +79,53 @@ final class TranslationValidator
         return $errors;
     }
 
+    /**
+     * Validação de UM campo dinâmico (Fase 2: produto/grupo, via
+     * `tbldynamic_translations`). Mesma paridade de tags Smarty/HTML de
+     * `validate()`, mas por um único texto (não subject+message), e o limite
+     * de tamanho só se aplica a `input_type='text'` (nomes/headline/tagline —
+     * mesmo teto de `subject`); `'textarea'` (description) não tem limite,
+     * como `message`.
+     *
+     * @return array<int, array{code:string, detail:string}>
+     */
+    public function validateField(string $sourceText, string $text, string $inputType): array
+    {
+        $errors = [];
+
+        if (trim($text) === '') {
+            $errors[] = ['code' => 'empty_text', 'detail' => 'text vazio apos trim.'];
+        } elseif ($inputType === 'text' && mb_strlen($text) > self::MAX_SUBJECT_LENGTH) {
+            $errors[] = [
+                'code' => 'text_too_long',
+                'detail' => sprintf('text com %d caracteres excede o limite de %d.', mb_strlen($text), self::MAX_SUBJECT_LENGTH),
+            ];
+        }
+
+        $validUtf8 = mb_check_encoding($text, 'UTF-8');
+        if (!$validUtf8) {
+            $errors[] = ['code' => 'invalid_utf8', 'detail' => 'text contem bytes UTF-8 invalidos.'];
+        } elseif (preg_match(self::FOUR_BYTE_CHAR_PATTERN, $text) === 1) {
+            $errors[] = ['code' => 'unsupported_4byte_char', 'detail' => 'text contem caractere fora do BMP (ex.: emoji).'];
+        }
+
+        if ($errors !== []) {
+            return $errors;
+        }
+
+        $smartyDiff = self::multisetDiff(self::tokens($sourceText, self::SMARTY_PATTERN), self::tokens($text, self::SMARTY_PATTERN));
+        if ($smartyDiff !== null) {
+            $errors[] = ['code' => 'smarty_token_mismatch', 'detail' => $smartyDiff];
+        }
+
+        $htmlDiff = self::multisetDiff(self::tagNames($sourceText), self::tagNames($text));
+        if ($htmlDiff !== null) {
+            $errors[] = ['code' => 'html_tag_mismatch', 'detail' => $htmlDiff];
+        }
+
+        return $errors;
+    }
+
     /** @return array<int, string> */
     private static function tokens(string $text, string $pattern): array
     {

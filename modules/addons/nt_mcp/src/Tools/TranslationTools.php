@@ -77,6 +77,7 @@ class TranslationTools
 
         $summary['client_languages'] = $this->statusReader->clientLanguageCounts();
         $summary['dynamic_translations_enabled'] = $this->statusReader->dynamicTranslationsEnabled();
+        $summary['dynamic_translations'] = $this->statusReader->dynamicTranslationCounts();
 
         return ToolJson::encode($summary);
     }

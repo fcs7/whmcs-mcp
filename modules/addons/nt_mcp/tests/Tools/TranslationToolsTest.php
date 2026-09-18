@@ -60,7 +60,7 @@ final class TranslationToolsTest extends TestCase
             new EmailTemplateRepository($this->healthyGuard()),
             new TranslationGuard($gates),
             new TranslationBackup(sys_get_temp_dir() . '/nt_mcp_tools_test_' . uniqid('', true)),
-            new TranslationStatusReader(static fn(): string => 'unknown')
+            new TranslationStatusReader(static fn(): string => 'unknown', new FakeCrmSchemaProbe(['tblemailtemplates' => self::COLUMNS]))
         );
     }
 
@@ -218,5 +218,6 @@ final class TranslationToolsTest extends TestCase
         $this->assertSame(['english', 'portuguese-br'], $payload['supported_target_languages']);
         $this->assertSame('unknown', $payload['dynamic_translations_enabled']);
         $this->assertArrayHasKey('client_languages', $payload);
+        $this->assertSame(['by_language' => [], 'by_related_type' => []], $payload['dynamic_translations']);
     }
 }
