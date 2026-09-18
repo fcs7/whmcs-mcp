@@ -29,13 +29,24 @@ final class TranslationBackup
         $this->dataDir = $dataDir ?? (__DIR__ . '/../../data');
     }
 
-    /** @param array<string, mixed> $entry */
+    /**
+     * @param array<string, mixed> $entry Precisa conter `target_language`
+     *     (um dos literais de `EmailTemplateRepository::SUPPORTED_TARGET_LANGUAGES`)
+     *     — vira parte do nome do arquivo, então é validado por formato aqui
+     *     (defesa em profundidade; a checagem de literal suportado já
+     *     aconteceu no repositório antes de chamar `append()`).
+     */
     public function append(array $entry): void
     {
+        $target = (string) ($entry['target_language'] ?? '');
+        if ($target === '' || preg_match('/^[a-z-]+$/', $target) !== 1) {
+            throw new \RuntimeException("translation backup: invalid target_language '{$target}'.");
+        }
+
         $dir = rtrim($this->dataDir, '/') . '/translation-backups';
         $this->ensureDir($dir);
 
-        $file = $dir . '/emailtemplates-' . gmdate('Ymd') . '.jsonl';
+        $file = $dir . '/emailtemplates-' . $target . '-' . gmdate('Ymd') . '.jsonl';
         $line = json_encode($entry, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         if (!is_string($line)) {
             throw new \RuntimeException('translation backup: failed to encode entry.');

@@ -167,16 +167,28 @@ Escopo: e-mail apenas (as 4 tools da Fase 1).
   `\WHMCS\Config\Setting::getValue('EnableTranslations')`, com fallback
   `'unknown'` se a chave não existir.
 
-## 8. Premissa a validar (passo 0 da bateria)
+## 8. Premissa a validar (passo 0 da bateria) — RESOLVIDO 2026-09-18
 
-Este spec assume: linha master (`language=''`) = PT, e a variante `english`
-é a que falta. Mas os templates padrão de fábrica do WHMCS nascem em inglês;
-se o admin já traduziu criando as linhas master em inglês e as PT como
-variante, a direção se inverte. O mecanismo de upsert por idioma é o mesmo
-nos dois casos, mas **as constantes de idioma-fonte e idioma-alvo só são
-fixadas depois de ler `whmcs_translation_status` no desenv** e conferir
-contra a distribuição de `tblclients.language`. Se a premissa cair, o plano
-volta ao usuário antes de qualquer `_set` ser habilitado.
+Este spec assumia: linha master (`language=''`) = PT, e a variante `english`
+é a que falta. **Achado real no desenv**: os 92 masters são MISTOS — cerca de
+75 são templates padrão de fábrica do WHMCS, já em inglês, e cerca de 17 são
+customizados pelo admin, em PT. Já existem 6 linhas `portuguese-br` e 1
+`english` no banco. A premissa de idioma-fonte único caiu; a de idioma-ALVO
+único também caiu.
+
+Decisão: `EmailTemplateRepository::SOURCE_LANGUAGE` continua fixo em `''`
+(o master, seja qual for o idioma do conteúdo dele), mas o idioma-ALVO
+deixou de ser uma constante fixa e virou parâmetro `target_language` em toda
+tool e todo método do repositório — aceita apenas os literais de
+`SUPPORTED_TARGET_LANGUAGES = ['english', 'portuguese-br']`
+(`DEFAULT_TARGET_LANGUAGE = 'english'`). Um valor fora da lista é recusado
+(`invalid_target_language`) antes de qualquer consulta ao banco. O
+mecanismo de upsert por `name` continua o mesmo nos dois sentidos.
+`whmcs_translation_email_list` devolve `variants` (idiomas com linha irmã já
+existente para aquele `name`) para o chamador decidir, por item, qual sentido
+faz sentido: `target_language='portuguese-br'` para os masters padrão (em
+inglês) e `target_language='english'` para os masters customizados (em PT) —
+nunca traduzir um master que já esteja no idioma-alvo pedido.
 
 ## 9. Fora de escopo
 

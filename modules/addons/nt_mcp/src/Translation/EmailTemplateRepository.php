@@ -10,26 +10,33 @@ use WHMCS\Database\Capsule;
 /**
  * Fronteira ÚNICA entre as tools de tradução e `tblemailtemplates`.
  *
- * PREMISSA (a validar no desenv, ver plano — "Verificação", passo 0): o master
- * (idioma-fonte) é `language=''` (PT, o padrão de instalação do WHMCS) e o
- * idioma-alvo desta fase é `'english'`. Se a instalação real inverter isso
- * (admin traduziu criando linhas `portuguese-br` sobre um master já em
- * inglês), as DUAS constantes trocam de valor — o mecanismo de upsert por
- * `name` é o mesmo nos dois casos.
+ * ACHADO no desenv (2026-09-18, ver plano — "Verificação", passo 0): os 92
+ * masters (`language=''`) são MISTOS — a maioria (~75) são templates padrão
+ * do WHMCS em inglês, e uma minoria (~17) são customizados em PT. Já existem
+ * linhas `portuguese-br` (6) e `english` (1) no banco. Por isso o
+ * idioma-alvo NÃO é fixo: cada chamada escolhe entre os literais de
+ * `SUPPORTED_TARGET_LANGUAGES`, e `SOURCE_LANGUAGE` (o master, `''`)
+ * continua o mesmo nos dois sentidos — o mecanismo de upsert por `name` não
+ * muda.
  *
  * Nenhum método aceita nome de tabela ou coluna vindo de fora: todo acesso
- * usa as constantes de `TranslationSchema`. Nenhuma consulta acontece antes
- * do schema guard.
+ * usa as constantes de `TranslationSchema`. `target_language` só aceita os
+ * literais de `SUPPORTED_TARGET_LANGUAGES` — nunca é interpolado em SQL fora
+ * do `where` parametrizado, e um valor fora da lista é recusado ANTES de
+ * qualquer consulta (inclusive antes do schema guard).
  */
 final class EmailTemplateRepository
 {
     private const TABLE = TranslationSchema::TABLE_EMAIL_TEMPLATES;
 
-    /** Idioma do template master (fonte). */
+    /** Idioma do template master (fonte) — sempre `''`, nos dois sentidos de tradução. */
     public const SOURCE_LANGUAGE = '';
 
-    /** Idioma-alvo da Fase 1. */
-    public const TARGET_LANGUAGE = 'english';
+    /** Idiomas-alvo aceitos por esta fase. */
+    public const SUPPORTED_TARGET_LANGUAGES = ['english', 'portuguese-br'];
+
+    /** Alvo padrão quando o chamador não especifica um. */
+    public const DEFAULT_TARGET_LANGUAGE = 'english';
 
     /** Colunas copiadas do master ao criar a linha EN (além de subject/message). */
     private const COPIED_COLUMNS = [
@@ -48,13 +55,21 @@ final class EmailTemplateRepository
     }
 
     /**
-     * Masters (idioma-fonte, `type<>'admin'`), com `has_en` calculado pela
-     * existência de um irmão de mesmo `name` no idioma-alvo.
+     * Masters (idioma-fonte, `type<>'admin'`), com `has_target` e `variants`
+     * calculados por uma única consulta de TODOS os irmãos (`language<>''`,
+     * `type<>'admin'`) — `variants` lista, em ordem, os idiomas que já têm
+     * linha irmã para aquele `name`; `has_target` é `target_language in
+     * variants`.
      *
      * @return array<string, mixed>
      */
-    public function listMasters(?string $type, bool $onlyMissing, int $limit, int $offset): array
+    public function listMasters(?string $type, bool $onlyMissing, int $limit, int $offset, string $targetLanguage): array
     {
+        $invalidTarget = $this->invalidTargetLanguage($targetLanguage);
+        if ($invalidTarget !== null) {
+            return $invalidTarget;
+        }
+
         try {
             $this->guard->assert();
         } catch (TranslationException $e) {
@@ -72,13 +87,14 @@ final class EmailTemplateRepository
         }
 
         $masters = $query->select(['id', 'type', 'name', 'subject'])->orderBy('id')->get();
-        $enNames = $this->englishNames();
+        $variantsByName = $this->siblingVariantsByName();
 
         $items = [];
         foreach ($masters as $row) {
             $name = self::text($row, 'name');
-            $hasEn = in_array($name, $enNames, true);
-            if ($onlyMissing && $hasEn) {
+            $variants = $variantsByName[$name] ?? [];
+            $hasTarget = in_array($targetLanguage, $variants, true);
+            if ($onlyMissing && $hasTarget) {
                 continue;
             }
             $items[] = [
@@ -86,7 +102,8 @@ final class EmailTemplateRepository
                 'type' => self::text($row, 'type'),
                 'name' => $name,
                 'subject' => self::text($row, 'subject'),
-                'has_en' => $hasEn,
+                'has_target' => $hasTarget,
+                'variants' => $variants,
             ];
         }
 
@@ -95,6 +112,7 @@ final class EmailTemplateRepository
 
         return [
             'result' => 'success',
+            'target_language' => $targetLanguage,
             'items' => $page,
             'total' => $total,
             'limit' => $limit,
@@ -104,14 +122,20 @@ final class EmailTemplateRepository
     }
 
     /**
-     * PT completo + EN (ou null) + `en_hash`, por id (1–10). Id inexistente,
-     * `admin` ou não-fonte devolve erro por item — sem interromper o lote.
+     * PT completo + variante no idioma-alvo (ou null) + `target_hash`, por id
+     * (1–10). Id inexistente, `admin` ou não-fonte devolve erro por item —
+     * sem interromper o lote.
      *
      * @param array<int, int> $ids
      * @return array<string, mixed>
      */
-    public function getPairs(array $ids): array
+    public function getPairs(array $ids, string $targetLanguage): array
     {
+        $invalidTarget = $this->invalidTargetLanguage($targetLanguage);
+        if ($invalidTarget !== null) {
+            return $invalidTarget;
+        }
+
         try {
             $this->guard->assert();
         } catch (TranslationException $e) {
@@ -149,7 +173,7 @@ final class EmailTemplateRepository
                 continue;
             }
 
-            $en = $this->findEnglishSibling(self::text($row, 'name'));
+            $target = $this->findTargetSibling(self::text($row, 'name'), $targetLanguage);
             $pairs[] = [
                 'id' => $id,
                 'source' => [
@@ -159,16 +183,16 @@ final class EmailTemplateRepository
                     'subject' => self::text($row, 'subject'),
                     'message' => self::text($row, 'message'),
                 ],
-                'en' => $en === null ? null : [
-                    'id' => self::intOf($en, 'id'),
-                    'subject' => self::text($en, 'subject'),
-                    'message' => self::text($en, 'message'),
+                'target' => $target === null ? null : [
+                    'id' => self::intOf($target, 'id'),
+                    'subject' => self::text($target, 'subject'),
+                    'message' => self::text($target, 'message'),
                 ],
-                'en_hash' => $this->hashOf($en),
+                'target_hash' => $this->hashOf($target),
             ];
         }
 
-        return ['result' => 'success', 'pairs' => $pairs];
+        return ['result' => 'success', 'target_language' => $targetLanguage, 'pairs' => $pairs];
     }
 
     /**
@@ -219,7 +243,8 @@ final class EmailTemplateRepository
         return [
             'result' => 'success',
             'source_language' => self::SOURCE_LANGUAGE,
-            'target_language' => self::TARGET_LANGUAGE,
+            'target_language' => self::DEFAULT_TARGET_LANGUAGE,
+            'supported_target_languages' => self::SUPPORTED_TARGET_LANGUAGES,
             'by_language' => $byLanguage,
             'sample_subjects' => $sampleSubjects,
         ];
@@ -236,8 +261,13 @@ final class EmailTemplateRepository
      * @param array<int, array{id?:mixed, subject?:mixed, message?:mixed, expected_hash?:mixed}> $items
      * @return array<string, mixed>
      */
-    public function applyBatch(array $items, TranslationBackup $backup, bool $dryRun): array
+    public function applyBatch(array $items, TranslationBackup $backup, bool $dryRun, string $targetLanguage): array
     {
+        $invalidTarget = $this->invalidTargetLanguage($targetLanguage);
+        if ($invalidTarget !== null) {
+            return $invalidTarget;
+        }
+
         try {
             $this->guard->assert();
         } catch (TranslationException $e) {
@@ -259,7 +289,7 @@ final class EmailTemplateRepository
             $results = [];
 
             foreach ($items as $item) {
-                $outcome = $this->applyOne($item, $backup, $dryRun);
+                $outcome = $this->applyOne($item, $backup, $dryRun, $targetLanguage);
                 if (($outcome['result'] ?? null) === 'error') {
                     $connection->rollBack();
 
@@ -274,7 +304,7 @@ final class EmailTemplateRepository
                 $connection->commit();
             }
 
-            return ['result' => 'success', 'dry_run' => $dryRun, 'items' => $results];
+            return ['result' => 'success', 'dry_run' => $dryRun, 'target_language' => $targetLanguage, 'items' => $results];
         } catch (\Throwable $e) {
             $connection->rollBack();
 
@@ -286,7 +316,7 @@ final class EmailTemplateRepository
      * @param array{id?:mixed, subject?:mixed, message?:mixed, expected_hash?:mixed} $item
      * @return array<string, mixed>
      */
-    private function applyOne(array $item, TranslationBackup $backup, bool $dryRun): array
+    private function applyOne(array $item, TranslationBackup $backup, bool $dryRun, string $targetLanguage): array
     {
         $id = (int) ($item['id'] ?? 0);
         $subject = (string) ($item['subject'] ?? '');
@@ -315,7 +345,7 @@ final class EmailTemplateRepository
         }
 
         $en = Capsule::table(self::TABLE)
-            ->where('language', self::TARGET_LANGUAGE)
+            ->where('language', $targetLanguage)
             ->where('type', '<>', 'admin')
             ->where('name', self::text($master, 'name'))
             ->select(['id', 'subject', 'message'])
@@ -371,6 +401,7 @@ final class EmailTemplateRepository
             'admin' => null,
             'master_id' => $id,
             'action' => $action,
+            'target_language' => $targetLanguage,
             'previous' => $en === null ? null : [
                 'id' => self::intOf($en, 'id'),
                 'subject' => self::text($en, 'subject'),
@@ -379,7 +410,7 @@ final class EmailTemplateRepository
         ]);
 
         if ($action === 'insert') {
-            $data = ['language' => self::TARGET_LANGUAGE, 'subject' => $subject, 'message' => $message];
+            $data = ['language' => $targetLanguage, 'subject' => $subject, 'message' => $message];
             foreach (self::COPIED_COLUMNS as $column) {
                 $data[$column] = self::rawValue($master, $column);
             }
@@ -396,31 +427,65 @@ final class EmailTemplateRepository
         return ['id' => $id, 'action' => 'update', 'en_id' => self::intOf($en, 'id')];
     }
 
-    /** @return array<int, string> */
-    private function englishNames(): array
+    /**
+     * Idiomas com linha irmã (`language<>''`, `type<>'admin'`), por `name` —
+     * UMA consulta para todos os masters, em vez de N consultas por master.
+     * `->get()` devolve `Illuminate\Support\Collection` em produção; `foreach`
+     * (não `array_map`) funciona igual em array e Collection.
+     *
+     * @return array<string, array<int, string>>
+     */
+    private function siblingVariantsByName(): array
     {
         $rows = Capsule::table(self::TABLE)
-            ->where('language', self::TARGET_LANGUAGE)
+            ->where('language', '<>', self::SOURCE_LANGUAGE)
             ->where('type', '<>', 'admin')
-            ->select(['name'])
+            ->select(['name', 'language'])
             ->get();
 
-        $names = [];
+        $byName = [];
         foreach ($rows as $row) {
-            $names[] = self::text($row, 'name');
+            $byName[self::text($row, 'name')][] = self::text($row, 'language');
         }
 
-        return $names;
+        foreach ($byName as $name => $languages) {
+            $languages = array_values(array_unique($languages));
+            sort($languages);
+            $byName[$name] = $languages;
+        }
+
+        return $byName;
     }
 
-    private function findEnglishSibling(string $name): mixed
+    private function findTargetSibling(string $name, string $targetLanguage): mixed
     {
         return Capsule::table(self::TABLE)
-            ->where('language', self::TARGET_LANGUAGE)
+            ->where('language', $targetLanguage)
             ->where('type', '<>', 'admin')
             ->where('name', $name)
             ->select(['id', 'subject', 'message'])
             ->first();
+    }
+
+    /**
+     * @return array<string, mixed>|null erro estruturado, ou `null` se o
+     *     idioma-alvo for um dos literais suportados. Nenhuma consulta é
+     *     feita antes desta checagem.
+     */
+    private function invalidTargetLanguage(string $targetLanguage): ?array
+    {
+        if (in_array($targetLanguage, self::SUPPORTED_TARGET_LANGUAGES, true)) {
+            return null;
+        }
+
+        return [
+            'result' => 'error',
+            'error_code' => 'invalid_target_language',
+            'message' => sprintf(
+                'target_language deve ser um de: %s.',
+                implode(', ', self::SUPPORTED_TARGET_LANGUAGES)
+            ),
+        ];
     }
 
     private static function rawValue(mixed $row, string $column): mixed

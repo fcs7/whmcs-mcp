@@ -126,6 +126,50 @@ final class TranslationValidatorTest extends TestCase
     }
 
     #[Test]
+    public function rejects_emoji_in_subject(): void
+    {
+        $errors = $this->validator()->validate('Subject', 'Corpo', "Hello \u{1F600}", 'Body');
+
+        $codes = array_column($errors, 'code');
+        $this->assertContains('unsupported_4byte_char', $codes);
+    }
+
+    #[Test]
+    public function rejects_emoji_in_message(): void
+    {
+        $errors = $this->validator()->validate('Subject', 'Corpo', 'Subject', "Body \u{1F600}");
+
+        $codes = array_column($errors, 'code');
+        $this->assertContains('unsupported_4byte_char', $codes);
+    }
+
+    #[Test]
+    public function rejects_invalid_utf8_in_subject(): void
+    {
+        $errors = $this->validator()->validate('Subject', 'Corpo', "Bad \xB1\x31", 'Body');
+
+        $codes = array_column($errors, 'code');
+        $this->assertContains('invalid_utf8', $codes);
+    }
+
+    #[Test]
+    public function rejects_invalid_utf8_in_message(): void
+    {
+        $errors = $this->validator()->validate('Subject', 'Corpo', 'Subject', "Bad \xB1\x31");
+
+        $codes = array_column($errors, 'code');
+        $this->assertContains('invalid_utf8', $codes);
+    }
+
+    #[Test]
+    public function accepts_regular_bmp_accented_characters(): void
+    {
+        $errors = $this->validator()->validate('Ola', 'Corpo', 'Olá, você está em dia', 'Corpo em português');
+
+        $this->assertSame([], $errors);
+    }
+
+    #[Test]
     public function error_detail_never_carries_the_full_body(): void
     {
         $secretBody = 'CONFIDENCIAL-' . str_repeat('X', 500);

@@ -58,7 +58,10 @@ class TranslationTools
         description: 'Panorama de tradução de templates de e-mail: contagem por idioma em tblemailtemplates '
             . '(excluindo type=admin), ate 3 subjects de amostra dos masters, contagem de clientes por '
             . 'tblclients.language e se "Enable Dynamic Translations" esta ligado no WHMCS (unknown quando nao '
-            . 'for possivel ler). Informa source_language e target_language usados pelas demais tools desta fase.'
+            . 'for possivel ler). Informa source_language, target_language padrao e '
+            . 'supported_target_languages (idiomas-alvo aceitos pelas demais tools desta fase). O master '
+            . '(idioma fonte, language=\'\') NAO tem idioma fixo: no desenv, a maioria dos masters ja esta em '
+            . 'ingles (templates padrao do WHMCS) e uma minoria esta em portugues (customizados).'
     )]
     #[Schema(additionalProperties: false)]
     public function status(): string|CallToolResult
@@ -80,18 +83,23 @@ class TranslationTools
 
     #[McpTool(
         name: 'whmcs_translation_email_list',
-        description: 'Lista templates de e-mail MASTER (idioma fonte, type<>admin), com has_en indicando se ja '
-            . 'existe a variante em ingles. only_missing=true (padrao) mostra so os que ainda faltam traduzir. '
-            . 'Filtro opcional type. limit ate 100.'
+        description: 'Lista templates de e-mail MASTER (idioma fonte, language=\'\', type<>admin) — o master NAO '
+            . 'tem idioma fixo: pode estar em ingles (templates padrao do WHMCS) ou em portugues (customizados). '
+            . 'Cada item traz variants (idiomas que ja tem linha irmã para aquele name) e has_target (se '
+            . 'target_language ja esta em variants). target_language escolhe o idioma-alvo: use \'portuguese-br\' '
+            . 'para traduzir os masters padrao (em ingles) e \'english\' para os masters customizados (em '
+            . 'portugues); nao traduza um master que ja esteja no idioma-alvo. only_missing=true (padrao) mostra '
+            . 'so os que ainda faltam traduzir para target_language. Filtro opcional type. limit ate 100.'
     )]
     #[Schema(additionalProperties: false)]
     public function emailList(
         string $type = '',
         bool $only_missing = true,
         #[Schema(minimum: 1, maximum: 100)] int $limit = 25,
-        #[Schema(minimum: 0)] int $offset = 0
+        #[Schema(minimum: 0)] int $offset = 0,
+        string $target_language = EmailTemplateRepository::DEFAULT_TARGET_LANGUAGE
     ): string|CallToolResult {
-        $result = $this->emails->listMasters($type === '' ? null : $type, $only_missing, $limit, $offset);
+        $result = $this->emails->listMasters($type === '' ? null : $type, $only_missing, $limit, $offset, $target_language);
 
         if (($result['result'] ?? null) === 'error') {
             return self::error(
@@ -106,17 +114,19 @@ class TranslationTools
 
     #[McpTool(
         name: 'whmcs_translation_email_get',
-        description: 'Obtem ate 10 templates de e-mail MASTER completos (subject/message) mais a variante EN '
-            . 'atual (ou null, se ainda nao existir) e o en_hash correspondente (\'absent\' quando nao existe). '
-            . 'Use o en_hash retornado como expected_hash em whmcs_translation_email_set para evitar sobrescrever '
-            . 'uma edicao concorrente. Preserve tags Smarty {...} e tags HTML tal como estao no PT; nao traduza '
-            . 'marcas de produto (NT-Fiber, NT-Cloud, NTHOSTING, NT-Fone, NT-Movel, BackupOn, Nextcloud, Proxmox, '
-            . 'KVM, LXC, SLA, CPE, VLAN); nao prometa 24x7/24-7 nem certificacoes que o original nao afirme.'
+        description: 'Obtem ate 10 templates de e-mail MASTER completos (subject/message) — o master pode estar '
+            . 'em ingles ou em portugues, conforme o template — mais a variante atual no idioma target_language '
+            . '(ou null, se ainda nao existir) e o target_hash correspondente (\'absent\' quando nao existe). '
+            . 'Nao traduza um master que ja esteja no idioma-alvo. Use o target_hash retornado como expected_hash '
+            . 'em whmcs_translation_email_set para evitar sobrescrever uma edicao concorrente. Preserve tags '
+            . 'Smarty {...} e tags HTML tal como estao no master; nao traduza marcas de produto (NT-Fiber, '
+            . 'NT-Cloud, NTHOSTING, NT-Fone, NT-Movel, BackupOn, Nextcloud, Proxmox, KVM, LXC, SLA, CPE, VLAN); '
+            . 'nao prometa 24x7/24-7 nem certificacoes que o original nao afirme; nao use emoji.'
     )]
     #[Schema(additionalProperties: false)]
-    public function emailGet(array $ids): string|CallToolResult
+    public function emailGet(array $ids, string $target_language = EmailTemplateRepository::DEFAULT_TARGET_LANGUAGE): string|CallToolResult
     {
-        $result = $this->emails->getPairs($ids);
+        $result = $this->emails->getPairs($ids, $target_language);
 
         if (($result['result'] ?? null) === 'error') {
             return self::error(
@@ -131,21 +141,26 @@ class TranslationTools
 
     #[McpTool(
         name: 'whmcs_translation_email_set',
-        description: 'Grava de 1 a 10 traduções de template de e-mail (subject/message) em ingles. Cada item exige '
-            . 'expected_hash (o en_hash devolvido por whmcs_translation_email_get) para evitar sobrescrever edicao '
-            . 'concorrente; hash divergente recusa o LOTE inteiro sem gravar nada. Requer paridade de tags Smarty '
-            . '{...} e de tags HTML entre o PT (master) e o EN enviado — divergencia recusa o item. confirm=false '
-            . '(padrao) so valida e devolve um preview (action insert|update, campos alterados, trecho do corpo); '
-            . 'nada e gravado e o gate de escrita nao e verificado. confirm=true exige o gate WRITE habilitado e '
-            . 'grava de fato, em transacao unica para o lote (tudo ou nada), com backup do estado anterior. Fluxo '
-            . 'recomendado: whmcs_translation_email_get -> set(confirm=false) para revisar o diff -> '
-            . 'set(confirm=true) reusando o mesmo expected_hash. NAO traduza marcas de produto (NT-Fiber, NT-Cloud, '
-            . 'NTHOSTING, NT-Fone, NT-Movel, BackupOn, Nextcloud, Proxmox, KVM, LXC, SLA, CPE, VLAN); nao prometa '
-            . '24x7/24-7 nem certificacoes que o original nao afirme.'
+        description: 'Grava de 1 a 10 traduções de template de e-mail (subject/message) para target_language '
+            . '(\'english\' ou \'portuguese-br\'; padrao \'english\'). Nao traduza um master que ja esteja no '
+            . 'idioma-alvo. Cada item exige expected_hash (o target_hash devolvido por whmcs_translation_email_get) '
+            . 'para evitar sobrescrever edicao concorrente; hash divergente recusa o LOTE inteiro sem gravar nada. '
+            . 'Requer paridade de tags Smarty {...} e de tags HTML entre o master e o texto enviado — divergencia '
+            . 'recusa o item. confirm=false (padrao) so valida e devolve um preview (action insert|update, campos '
+            . 'alterados, trecho do corpo); nada e gravado e o gate de escrita nao e verificado. confirm=true exige '
+            . 'o gate WRITE habilitado e grava de fato, em transacao unica para o lote (tudo ou nada), com backup '
+            . 'do estado anterior. Fluxo recomendado: whmcs_translation_email_get -> set(confirm=false) para '
+            . 'revisar o diff -> set(confirm=true) reusando o mesmo expected_hash e o mesmo target_language. NAO '
+            . 'traduza marcas de produto (NT-Fiber, NT-Cloud, NTHOSTING, NT-Fone, NT-Movel, BackupOn, Nextcloud, '
+            . 'Proxmox, KVM, LXC, SLA, CPE, VLAN); nao prometa 24x7/24-7 nem certificacoes que o original nao '
+            . 'afirme; nao use emoji.'
     )]
     #[Schema(additionalProperties: false)]
-    public function emailSet(array $items, bool $confirm = false): string|CallToolResult
-    {
+    public function emailSet(
+        array $items,
+        bool $confirm = false,
+        string $target_language = EmailTemplateRepository::DEFAULT_TARGET_LANGUAGE
+    ): string|CallToolResult {
         if (count($items) < 1 || count($items) > 10) {
             return self::error('invalid_items', 'items deve conter de 1 a 10 elementos.');
         }
@@ -154,7 +169,7 @@ class TranslationTools
             $this->guard->assertWriteAllowed('whmcs_translation_email_set');
         }
 
-        $result = $this->emails->applyBatch($items, $this->backup, !$confirm);
+        $result = $this->emails->applyBatch($items, $this->backup, !$confirm, $target_language);
 
         if (($result['result'] ?? null) === 'error') {
             return self::error(

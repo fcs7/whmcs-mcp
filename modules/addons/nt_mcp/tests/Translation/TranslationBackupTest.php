@@ -41,9 +41,9 @@ final class TranslationBackupTest extends TestCase
     {
         $backup = new TranslationBackup($this->dir);
 
-        $backup->append(['ts' => '2026-01-01T00:00:00Z', 'master_id' => 42, 'action' => 'insert', 'previous' => null]);
+        $backup->append(['ts' => '2026-01-01T00:00:00Z', 'master_id' => 42, 'action' => 'insert', 'target_language' => 'english', 'previous' => null]);
 
-        $file = $this->dir . '/translation-backups/emailtemplates-' . gmdate('Ymd') . '.jsonl';
+        $file = $this->dir . '/translation-backups/emailtemplates-english-' . gmdate('Ymd') . '.jsonl';
         $this->assertFileExists($file);
 
         $lines = array_filter(explode("\n", (string) file_get_contents($file)));
@@ -52,6 +52,7 @@ final class TranslationBackupTest extends TestCase
         $decoded = json_decode((string) reset($lines), true);
         $this->assertSame(42, $decoded['master_id']);
         $this->assertSame('insert', $decoded['action']);
+        $this->assertSame('english', $decoded['target_language']);
         $this->assertNull($decoded['previous']);
     }
 
@@ -60,22 +61,51 @@ final class TranslationBackupTest extends TestCase
     {
         $backup = new TranslationBackup($this->dir);
 
-        $backup->append(['master_id' => 1]);
-        $backup->append(['master_id' => 2]);
+        $backup->append(['master_id' => 1, 'target_language' => 'english']);
+        $backup->append(['master_id' => 2, 'target_language' => 'english']);
 
-        $file = $this->dir . '/translation-backups/emailtemplates-' . gmdate('Ymd') . '.jsonl';
+        $file = $this->dir . '/translation-backups/emailtemplates-english-' . gmdate('Ymd') . '.jsonl';
         $lines = array_filter(explode("\n", (string) file_get_contents($file)));
         $this->assertCount(2, $lines);
+    }
+
+    #[Test]
+    public function filename_includes_the_target_language(): void
+    {
+        $backup = new TranslationBackup($this->dir);
+
+        $backup->append(['master_id' => 1, 'target_language' => 'portuguese-br']);
+
+        $file = $this->dir . '/translation-backups/emailtemplates-portuguese-br-' . gmdate('Ymd') . '.jsonl';
+        $this->assertFileExists($file);
+    }
+
+    #[Test]
+    public function throws_when_target_language_is_missing(): void
+    {
+        $backup = new TranslationBackup($this->dir);
+
+        $this->expectException(\RuntimeException::class);
+        $backup->append(['master_id' => 1]);
+    }
+
+    #[Test]
+    public function throws_when_target_language_has_an_unsafe_shape(): void
+    {
+        $backup = new TranslationBackup($this->dir);
+
+        $this->expectException(\RuntimeException::class);
+        $backup->append(['master_id' => 1, 'target_language' => '../../etc']);
     }
 
     #[Test]
     public function directory_is_0700_and_file_is_0600(): void
     {
         $backup = new TranslationBackup($this->dir);
-        $backup->append(['master_id' => 1]);
+        $backup->append(['master_id' => 1, 'target_language' => 'english']);
 
         $subdir = $this->dir . '/translation-backups';
-        $file = $subdir . '/emailtemplates-' . gmdate('Ymd') . '.jsonl';
+        $file = $subdir . '/emailtemplates-english-' . gmdate('Ymd') . '.jsonl';
 
         clearstatcache(true, $subdir);
         clearstatcache(true, $file);
@@ -95,6 +125,6 @@ final class TranslationBackupTest extends TestCase
         $backup = new TranslationBackup($this->dir);
 
         $this->expectException(\RuntimeException::class);
-        $backup->append(['master_id' => 1]);
+        $backup->append(['master_id' => 1, 'target_language' => 'english']);
     }
 }

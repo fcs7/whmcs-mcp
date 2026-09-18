@@ -176,7 +176,31 @@ final class TranslationToolsTest extends TestCase
 
         $payload = $this->payload($tools->emailGet([4]));
 
-        $this->assertSame('absent', $payload['pairs'][0]['en_hash']);
+        $this->assertSame('absent', $payload['pairs'][0]['target_hash']);
+    }
+
+    #[Test]
+    public function get_accepts_portuguese_br_as_target_language(): void
+    {
+        $this->seedRows();
+        $tools = $this->tools();
+
+        $payload = $this->payload($tools->emailGet([4], 'portuguese-br'));
+
+        $this->assertSame('portuguese-br', $payload['target_language']);
+    }
+
+    #[Test]
+    public function list_rejects_invalid_target_language(): void
+    {
+        $this->seedRows();
+        $tools = $this->tools();
+
+        $result = $tools->emailList(target_language: 'french');
+
+        $this->assertInstanceOf(CallToolResult::class, $result);
+        $payload = $this->payload($result);
+        $this->assertSame('invalid_target_language', $payload['error_code']);
     }
 
     #[Test]
@@ -191,6 +215,7 @@ final class TranslationToolsTest extends TestCase
         $this->assertSame('success', $payload['result']);
         $this->assertSame('', $payload['source_language']);
         $this->assertSame('english', $payload['target_language']);
+        $this->assertSame(['english', 'portuguese-br'], $payload['supported_target_languages']);
         $this->assertSame('unknown', $payload['dynamic_translations_enabled']);
         $this->assertArrayHasKey('client_languages', $payload);
     }

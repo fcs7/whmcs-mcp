@@ -193,19 +193,30 @@ Legenda de risco:
 
 | # | Tool | Origem | Gate | Default | Risco | Descrição |
 |---|------|--------|------|---------|-------|-----------|
-| 71 | `whmcs_translation_status` | EmailTemplateRepository / tblclients | READ | on | 🟢 | Panorama: contagem por idioma, amostra de subjects, contagem de clientes por idioma e status de "Enable Dynamic Translations" |
-| 72 | `whmcs_translation_email_list` | EmailTemplateRepository | READ | on | 🟢 | Lista templates master (idioma fonte, `type<>admin`) com `has_en` |
-| 73 | `whmcs_translation_email_get` | EmailTemplateRepository | READ | on | 🟢 | Obtém até 10 pares PT/EN completos + `en_hash` para uso em `email_set` |
-| 74 | `whmcs_translation_email_set` | EmailTemplateRepository | WRITE | ⛔ off | 🟡 | Grava até 10 traduções em lote (tudo-ou-nada); `confirm=false` é dry-run sem gate |
+| 71 | `whmcs_translation_status` | EmailTemplateRepository / tblclients | READ | on | 🟢 | Panorama: contagem por idioma, amostra de subjects, contagem de clientes por idioma, `supported_target_languages` e status de "Enable Dynamic Translations" |
+| 72 | `whmcs_translation_email_list` | EmailTemplateRepository | READ | on | 🟢 | Lista templates master (`language=''`, `type<>admin`) com `has_target`/`variants` para o `target_language` pedido |
+| 73 | `whmcs_translation_email_get` | EmailTemplateRepository | READ | on | 🟢 | Obtém até 10 pares master/`target_language` completos + `target_hash` para uso em `email_set` |
+| 74 | `whmcs_translation_email_set` | EmailTemplateRepository | WRITE | ⛔ off | 🟡 | Grava até 10 traduções em lote para `target_language` (tudo-ou-nada); `confirm=false` é dry-run sem gate |
 
 > Assim como o domínio de chips, tradução não passa pela LocalAPI (não existe comando
 > WHMCS de escrita para `tblemailtemplates`). `EmailTemplateRepository` é a única classe
 > que toca a tabela; `TranslationSchemaGuard` (mesmo contrato do `CrmSchemaGuard`) barra
-> qualquer query antes de a instalação provar as colunas esperadas. `email_set` exige hash
-> otimista (`expected_hash`) por item, valida paridade de tags Smarty/HTML entre PT e EN,
-> grava backup JSONL do estado anterior em `data/translation-backups/` ANTES de cada
-> escrita e só passa por `TranslationGuard::assertWriteAllowed` (mesmas flags do
-> `ChipGuard`, sem allowlist de cliente) quando `confirm=true`.
+> qualquer query antes de a instalação provar as colunas esperadas.
+>
+> **Achado no desenv (2026-09-18)**: os 92 masters (`language=''`) são MISTOS — a maioria
+> são templates padrão do WHMCS em inglês, uma minoria são customizados em PT. Já existem
+> linhas `portuguese-br` e `english` no banco. Por isso o idioma-alvo não é fixo:
+> `target_language` aceita `'english'` (padrão) ou `'portuguese-br'`; um valor fora dessa
+> lista é recusado (`invalid_target_language`) ANTES de qualquer consulta. Use
+> `'portuguese-br'` para traduzir os masters padrão (em inglês) e `'english'` para os
+> masters customizados (em PT); nunca traduza um master que já esteja no idioma-alvo.
+>
+> `email_set` exige hash otimista (`expected_hash`, comparado contra `target_hash`) por
+> item, valida paridade de tags Smarty/HTML entre o master e o texto enviado, valida UTF-8
+> (`invalid_utf8`) e recusa caracteres fora do BMP como emoji (`unsupported_4byte_char`),
+> grava backup JSONL do estado anterior em `data/translation-backups/emailtemplates-<target>-YYYYMMDD.jsonl`
+> ANTES de cada escrita e só passa por `TranslationGuard::assertWriteAllowed` (mesmas flags
+> do `ChipGuard`, sem allowlist de cliente) quando `confirm=true`.
 
 ---
 

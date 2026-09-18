@@ -19,6 +19,9 @@ final class TranslationValidator
 
     private const MAX_SUBJECT_LENGTH = 255;
 
+    /** Caracteres fora do BMP (4 bytes UTF-8, ex.: emoji) — o banco do desenv guarda utf8 de 3 bytes. */
+    private const FOUR_BYTE_CHAR_PATTERN = '/[\x{10000}-\x{10FFFF}]/u';
+
     /**
      * @return array<int, array{code:string, detail:string}>
      */
@@ -37,6 +40,20 @@ final class TranslationValidator
 
         if (trim($message) === '') {
             $errors[] = ['code' => 'empty_message', 'detail' => 'message vazio apos trim.'];
+        }
+
+        $subjectValidUtf8 = mb_check_encoding($subject, 'UTF-8');
+        if (!$subjectValidUtf8) {
+            $errors[] = ['code' => 'invalid_utf8', 'detail' => 'subject contem bytes UTF-8 invalidos.'];
+        } elseif (preg_match(self::FOUR_BYTE_CHAR_PATTERN, $subject) === 1) {
+            $errors[] = ['code' => 'unsupported_4byte_char', 'detail' => 'subject contem caractere fora do BMP (ex.: emoji).'];
+        }
+
+        $messageValidUtf8 = mb_check_encoding($message, 'UTF-8');
+        if (!$messageValidUtf8) {
+            $errors[] = ['code' => 'invalid_utf8', 'detail' => 'message contem bytes UTF-8 invalidos.'];
+        } elseif (preg_match(self::FOUR_BYTE_CHAR_PATTERN, $message) === 1) {
+            $errors[] = ['code' => 'unsupported_4byte_char', 'detail' => 'message contem caractere fora do BMP (ex.: emoji).'];
         }
 
         if ($errors !== []) {

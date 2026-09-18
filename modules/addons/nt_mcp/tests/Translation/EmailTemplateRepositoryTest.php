@@ -93,13 +93,51 @@ final class EmailTemplateRepositoryTest extends TestCase
     {
         $repo = $this->repo($this->unavailableGuard());
 
-        $this->assertSame('translation_unavailable', $repo->listMasters(null, false, 25, 0)['error_code']);
-        $this->assertSame('translation_unavailable', $repo->getPairs([1])['error_code']);
+        $this->assertSame('translation_unavailable', $repo->listMasters(null, false, 25, 0, 'english')['error_code']);
+        $this->assertSame('translation_unavailable', $repo->getPairs([1], 'english')['error_code']);
         $this->assertSame('translation_unavailable', $repo->statusSummary()['error_code']);
         $this->assertSame(
             'translation_unavailable',
-            $repo->applyBatch([['id' => 1, 'subject' => 'x', 'message' => 'y', 'expected_hash' => 'absent']], new TranslationBackup(sys_get_temp_dir() . '/nt_mcp_unused'), true)['error_code']
+            $repo->applyBatch([['id' => 1, 'subject' => 'x', 'message' => 'y', 'expected_hash' => 'absent']], new TranslationBackup(sys_get_temp_dir() . '/nt_mcp_unused'), true, 'english')['error_code']
         );
+    }
+
+    // -----------------------------------------------------------
+    // target_language invalido
+    // -----------------------------------------------------------
+
+    #[Test]
+    public function invalid_target_language_is_rejected_without_querying_the_database(): void
+    {
+        $repo = $this->repo();
+
+        $listResult = $repo->listMasters(null, false, 25, 0, 'french');
+        $this->assertSame('error', $listResult['result']);
+        $this->assertSame('invalid_target_language', $listResult['error_code']);
+
+        $getResult = $repo->getPairs([1], 'french');
+        $this->assertSame('invalid_target_language', $getResult['error_code']);
+
+        $applyResult = $repo->applyBatch(
+            [['id' => 1, 'subject' => 'x', 'message' => 'y', 'expected_hash' => 'absent']],
+            $this->backup(),
+            true,
+            'french'
+        );
+        $this->assertSame('invalid_target_language', $applyResult['error_code']);
+
+        $this->assertSame([], FakeCapsule::$calls, 'nenhuma consulta deve acontecer com target_language invalido');
+    }
+
+    #[Test]
+    public function portuguese_br_is_accepted_as_target_language(): void
+    {
+        $this->seedRows();
+
+        $result = $this->repo()->listMasters(null, false, 25, 0, 'portuguese-br');
+
+        $this->assertSame('success', $result['result']);
+        $this->assertSame('portuguese-br', $result['target_language']);
     }
 
     // -----------------------------------------------------------
@@ -111,7 +149,7 @@ final class EmailTemplateRepositoryTest extends TestCase
     {
         $this->seedRows();
 
-        $result = $this->repo()->listMasters(null, false, 25, 0);
+        $result = $this->repo()->listMasters(null, false, 25, 0, 'english');
 
         $ids = array_column($result['items'], 'id');
         $this->assertContains(1, $ids);
@@ -121,18 +159,20 @@ final class EmailTemplateRepositoryTest extends TestCase
     }
 
     #[Test]
-    public function list_masters_reports_has_en_correctly(): void
+    public function list_masters_reports_has_target_correctly(): void
     {
         $this->seedRows();
 
-        $result = $this->repo()->listMasters(null, false, 25, 0);
+        $result = $this->repo()->listMasters(null, false, 25, 0, 'english');
         $byId = [];
         foreach ($result['items'] as $item) {
             $byId[$item['id']] = $item;
         }
 
-        $this->assertTrue($byId[1]['has_en']);
-        $this->assertFalse($byId[4]['has_en']);
+        $this->assertTrue($byId[1]['has_target']);
+        $this->assertSame(['english'], $byId[1]['variants']);
+        $this->assertFalse($byId[4]['has_target']);
+        $this->assertSame([], $byId[4]['variants']);
     }
 
     #[Test]
@@ -140,10 +180,24 @@ final class EmailTemplateRepositoryTest extends TestCase
     {
         $this->seedRows();
 
-        $result = $this->repo()->listMasters(null, true, 25, 0);
+        $result = $this->repo()->listMasters(null, true, 25, 0, 'english');
 
         $ids = array_column($result['items'], 'id');
         $this->assertSame([4], $ids);
+    }
+
+    #[Test]
+    public function list_masters_variants_lists_multiple_sibling_languages(): void
+    {
+        FakeCapsule::withRows('tblemailtemplates', [
+            $this->common(['id' => 1, 'type' => 'general', 'name' => 'Welcome', 'subject' => 'Bem-vindo', 'message' => 'Corpo', 'language' => '']),
+            $this->common(['id' => 2, 'type' => 'general', 'name' => 'Welcome', 'subject' => 'Welcome', 'message' => 'Body', 'language' => 'english']),
+            $this->common(['id' => 3, 'type' => 'general', 'name' => 'Welcome', 'subject' => 'Bem-vindo', 'message' => 'Corpo', 'language' => 'portuguese-br']),
+        ]);
+
+        $result = $this->repo()->listMasters(null, false, 25, 0, 'english');
+
+        $this->assertSame(['english', 'portuguese-br'], $result['items'][0]['variants']);
     }
 
     // -----------------------------------------------------------
@@ -151,28 +205,29 @@ final class EmailTemplateRepositoryTest extends TestCase
     // -----------------------------------------------------------
 
     #[Test]
-    public function get_pairs_reports_absent_hash_when_english_missing(): void
+    public function get_pairs_reports_absent_hash_when_target_missing(): void
     {
         $this->seedRows();
 
-        $result = $this->repo()->getPairs([4]);
+        $result = $this->repo()->getPairs([4], 'english');
 
         $this->assertSame('success', $result['result']);
-        $this->assertNull($result['pairs'][0]['en']);
-        $this->assertSame('absent', $result['pairs'][0]['en_hash']);
+        $this->assertSame('english', $result['target_language']);
+        $this->assertNull($result['pairs'][0]['target']);
+        $this->assertSame('absent', $result['pairs'][0]['target_hash']);
     }
 
     #[Test]
-    public function get_pairs_returns_english_content_and_hash_when_present(): void
+    public function get_pairs_returns_target_content_and_hash_when_present(): void
     {
         $this->seedRows();
 
-        $result = $this->repo()->getPairs([1]);
+        $result = $this->repo()->getPairs([1], 'english');
         $pair = $result['pairs'][0];
 
-        $this->assertSame('Welcome {$firstname}', $pair['en']['subject']);
+        $this->assertSame('Welcome {$firstname}', $pair['target']['subject']);
         $expectedHash = hash('sha256', 'Welcome {$firstname}' . "\0" . '<p>Welcome {$firstname}</p>');
-        $this->assertSame($expectedHash, $pair['en_hash']);
+        $this->assertSame($expectedHash, $pair['target_hash']);
     }
 
     #[Test]
@@ -180,7 +235,7 @@ final class EmailTemplateRepositoryTest extends TestCase
     {
         $this->seedRows();
 
-        $result = $this->repo()->getPairs([999, 2, 3]);
+        $result = $this->repo()->getPairs([999, 2, 3], 'english');
 
         $this->assertSame('not_found', $result['pairs'][0]['error']);
         $this->assertSame('not_translatable', $result['pairs'][1]['error']);
@@ -192,7 +247,7 @@ final class EmailTemplateRepositoryTest extends TestCase
     {
         $this->seedRows();
 
-        $result = $this->repo()->getPairs(range(1, 11));
+        $result = $this->repo()->getPairs(range(1, 11), 'english');
 
         $this->assertSame('error', $result['result']);
         $this->assertSame('invalid_ids', $result['error_code']);
@@ -216,7 +271,8 @@ final class EmailTemplateRepositoryTest extends TestCase
         $result = $repo->applyBatch(
             [['id' => 4, 'subject' => 'Your invoice', 'message' => 'Your invoice arrived', 'expected_hash' => 'absent']],
             $this->backup(),
-            false
+            false,
+            'english'
         );
 
         $this->assertSame('success', $result['result']);
@@ -247,7 +303,8 @@ final class EmailTemplateRepositoryTest extends TestCase
         $result = $repo->applyBatch(
             [['id' => 1, 'subject' => 'Welcome {$firstname}!', 'message' => '<p>Welcome {$firstname}!</p>', 'expected_hash' => $hash]],
             $this->backup(),
-            false
+            false,
+            'english'
         );
 
         $this->assertSame('success', $result['result']);
@@ -272,7 +329,8 @@ final class EmailTemplateRepositoryTest extends TestCase
         $result = $repo->applyBatch(
             [['id' => 1, 'subject' => 'x', 'message' => 'y', 'expected_hash' => 'wrong-hash']],
             $this->backup(),
-            false
+            false,
+            'english'
         );
 
         $this->assertSame('error', $result['result']);
@@ -291,7 +349,8 @@ final class EmailTemplateRepositoryTest extends TestCase
             $result = $repo->applyBatch(
                 [['id' => $id, 'subject' => 'x', 'message' => 'y', 'expected_hash' => 'absent']],
                 $this->backup(),
-                false
+                false,
+                'english'
             );
             $this->assertSame('master_not_found', $result['error_code'], "id {$id} deveria ser recusado");
             $this->assertSame([], FakeCapsule::$mutations);
@@ -307,7 +366,8 @@ final class EmailTemplateRepositoryTest extends TestCase
         $result = $repo->applyBatch(
             [['id' => 4, 'subject' => 'Fatura EN', 'message' => '<div>Sua fatura chegou</div>', 'expected_hash' => 'absent']],
             $this->backup(),
-            false
+            false,
+            'english'
         );
 
         $this->assertSame('error', $result['result']);
@@ -324,7 +384,8 @@ final class EmailTemplateRepositoryTest extends TestCase
         $result = $repo->applyBatch(
             [['id' => 4, 'subject' => 'Your invoice', 'message' => 'Your invoice arrived', 'expected_hash' => 'absent']],
             $this->backup(),
-            true
+            true,
+            'english'
         );
 
         $this->assertSame('success', $result['result']);
@@ -345,7 +406,7 @@ final class EmailTemplateRepositoryTest extends TestCase
             $items[] = ['id' => 4, 'subject' => 'x', 'message' => 'y', 'expected_hash' => 'absent'];
         }
 
-        $result = $repo->applyBatch($items, $this->backup(), false);
+        $result = $repo->applyBatch($items, $this->backup(), false, 'english');
 
         $this->assertSame('error', $result['result']);
         $this->assertSame('invalid_items', $result['error_code']);
@@ -368,7 +429,8 @@ final class EmailTemplateRepositoryTest extends TestCase
                 ['id' => 1, 'subject' => 'x', 'message' => 'y', 'expected_hash' => 'wrong-hash'],
             ],
             $this->backup(),
-            false
+            false,
+            'english'
         );
 
         $this->assertSame('error', $result['result']);
@@ -392,7 +454,8 @@ final class EmailTemplateRepositoryTest extends TestCase
             $repo->applyBatch(
                 [['id' => 4, 'subject' => 'Your invoice', 'message' => 'Your invoice arrived', 'expected_hash' => 'absent']],
                 $brokenBackup,
-                false
+                false,
+                'english'
             );
         } finally {
             $this->assertSame([], FakeCapsule::$mutations);
@@ -421,7 +484,8 @@ final class EmailTemplateRepositoryTest extends TestCase
                     ['id' => 20, 'subject' => 'Subject B EN', 'message' => 'Body B EN', 'expected_hash' => $badHash],
                 ],
                 $this->backup(),
-                false
+                false,
+                'english'
             );
         } finally {
             $this->assertSame(
@@ -437,23 +501,22 @@ final class EmailTemplateRepositoryTest extends TestCase
     // -----------------------------------------------------------
 
     #[Test]
-    public function english_names_lookup_works_when_get_returns_a_traversable_collection(): void
+    public function variants_lookup_works_when_get_returns_a_traversable_collection(): void
     {
         $this->seedRows();
         FakeCapsule::$collectionTables = ['tblemailtemplates'];
 
         // No WHMCS real, `->get()` devolve `Illuminate\Support\Collection`, não
-        // um array — `englishNames()` usava `array_map()` direto sobre esse
-        // retorno, o que produz TypeError em produção. Este teste falharia com
-        // essa implementação antiga.
-        $result = $this->repo()->listMasters(null, false, 25, 0);
+        // um array — `siblingVariantsByName()` faz `foreach` (não `array_map()`)
+        // sobre esse retorno, o que funciona igual em array e Collection.
+        $result = $this->repo()->listMasters(null, false, 25, 0, 'english');
 
         $byId = [];
         foreach ($result['items'] as $item) {
             $byId[$item['id']] = $item;
         }
 
-        $this->assertTrue($byId[1]['has_en']);
-        $this->assertFalse($byId[4]['has_en']);
+        $this->assertTrue($byId[1]['has_target']);
+        $this->assertFalse($byId[4]['has_target']);
     }
 }
