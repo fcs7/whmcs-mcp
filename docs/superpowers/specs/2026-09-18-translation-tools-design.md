@@ -24,7 +24,7 @@ produtos, grupos, KB, config options, custom fields nem para a tabela de
 traduções dinâmicas (`tbldynamic_translations`). O único domínio deste plano
 com comando de escrita real é anúncio (`AddAnnouncement`/`UpdateAnnouncement`).
 
-Decisão aprovada: modelo híbrido.
+Decisão aprovada, na entrega original: modelo híbrido.
 
 - **LocalAPI** onde o comando existe: só anúncios (Fase 4), via
   `LocalApiClient` (`AddAnnouncement`/`UpdateAnnouncement`), mesma allowlist e
@@ -36,6 +36,17 @@ Decisão aprovada: modelo híbrido.
   (`src/Crm/CrmSchemaGuard.php` + `src/Crm/CapsuleSchemaProbe.php`).
   **Nenhum método de nenhum repositório recebe nome de tabela ou coluna vindo
   do chamador** — os identificadores de schema são todos constantes internas.
+
+**Correção na entrega da Fase 4 (2026-09-18)**: o modelo híbrido acima
+previa anúncio via LocalAPI. Na implementação, `AddAnnouncement` e
+`UpdateAnnouncement` se mostraram **incompatíveis** com o requisito: nenhum
+dos dois expõe `parentid`/`language` no payload aceito pela LocalAPI — não há
+como, através deles, criar a linha-filha que representa a variante de idioma
+(o mesmo modelo de `tblemailtemplates`). Decisão revista: `whmcs_translation_
+announcement_set` também usa Capsule direto (`AnnouncementRepository`), como
+todo o resto do domínio. O modelo deixou de ser híbrido na prática — hoje
+100% dos domínios de tradução usam repositório Capsule próprio; a seção
+permanece descrevendo a decisão original para registro histórico.
 
 ## 3. Mapa das 23 tools em 4 fases
 
@@ -63,7 +74,7 @@ Decisão aprovada: modelo híbrido.
 | 20 | `whmcs_translation_kb_article_set` | write | 4 | Capsule (linha-filha KB) |
 | 21 | `whmcs_translation_announcement_list` | read | 4 | Capsule (leitura) |
 | 22 | `whmcs_translation_announcement_get` | read | 4 | Capsule (leitura) |
-| 23 | `whmcs_translation_announcement_set` | write | 4 | LocalAPI (`AddAnnouncement`/`UpdateAnnouncement`) |
+| 23 | `whmcs_translation_announcement_set` | write | 4 | Capsule (`AnnouncementRepository`) — ver correção abaixo, não LocalAPI |
 
 Total: 23 tools (4 + 5 + 6 + 8).
 
@@ -76,10 +87,11 @@ fornecedor: https://requests.whmcs.com/idea/add-easy-translation-to-configurable
 Se o WHMCS passar a suportar, a tool volta a ser viável no mesmo padrão de
 `custom_field`/`product_addon`.
 
-**Estado das fases**: Fase 1 (e-mail) e Fase 2 (produto/grupo de produto)
-implementadas. Fase 3 (custom field, addon de produto, departamento de
-suporte) implementada nesta entrega — ver `TranslationCatalogExtrasTools`.
-Fase 4 (KB e anúncio) pendente.
+**Estado das fases**: Fase 1 (e-mail), Fase 2 (produto/grupo de produto) e
+Fase 3 (custom field, addon de produto, departamento de suporte)
+implementadas. Fase 4 (KB e anúncio — última) implementada nesta entrega —
+ver `TranslationContentTools`, `KnowledgebaseRepository` e
+`AnnouncementRepository`. As 23 tools do mapa acima estão todas entregues.
 
 **Ajuste com dado real do desenv (mesma entrega da Fase 3)**: o status ao vivo de
 `tbldynamic_translations` (por `related_type`) confirmou linhas reais para
@@ -97,7 +109,7 @@ usa `list+set`; texto longo (assunto+corpo de e-mail, descrição de
 produto/artigo de KB/anúncio) usa `list+get+set`, para não estourar o payload
 da listagem com HTML grande.
 
-## 4. Armazenamento por tipo (a confirmar no desenv)
+## 4. Armazenamento por tipo (implementado contra este modelo; confirmação ao vivo pendente — ver `whmcs_translation_status.content_variants`)
 
 - **E-mail** (`tblemailtemplates`): uma linha por `name`+`language`; o master
   PT tem `language=''`; a variante EN é uma linha irmã com o mesmo `name` e
@@ -110,8 +122,22 @@ da listagem com HTML grande.
   toggle manual **"Enable Dynamic Translations"** ligado no WHMCS — pré-requisito
   de uma vez só, fora do escopo destas tools; `whmcs_translation_status`
   informa o estado atual (ligado/desligado/desconhecido).
-- **KB (categoria e artigo) e anúncio**: linha-filha com `parentid` apontando
-  para a linha PT e `language='english'`.
+- **KB — artigo** (`tblknowledgebase`) e **anúncio** (`tblannouncements`):
+  linha original com `parentid=0`, `language=''`; a variante é uma linha
+  FILHA com `parentid=<id original>` e `language=target_language`. Artigo
+  copia `private`/`order` do original no insert e zera
+  `views`/`votes`/`useful` (contadores próprios da variante). Anúncio copia
+  `date`/`published` do original no insert.
+- **KB — categoria** (`tblknowledgebasecats`): mesmo modelo de linha-filha,
+  mas a coluna de referência é `catid` (não `parentid`): original com
+  `catid=0`, `language=''`; variante com `catid=<id original>`. Copia
+  `parentid`/`hidden` do original no insert. Sem tool de "get" — `name`/
+  `description` são curtos o bastante para caber na listagem (mesmo corte de
+  `product_group`).
+- `KnowledgebaseRepository` é a ÚNICA classe que toca `tblknowledgebase` E
+  `tblknowledgebasecats`; `AnnouncementRepository` é a ÚNICA classe que toca
+  `tblannouncements`. Cada tabela tem capacidade isolada no
+  `TranslationSchemaGuard` (`kb_article`, `kb_category`, `announcement`).
 
 O conjunto exato de colunas de cada tabela é confirmado no desenv no primeiro
 uso (ver Seção 10); se alguma coluna esperada faltar, o schema guard responde

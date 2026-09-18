@@ -58,7 +58,9 @@ class TranslationTools
         description: 'Panorama de tradução de templates de e-mail: contagem por idioma em tblemailtemplates '
             . '(excluindo type=admin), ate 3 subjects de amostra dos masters, contagem de clientes por '
             . 'tblclients.language e se "Enable Dynamic Translations" esta ligado no WHMCS (unknown quando nao '
-            . 'for possivel ler). Informa source_language, target_language padrao e '
+            . 'for possivel ler). content_variants traz a contagem por idioma de tblannouncements, '
+            . 'tblknowledgebase e tblknowledgebasecats (Fase 4) — \'unavailable\' quando a tabela nao existe, '
+            . 'isolado por tabela. Informa source_language, target_language padrao e '
             . 'supported_target_languages (idiomas-alvo aceitos pelas demais tools desta fase). O master '
             . '(idioma fonte, language=\'\') NAO tem idioma fixo: no desenv, a maioria dos masters ja esta em '
             . 'ingles (templates padrao do WHMCS) e uma minoria esta em portugues (customizados).'
@@ -78,6 +80,7 @@ class TranslationTools
         $summary['client_languages'] = $this->statusReader->clientLanguageCounts();
         $summary['dynamic_translations_enabled'] = $this->statusReader->dynamicTranslationsEnabled();
         $summary['dynamic_translations'] = $this->statusReader->dynamicTranslationCounts();
+        $summary['content_variants'] = $this->statusReader->contentVariantCounts();
 
         return ToolJson::encode($summary);
     }

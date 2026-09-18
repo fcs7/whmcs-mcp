@@ -99,6 +99,44 @@ final class TranslationStatusReader
         return ['by_language' => $byLanguage, 'by_related_type' => $byRelatedType];
     }
 
+    /**
+     * Contagem por `language` de `tblannouncements`, `tblknowledgebase` e
+     * `tblknowledgebasecats` (Fase 4) — serve para confirmar ao vivo o modelo
+     * de linha-filha documentado em `AnnouncementRepository`/
+     * `KnowledgebaseRepository`. Cada tabela é isolada: ausente reporta
+     * `'unavailable'` sem derrubar as demais nem o restante de `status`.
+     *
+     * @return array<string, array<string,int>|string>
+     */
+    public function contentVariantCounts(): array
+    {
+        return [
+            'announcements' => $this->languageCountsFor(TranslationSchema::TABLE_ANNOUNCEMENTS),
+            'kb_articles' => $this->languageCountsFor(TranslationSchema::TABLE_KNOWLEDGEBASE),
+            'kb_categories' => $this->languageCountsFor(TranslationSchema::TABLE_KNOWLEDGEBASE_CATS),
+        ];
+    }
+
+    /** @return array<string,int>|string 'unavailable' quando a tabela nao existe */
+    private function languageCountsFor(string $table): array|string
+    {
+        $tableFact = $this->schemaProbe->hasTable($table);
+        if (!$tableFact->isPresent()) {
+            return 'unavailable';
+        }
+
+        $rows = Capsule::table($table)->select(['language'])->get();
+
+        $counts = [];
+        foreach ($rows as $row) {
+            $language = (string) (is_array($row) ? ($row['language'] ?? '') : ($row->language ?? ''));
+            $counts[$language] = ($counts[$language] ?? 0) + 1;
+        }
+        ksort($counts);
+
+        return $counts;
+    }
+
     private static function defaultProbe(): callable
     {
         return static function (): string {

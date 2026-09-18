@@ -76,6 +76,47 @@ final class TranslationStatusReaderTest extends TestCase
     }
 
     // -----------------------------------------------------------
+    // contentVariantCounts() (Fase 4)
+    // -----------------------------------------------------------
+
+    #[Test]
+    public function content_variant_counts_reports_unavailable_per_missing_table_without_derailing_others(): void
+    {
+        FakeCapsule::withRows('tblannouncements', [
+            ['language' => ''],
+            ['language' => 'english'],
+        ]);
+        $probe = new FakeCrmSchemaProbe(['tblannouncements' => ['language']]);
+        $reader = new TranslationStatusReader(static fn(): string => 'unknown', $probe);
+
+        $counts = $reader->contentVariantCounts();
+
+        $this->assertSame(['' => 1, 'english' => 1], $counts['announcements']);
+        $this->assertSame('unavailable', $counts['kb_articles']);
+        $this->assertSame('unavailable', $counts['kb_categories']);
+    }
+
+    #[Test]
+    public function content_variant_counts_groups_each_table_independently(): void
+    {
+        FakeCapsule::withRows('tblannouncements', [['language' => '']]);
+        FakeCapsule::withRows('tblknowledgebase', [['language' => ''], ['language' => 'english'], ['language' => 'english']]);
+        FakeCapsule::withRows('tblknowledgebasecats', [['language' => 'english']]);
+        $probe = new FakeCrmSchemaProbe([
+            'tblannouncements' => ['language'],
+            'tblknowledgebase' => ['language'],
+            'tblknowledgebasecats' => ['language'],
+        ]);
+        $reader = new TranslationStatusReader(static fn(): string => 'unknown', $probe);
+
+        $counts = $reader->contentVariantCounts();
+
+        $this->assertSame(['' => 1], $counts['announcements']);
+        $this->assertSame(['' => 1, 'english' => 2], $counts['kb_articles']);
+        $this->assertSame(['english' => 1], $counts['kb_categories']);
+    }
+
+    // -----------------------------------------------------------
     // normalizeFlag() — usado pelo probe padrão (tblconfiguration real, onde
     // o WHMCS guarda checkbox como 'on', não '1').
     // -----------------------------------------------------------

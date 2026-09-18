@@ -37,6 +37,15 @@ final class TranslationSchema
     /** Fase 3. */
     public const TABLE_TICKET_DEPARTMENTS = 'tblticketdepartments';
 
+    /** Fase 4 (anúncio). Linha original: `parentid=0`, `language=''`; variante: linha filha `parentid=<id>`. */
+    public const TABLE_ANNOUNCEMENTS = 'tblannouncements';
+
+    /** Fase 4 (artigo de KB). Linha original: `parentid=0`, `language=''`; variante: linha filha `parentid=<id>`. */
+    public const TABLE_KNOWLEDGEBASE = 'tblknowledgebase';
+
+    /** Fase 4 (categoria de KB). Linha original: `catid=0`, `language=''`; variante: linha filha `catid=<id>`. */
+    public const TABLE_KNOWLEDGEBASE_CATS = 'tblknowledgebasecats';
+
     public const CAPABILITY_EMAIL_TEMPLATES = 'email_templates';
 
     public const CAPABILITY_DYNAMIC = 'dynamic_translations';
@@ -47,6 +56,13 @@ final class TranslationSchema
     public const CAPABILITY_DYNAMIC_PRODUCT_ADDON = 'dynamic_translations_product_addon';
 
     public const CAPABILITY_DYNAMIC_TICKET_DEPARTMENT = 'dynamic_translations_ticket_department';
+
+    /** Fase 4 — capacidade ISOLADA por tabela: uma tabela ausente não derruba as demais. */
+    public const CAPABILITY_ANNOUNCEMENT = 'announcement';
+
+    public const CAPABILITY_KB_ARTICLE = 'kb_article';
+
+    public const CAPABILITY_KB_CATEGORY = 'kb_category';
 
     private const DYNAMIC_TRANSLATIONS_COLUMNS = [
         'id', 'related_type', 'related_id', 'language', 'translation', 'input_type',
@@ -89,6 +105,21 @@ final class TranslationSchema
             self::TABLE_DYNAMIC_TRANSLATIONS => self::DYNAMIC_TRANSLATIONS_COLUMNS,
             self::TABLE_TICKET_DEPARTMENTS => [
                 'id', 'name', 'description', 'hidden',
+            ],
+        ],
+        self::CAPABILITY_ANNOUNCEMENT => [
+            self::TABLE_ANNOUNCEMENTS => [
+                'id', 'date', 'title', 'announcement', 'published', 'parentid', 'language',
+            ],
+        ],
+        self::CAPABILITY_KB_ARTICLE => [
+            self::TABLE_KNOWLEDGEBASE => [
+                'id', 'title', 'article', 'views', 'votes', 'useful', 'private', 'order', 'parentid', 'language',
+            ],
+        ],
+        self::CAPABILITY_KB_CATEGORY => [
+            self::TABLE_KNOWLEDGEBASE_CATS => [
+                'id', 'parentid', 'name', 'description', 'hidden', 'catid', 'language',
             ],
         ],
     ];

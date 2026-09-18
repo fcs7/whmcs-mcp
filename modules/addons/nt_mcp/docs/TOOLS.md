@@ -1,4 +1,4 @@
-# Catálogo de Tools — NT MCP (85 tools)
+# Catálogo de Tools — NT MCP (93 tools)
 
 > Atualizado em 2026-09-18. Fonte de verdade: atributos `#[McpTool(...)]` em
 > `src/Tools/*.php`; gates LocalAPI em `src/Whmcs/LocalApiClient.php`, gates das
@@ -7,7 +7,7 @@
 > `EmailTemplateRepository.php`).
 > Contagem verificada: `grep -oh "name: '[a-z_0-9]*'" src/Tools/*.php | sort -u | wc -l` = **85**.
 
-Este documento lista **todas as 85 tools** uma a uma, com o comando WHMCS que
+Este documento lista **todas as 93 tools** uma a uma, com o comando WHMCS que
 cada uma invoca (ou a integração direta usada por CRM e NT Chips), a classe do gate de segurança (WO-2),
 se está **ligada por padrão**, e o **nível de risco** — para avaliar a necessidade de cada
 tool e decidir cortes.
@@ -292,6 +292,45 @@ Legenda de risco:
 
 ---
 
+## TranslationContentTools (8) — Fase 4 (última): base de conhecimento e anúncio
+
+| # | Tool | Comando/Fonte | Gate | Default | Status | Descrição |
+|---|------|---------------|------|---------|--------|-----------|
+| 86 | `whmcs_translation_kb_category_list` | KnowledgebaseRepository / tblknowledgebasecats | READ | on | 🟢 | Lista categorias de KB originais (`catid=0`, `language=''`) com `name`/`description` PT completos, variante em `target_language` (ou `null`) e `target_hash`. Sem tool de "get" separada — texto cabe na listagem |
+| 87 | `whmcs_translation_kb_category_set` | KnowledgebaseRepository | WRITE | ⛔ off | 🟡 | Grava até 20 traduções de categoria (`name`/`description`) em lote (tudo-ou-nada); a variante nova copia `parentid`/`hidden` do original; `confirm=false` é dry-run sem gate |
+| 88 | `whmcs_translation_kb_article_list` | KnowledgebaseRepository / tblknowledgebase | READ | on | 🟢 | Lista artigos de KB originais (`parentid=0`, `language=''`) com `title`, excerto de `article` (200 chars), `private` e `has_target` |
+| 89 | `whmcs_translation_kb_article_get` | KnowledgebaseRepository | READ | on | 🟢 | Obtém até 10 artigos originais completos (`title`/`article`) + variante atual (ou `null`) + `target_hash` |
+| 90 | `whmcs_translation_kb_article_set` | KnowledgebaseRepository | WRITE | ⛔ off | 🟡 | Grava até 10 traduções de artigo (`title`/`article`) em lote (tudo-ou-nada); a variante nova copia `private`/`order` e zera `views`/`votes`/`useful`; `confirm=false` é dry-run sem gate |
+| 91 | `whmcs_translation_announcement_list` | AnnouncementRepository / tblannouncements | READ | on | 🟢 | Lista anúncios originais (`parentid=0`, `language=''`) com `title`, `date`, `published`, excerto de `announcement` (200 chars) e `has_target` |
+| 92 | `whmcs_translation_announcement_get` | AnnouncementRepository | READ | on | 🟢 | Obtém até 10 anúncios originais completos (`title`/`announcement`/`date`/`published`) + variante atual (ou `null`) + `target_hash` |
+| 93 | `whmcs_translation_announcement_set` | AnnouncementRepository | WRITE | ⛔ off | 🟡 | Grava até 10 traduções de anúncio (`title`/`announcement`) em lote (tudo-ou-nada); a variante nova copia `date`/`published`; `confirm=false` é dry-run sem gate |
+
+> Modelo de armazenamento diferente das Fases 2/3 (não usa `tbldynamic_translations`):
+> linha-filha na MESMA tabela, igual `tblemailtemplates` — a linha original tem
+> `parentid=0` (anúncio, artigo) ou `catid=0` (categoria) e `language=''`; a variante é
+> uma linha FILHA com `parentid=<id>`/`catid=<id>` e `language=target_language`.
+> `KnowledgebaseRepository` é a ÚNICA classe que toca `tblknowledgebase` E
+> `tblknowledgebasecats`; `AnnouncementRepository` é a ÚNICA classe que toca
+> `tblannouncements`. Cada tabela tem sua própria capacidade isolada no
+> `TranslationSchemaGuard` (`kb_article`, `kb_category`, `announcement`) — uma tabela
+> ausente não derruba as demais.
+>
+> **DESVIO do plano original**: a Fase 4 previa `whmcs_translation_announcement_set` via
+> LocalAPI (`AddAnnouncement`/`UpdateAnnouncement`). Decisão revista nesta entrega: esses
+> comandos NÃO expõem `parentid`/`language` — não há como criar uma variante de idioma
+> através deles. A tool usa Capsule direto, igual às demais desta fase.
+>
+> Nenhuma tool devolve o texto ORIGINAL sem passar pela leitura explícita (`get`, ou
+> `list` para categoria, cujo texto é curto); a escrita nunca toca a linha original.
+> `TranslationBackup` grava backup JSONL do estado anterior em
+> `data/translation-backups/{kb-article,kb-category,announcement}-<target>-YYYYMMDD.jsonl`
+> ANTES de cada escrita e só passa por `TranslationGuard::assertWriteAllowed` quando
+> `confirm=true`. `whmcs_translation_status` inclui `content_variants` (contagem por
+> idioma de `tblannouncements`/`tblknowledgebase`/`tblknowledgebasecats`, `'unavailable'`
+> por tabela ausente) para confirmar o modelo ao vivo.
+
+---
+
 ## Qual ID usar
 
 Guia rápido para evitar confundir IDs:
@@ -315,20 +354,22 @@ Guia rápido para evitar confundir IDs:
 
 | Gate | Qtde | Default | Tools |
 |------|------|---------|-------|
-| READ | 48 | on | consultas LocalAPI/NT Chips/Tradução — sem risco |
-| WRITE | 30 | ⛔ **off** | administrativas reversíveis — opt-in via `nt_mcp_enable_write=1` |
+| READ | 53 | on | consultas LocalAPI/NT Chips/Tradução — sem risco |
+| WRITE | 33 | ⛔ **off** | administrativas reversíveis — opt-in via `nt_mcp_enable_write=1` |
 | DESTRUCTIVE | 2 | ⛔ off | cancel_order, delete_quote (exigem confirm=true) |
 | FINANCIAL | 1 | ⛔ off | convert_quote_to_invoice (não idempotente) |
 | CRM-READ | 4 | on | leituras do CRM mgCRM2 (MgCrmRepository) |
-| **Total** | **85** | | |
+| **Total** | **93** | | |
 
 > **Nota:** COMMS é um gate ortogonal acionado por `notify_client=true`; não acrescenta
 > tools à contagem. AddClient, OpenTicket e AddTicketReply continuam em suas classes base.
 > As cinco tools mutáveis de chips, `whmcs_translation_email_set`,
 > `whmcs_translation_product_set`, `whmcs_translation_product_group_set`,
-> `whmcs_translation_custom_field_set`, `whmcs_translation_product_addon_set` e
-> `whmcs_translation_department_set` estão incluídas na classe WRITE; as demais leituras
-> de tradução (Fases 1 a 3) estão incluídas na classe READ.
+> `whmcs_translation_custom_field_set`, `whmcs_translation_product_addon_set`,
+> `whmcs_translation_department_set`, `whmcs_translation_kb_category_set`,
+> `whmcs_translation_kb_article_set` e `whmcs_translation_announcement_set` estão
+> incluídas na classe WRITE; as demais leituras de tradução (Fases 1 a 4) estão
+> incluídas na classe READ.
 
 ---
 
