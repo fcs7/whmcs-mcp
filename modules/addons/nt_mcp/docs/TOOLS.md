@@ -1,13 +1,13 @@
-# Catálogo de Tools — NT MCP (79 tools)
+# Catálogo de Tools — NT MCP (85 tools)
 
 > Atualizado em 2026-09-18. Fonte de verdade: atributos `#[McpTool(...)]` em
 > `src/Tools/*.php`; gates LocalAPI em `src/Whmcs/LocalApiClient.php`, gates das
 > `whmcs_chip_*` em `src/Whmcs/ChipGuard.php` (acesso via `ChipBridge.php`) e gates das
 > `whmcs_translation_*` em `src/Translation/TranslationGuard.php` (acesso via
 > `EmailTemplateRepository.php`).
-> Contagem verificada: `grep -oh "name: '[a-z_0-9]*'" src/Tools/*.php | sort -u | wc -l` = **79**.
+> Contagem verificada: `grep -oh "name: '[a-z_0-9]*'" src/Tools/*.php | sort -u | wc -l` = **85**.
 
-Este documento lista **todas as 79 tools** uma a uma, com o comando WHMCS que
+Este documento lista **todas as 85 tools** uma a uma, com o comando WHMCS que
 cada uma invoca (ou a integração direta usada por CRM e NT Chips), a classe do gate de segurança (WO-2),
 se está **ligada por padrão**, e o **nível de risco** — para avaliar a necessidade de cada
 tool e decidir cortes.
@@ -259,6 +259,37 @@ Legenda de risco:
 
 ---
 
+## TranslationCatalogExtrasTools (6) — Fase 3: custom field, addon de produto e departamento
+
+| # | Tool | Origem | Gate | Default | Risco | Descrição |
+|---|------|--------|------|---------|-------|-----------|
+| 80 | `whmcs_translation_custom_field_list` | DynamicTranslationRepository / tblcustomfields | READ | on | 🟢 | Lista custom fields visíveis ao cliente (`adminonly` vazio) com `has_target`/`target_hash` por campo (`name` lê a coluna `fieldname`; `description`), mais `type`/`relid`; filtro opcional `type` |
+| 81 | `whmcs_translation_custom_field_set` | DynamicTranslationRepository | WRITE | ⛔ off | 🟡 | Grava até 20 traduções de campo (`name`/`description`) em lote (tudo-ou-nada); `confirm=false` é dry-run sem gate |
+| 82 | `whmcs_translation_product_addon_list` | DynamicTranslationRepository / tbladdons | READ | on | 🟢 | Lista addons de produto com texto-fonte COMPLETO (`name`, `description`) e `has_target`/`target_hash` por campo |
+| 83 | `whmcs_translation_product_addon_set` | DynamicTranslationRepository | WRITE | ⛔ off | 🟡 | Grava até 20 traduções de campo (`name`/`description`) em lote (tudo-ou-nada); `confirm=false` é dry-run sem gate |
+| 84 | `whmcs_translation_department_list` | DynamicTranslationRepository / tblticketdepartments | READ | on | 🟢 | Lista departamentos de suporte com texto-fonte COMPLETO (`name`, `description`) e `has_target`/`target_hash` por campo |
+| 85 | `whmcs_translation_department_set` | DynamicTranslationRepository | WRITE | ⛔ off | 🟡 | Grava até 20 traduções de campo (`name`/`description`) em lote (tudo-ou-nada); `confirm=false` é dry-run sem gate |
+
+> Classe separada de `TranslationCatalogTools` só para não ultrapassar ~400 linhas naquele
+> arquivo — contrato idêntico (schema guard, gates, backup, validação). `DynamicTranslationMap`
+> ganhou os kinds `custom_field`, `product_addon` e `ticket_department`; cada um tem sua
+> PRÓPRIA capacidade no `TranslationSchemaGuard` (`dynamic_translations_custom_field`,
+> `dynamic_translations_product_addon`, `dynamic_translations_ticket_department`) — uma
+> tabela ausente derruba SÓ o kind dela, nunca os demais (inclusive Fase 2).
+>
+> `custom_field.name` é o único campo cujo nome PÚBLICO (o que aparece em `field` e no
+> literal `related_type`, ex.: `custom_field.{id}.name`) diverge da coluna fonte real
+> (`tblcustomfields.fieldname`) — `DynamicTranslationMap::sourceColumn()` faz essa tradução;
+> a tool sempre expõe/recebe `name`, nunca `fieldname`. Custom fields com `adminonly`
+> preenchido NUNCA aparecem na listagem (não são visíveis ao cliente).
+>
+> **PENDENTE de confirmação ao vivo**: os literais `custom_field.{id}.*`,
+> `product_addon.{id}.*` e `ticket_department.{id}.*` seguem a MESMA convenção confirmada
+> para `product`/`product_group`, mas ainda não foram confirmados contra o banco real —
+> use `whmcs_translation_status` para conferir os `related_type` já gravados de fato.
+
+---
+
 ## Qual ID usar
 
 Guia rápido para evitar confundir IDs:
@@ -282,19 +313,20 @@ Guia rápido para evitar confundir IDs:
 
 | Gate | Qtde | Default | Tools |
 |------|------|---------|-------|
-| READ | 45 | on | consultas LocalAPI/NT Chips/Tradução — sem risco |
-| WRITE | 27 | ⛔ **off** | administrativas reversíveis — opt-in via `nt_mcp_enable_write=1` |
+| READ | 48 | on | consultas LocalAPI/NT Chips/Tradução — sem risco |
+| WRITE | 30 | ⛔ **off** | administrativas reversíveis — opt-in via `nt_mcp_enable_write=1` |
 | DESTRUCTIVE | 2 | ⛔ off | cancel_order, delete_quote (exigem confirm=true) |
 | FINANCIAL | 1 | ⛔ off | convert_quote_to_invoice (não idempotente) |
 | CRM-READ | 4 | on | leituras do CRM mgCRM2 (MgCrmRepository) |
-| **Total** | **79** | | |
+| **Total** | **85** | | |
 
 > **Nota:** COMMS é um gate ortogonal acionado por `notify_client=true`; não acrescenta
 > tools à contagem. AddClient, OpenTicket e AddTicketReply continuam em suas classes base.
 > As cinco tools mutáveis de chips, `whmcs_translation_email_set`,
-> `whmcs_translation_product_set` e `whmcs_translation_product_group_set` estão incluídas
-> na classe WRITE; as demais leituras de tradução (Fases 1 e 2) estão incluídas na classe
-> READ.
+> `whmcs_translation_product_set`, `whmcs_translation_product_group_set`,
+> `whmcs_translation_custom_field_set`, `whmcs_translation_product_addon_set` e
+> `whmcs_translation_department_set` estão incluídas na classe WRITE; as demais leituras
+> de tradução (Fases 1 a 3) estão incluídas na classe READ.
 
 ---
 

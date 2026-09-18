@@ -69,10 +69,23 @@ final class DynamicTranslationRepository
      * `description` (textarea) vem TRUNCADA a 200 chars nesta listagem — texto
      * completo é responsabilidade de `getEntities()`.
      *
+     * `$customFieldType` filtra `tblcustomfields.type` — só se aplica a
+     * `KIND_CUSTOM_FIELD` (ignorado para os demais kinds); `null`/`''` não
+     * filtra. `KIND_CUSTOM_FIELD` também exclui, SEMPRE, campos admin-only
+     * (`adminonly` não vazio) — não aparecem para o cliente, não fazem
+     * sentido traduzir.
+     *
      * @return array<string, mixed>
      */
-    public function listEntities(string $kind, ?int $gid, bool $onlyMissing, int $limit, int $offset, string $targetLanguage): array
-    {
+    public function listEntities(
+        string $kind,
+        ?int $gid,
+        bool $onlyMissing,
+        int $limit,
+        int $offset,
+        string $targetLanguage,
+        ?string $customFieldType = null
+    ): array {
         if (!DynamicTranslationMap::isValidKind($kind)) {
             return self::invalidKind($kind);
         }
@@ -83,7 +96,7 @@ final class DynamicTranslationRepository
         }
 
         try {
-            $this->guard->assert(TranslationSchema::CAPABILITY_DYNAMIC);
+            $this->guard->assert(DynamicTranslationMap::capabilityFor($kind));
         } catch (TranslationException $e) {
             return $e->toPublicArray();
         }
@@ -93,12 +106,25 @@ final class DynamicTranslationRepository
 
         $fields = DynamicTranslationMap::fields($kind);
         $isProduct = $kind === DynamicTranslationMap::KIND_PRODUCT;
+        $isCustomField = $kind === DynamicTranslationMap::KIND_CUSTOM_FIELD;
 
-        $columns = array_merge(['id'], $isProduct ? ['gid', 'hidden', 'retired'] : ['hidden'], array_keys($fields));
+        $sourceColumns = array_map(
+            static fn(string $field): string => DynamicTranslationMap::sourceColumn($kind, $field),
+            array_keys($fields)
+        );
+        $columns = array_values(array_unique(array_merge(['id'], self::extraSelectColumns($kind), $sourceColumns)));
 
         $query = Capsule::table(DynamicTranslationMap::sourceTable($kind));
         if ($isProduct && $gid !== null && $gid > 0) {
             $query = $query->where('gid', $gid);
+        }
+        if ($isCustomField) {
+            // '' == null no operador de igualdade do fake e do MySQL — cobre
+            // NULL e string vazia sem precisar de whereNull() adicional.
+            $query = $query->where('adminonly', '');
+            if ($customFieldType !== null && $customFieldType !== '') {
+                $query = $query->where('type', $customFieldType);
+            }
         }
         $sourceRows = $query->select($columns)->orderBy('id')->get();
 
@@ -111,7 +137,7 @@ final class DynamicTranslationRepository
             $hasMissing = false;
 
             foreach ($fields as $field => $inputType) {
-                $sourceText = self::text($row, $field);
+                $sourceText = self::text($row, DynamicTranslationMap::sourceColumn($kind, $field));
                 $translation = $targetByFieldId[$field][$id] ?? null;
                 $hasTarget = $translation !== null;
                 if ($sourceText !== '' && !$hasTarget) {
@@ -129,15 +155,7 @@ final class DynamicTranslationRepository
                 continue;
             }
 
-            $item = ['id' => $id, 'fields' => $fieldsSummary];
-            if ($isProduct) {
-                $item['gid'] = self::intOf($row, 'gid');
-                $item['hidden'] = self::text($row, 'hidden');
-                $item['retired'] = self::text($row, 'retired');
-            } else {
-                $item['hidden'] = self::text($row, 'hidden');
-            }
-            $items[] = $item;
+            $items[] = ['id' => $id, 'fields' => $fieldsSummary] + self::extraListPayload($kind, $row);
         }
 
         $total = count($items);
@@ -174,7 +192,7 @@ final class DynamicTranslationRepository
         }
 
         try {
-            $this->guard->assert(TranslationSchema::CAPABILITY_DYNAMIC);
+            $this->guard->assert(DynamicTranslationMap::capabilityFor($kind));
         } catch (TranslationException $e) {
             return $e->toPublicArray();
         }
@@ -190,7 +208,11 @@ final class DynamicTranslationRepository
 
         $fields = DynamicTranslationMap::fields($kind);
         $isProduct = $kind === DynamicTranslationMap::KIND_PRODUCT;
-        $columns = array_merge(['id'], $isProduct ? ['gid'] : [], array_keys($fields));
+        $sourceColumns = array_map(
+            static fn(string $field): string => DynamicTranslationMap::sourceColumn($kind, $field),
+            array_keys($fields)
+        );
+        $columns = array_values(array_unique(array_merge(['id'], $isProduct ? ['gid'] : [], $sourceColumns)));
 
         $rows = Capsule::table(DynamicTranslationMap::sourceTable($kind))
             ->whereIn('id', $ids)
@@ -216,7 +238,7 @@ final class DynamicTranslationRepository
             foreach ($fields as $field => $inputType) {
                 $translation = $targetByFieldId[$field][$id] ?? null;
                 $fieldsPayload[$field] = [
-                    'source' => self::text($row, $field),
+                    'source' => self::text($row, DynamicTranslationMap::sourceColumn($kind, $field)),
                     'target' => $translation,
                     'target_hash' => $translation === null ? 'absent' : hash('sha256', (string) $translation),
                 ];
@@ -255,7 +277,7 @@ final class DynamicTranslationRepository
         }
 
         try {
-            $this->guard->assert(TranslationSchema::CAPABILITY_DYNAMIC);
+            $this->guard->assert(DynamicTranslationMap::capabilityFor($kind));
         } catch (TranslationException $e) {
             return $e->toPublicArray();
         }
@@ -331,9 +353,10 @@ final class DynamicTranslationRepository
             ];
         }
 
+        $sourceColumn = DynamicTranslationMap::sourceColumn($kind, $field);
         $sourceRow = Capsule::table(DynamicTranslationMap::sourceTable($kind))
             ->where('id', $id)
-            ->select(['id', $field])
+            ->select(['id', $sourceColumn])
             ->lockForUpdate()
             ->first();
 
@@ -346,7 +369,7 @@ final class DynamicTranslationRepository
             ];
         }
 
-        $sourceText = self::text($sourceRow, $field);
+        $sourceText = self::text($sourceRow, $sourceColumn);
         if (trim($sourceText) === '') {
             return [
                 'result' => 'error',
@@ -486,6 +509,43 @@ final class DynamicTranslationRepository
     private function hasTimestampColumn(string $column): bool
     {
         return $this->probe->hasColumn(self::TABLE, $column)->isPresent();
+    }
+
+    /**
+     * Colunas RAW da tabela fonte, além de `id` e dos campos traduzíveis,
+     * necessárias para filtrar (`custom_field`) e/ou compor o item de lista.
+     *
+     * @return array<int, string>
+     */
+    private static function extraSelectColumns(string $kind): array
+    {
+        return match ($kind) {
+            DynamicTranslationMap::KIND_PRODUCT => ['gid', 'hidden', 'retired'],
+            DynamicTranslationMap::KIND_CUSTOM_FIELD => ['type', 'relid', 'adminonly'],
+            default => ['hidden'],
+        };
+    }
+
+    /**
+     * Campos extras do item de listagem (além de `id`/`fields`), específicos
+     * por kind.
+     *
+     * @return array<string, mixed>
+     */
+    private static function extraListPayload(string $kind, mixed $row): array
+    {
+        return match ($kind) {
+            DynamicTranslationMap::KIND_PRODUCT => [
+                'gid' => self::intOf($row, 'gid'),
+                'hidden' => self::text($row, 'hidden'),
+                'retired' => self::text($row, 'retired'),
+            ],
+            DynamicTranslationMap::KIND_CUSTOM_FIELD => [
+                'type' => self::text($row, 'type'),
+                'relid' => self::intOf($row, 'relid'),
+            ],
+            default => ['hidden' => self::text($row, 'hidden')],
+        };
     }
 
     private static function now(): string

@@ -37,7 +37,7 @@ Decisão aprovada: modelo híbrido.
   **Nenhum método de nenhum repositório recebe nome de tabela ou coluna vindo
   do chamador** — os identificadores de schema são todos constantes internas.
 
-## 3. Mapa das 25 tools em 4 fases
+## 3. Mapa das 23 tools em 4 fases
 
 | # | Tool | Tipo | Fase | Backend |
 |---|------|------|------|---------|
@@ -50,24 +50,36 @@ Decisão aprovada: modelo híbrido.
 | 7 | `whmcs_translation_product_set` | write | 2 | Capsule (`tbldynamic_translations`) |
 | 8 | `whmcs_translation_product_group_list` | read | 2 | Capsule (`tbldynamic_translations`) |
 | 9 | `whmcs_translation_product_group_set` | write | 2 | Capsule (`tbldynamic_translations`) |
-| 10 | `whmcs_translation_configoption_list` | read | 3 | Capsule (`tbldynamic_translations`) |
-| 11 | `whmcs_translation_configoption_set` | write | 3 | Capsule (`tbldynamic_translations`) |
-| 12 | `whmcs_translation_custom_field_list` | read | 3 | Capsule (`tbldynamic_translations`) |
-| 13 | `whmcs_translation_custom_field_set` | write | 3 | Capsule (`tbldynamic_translations`) |
-| 14 | `whmcs_translation_product_addon_list` | read | 3 | Capsule (`tbldynamic_translations`) |
-| 15 | `whmcs_translation_product_addon_set` | write | 3 | Capsule (`tbldynamic_translations`) |
-| 16 | `whmcs_translation_department_list` | read | 3 | Capsule (`tbldynamic_translations`) |
-| 17 | `whmcs_translation_department_set` | write | 3 | Capsule (`tbldynamic_translations`) |
-| 18 | `whmcs_translation_kb_category_list` | read | 4 | Capsule (linha-filha KB) |
-| 19 | `whmcs_translation_kb_category_set` | write | 4 | Capsule (linha-filha KB) |
-| 20 | `whmcs_translation_kb_article_list` | read | 4 | Capsule (linha-filha KB) |
-| 21 | `whmcs_translation_kb_article_get` | read | 4 | Capsule (linha-filha KB) |
-| 22 | `whmcs_translation_kb_article_set` | write | 4 | Capsule (linha-filha KB) |
-| 23 | `whmcs_translation_announcement_list` | read | 4 | Capsule (leitura) |
-| 24 | `whmcs_translation_announcement_get` | read | 4 | Capsule (leitura) |
-| 25 | `whmcs_translation_announcement_set` | write | 4 | LocalAPI (`AddAnnouncement`/`UpdateAnnouncement`) |
+| 10 | `whmcs_translation_custom_field_list` | read | 3 | Capsule (`tbldynamic_translations`) |
+| 11 | `whmcs_translation_custom_field_set` | write | 3 | Capsule (`tbldynamic_translations`) |
+| 12 | `whmcs_translation_product_addon_list` | read | 3 | Capsule (`tbldynamic_translations`) |
+| 13 | `whmcs_translation_product_addon_set` | write | 3 | Capsule (`tbldynamic_translations`) |
+| 14 | `whmcs_translation_department_list` | read | 3 | Capsule (`tbldynamic_translations`) |
+| 15 | `whmcs_translation_department_set` | write | 3 | Capsule (`tbldynamic_translations`) |
+| 16 | `whmcs_translation_kb_category_list` | read | 4 | Capsule (linha-filha KB) |
+| 17 | `whmcs_translation_kb_category_set` | write | 4 | Capsule (linha-filha KB) |
+| 18 | `whmcs_translation_kb_article_list` | read | 4 | Capsule (linha-filha KB) |
+| 19 | `whmcs_translation_kb_article_get` | read | 4 | Capsule (linha-filha KB) |
+| 20 | `whmcs_translation_kb_article_set` | write | 4 | Capsule (linha-filha KB) |
+| 21 | `whmcs_translation_announcement_list` | read | 4 | Capsule (leitura) |
+| 22 | `whmcs_translation_announcement_get` | read | 4 | Capsule (leitura) |
+| 23 | `whmcs_translation_announcement_set` | write | 4 | LocalAPI (`AddAnnouncement`/`UpdateAnnouncement`) |
 
-Total: 25 tools (4 + 5 + 8 + 8).
+Total: 23 tools (4 + 5 + 6 + 8).
+
+**Corte de config option (2026-09-18, na entrega da Fase 3)**: o mapa original
+tinha 25 tools, incluindo `whmcs_translation_configoption_list`/`_set` na
+Fase 3. Removidas: o WHMCS **não suporta** tradução dinâmica de opções
+configuráveis — gravar essas tools seria dado morto (não haveria
+`related_type` real para elas escreverem). Feature request aberto no
+fornecedor: https://requests.whmcs.com/idea/add-easy-translation-to-configurable-options-and-product-addons.
+Se o WHMCS passar a suportar, a tool volta a ser viável no mesmo padrão de
+`custom_field`/`product_addon`.
+
+**Estado das fases**: Fase 1 (e-mail) e Fase 2 (produto/grupo de produto)
+implementadas. Fase 3 (custom field, addon de produto, departamento de
+suporte) implementada nesta entrega — ver `TranslationCatalogExtrasTools`.
+Fase 4 (KB e anúncio) pendente.
 
 **Regra de corte** entre `list+set` e `list+get+set`: texto curto (nome de
 produto/grupo/config option/custom field/departamento — cabe na listagem)

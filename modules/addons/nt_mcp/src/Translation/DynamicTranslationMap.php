@@ -6,7 +6,8 @@ namespace NtMcp\Translation;
 
 /**
  * Catálogo FECHADO de "kinds" traduzíveis via `tbldynamic_translations`
- * (Fase 2: produto e grupo de produto — Fase 3 só acrescenta entradas aqui).
+ * (Fase 2: produto e grupo de produto; Fase 3: custom field, addon de
+ * produto e departamento de suporte).
  *
  * Nenhuma tool ou repositório aceita nome de tabela/coluna/kind/field vindo de
  * fora sem passar por este mapa: `DynamicTranslationRepository` valida todo
@@ -16,6 +17,13 @@ namespace NtMcp\Translation;
  * `{id}` (nunca o id numérico substituído) — ex.: `product.{id}.name`. O id
  * real fica na coluna `related_id`. `relatedType()` reflete isso: o mesmo
  * literal serve para qualquer id daquele kind+field.
+ *
+ * PENDENTE DE CONFIRMAÇÃO AO VIVO: os literais `custom_field.{id}.*`,
+ * `product_addon.{id}.*` e `ticket_department.{id}.*` (Fase 3) seguem a MESMA
+ * convenção observada e confirmada para `product`/`product_group`, mas ainda
+ * NÃO foram confirmados contra o banco real — `whmcs_translation_status`
+ * (via `TranslationStatusReader::dynamicTranslationCounts()`) lista os
+ * `related_type` que já existem de fato e serve para essa confirmação.
  */
 final class DynamicTranslationMap
 {
@@ -23,10 +31,22 @@ final class DynamicTranslationMap
 
     public const KIND_PRODUCT_GROUP = 'product_group';
 
+    public const KIND_CUSTOM_FIELD = 'custom_field';
+
+    public const KIND_PRODUCT_ADDON = 'product_addon';
+
+    public const KIND_TICKET_DEPARTMENT = 'ticket_department';
+
     /**
-     * kind => [source_table, fields => field => input_type].
+     * kind => [source_table, fields => public_field => input_type, source_columns => public_field => db_column].
      *
-     * @var array<string, array{source_table: string, fields: array<string, string>}>
+     * `source_columns` só precisa de uma entrada quando o nome público
+     * (o que aparece no `field` da tool e no literal `related_type`) diverge
+     * da coluna real da tabela fonte — hoje só `custom_field.name`, que lê
+     * `fieldname`. Quando ausente, o nome público E a coluna fonte são o
+     * mesmo texto.
+     *
+     * @var array<string, array{source_table: string, fields: array<string, string>, source_columns?: array<string, string>}>
      */
     private const MAP = [
         self::KIND_PRODUCT => [
@@ -44,6 +64,47 @@ final class DynamicTranslationMap
                 'tagline' => 'text',
             ],
         ],
+        self::KIND_CUSTOM_FIELD => [
+            'source_table' => TranslationSchema::TABLE_CUSTOM_FIELDS,
+            'fields' => [
+                'name' => 'text',
+                'description' => 'text',
+            ],
+            // Campo público 'name' é a convenção do literal (`custom_field.{id}.name`);
+            // a coluna real de `tblcustomfields` é `fieldname`, não `name`.
+            'source_columns' => [
+                'name' => 'fieldname',
+            ],
+        ],
+        self::KIND_PRODUCT_ADDON => [
+            'source_table' => TranslationSchema::TABLE_PRODUCT_ADDONS,
+            'fields' => [
+                'name' => 'text',
+                'description' => 'textarea',
+            ],
+        ],
+        self::KIND_TICKET_DEPARTMENT => [
+            'source_table' => TranslationSchema::TABLE_TICKET_DEPARTMENTS,
+            'fields' => [
+                'name' => 'text',
+                'description' => 'text',
+            ],
+        ],
+    ];
+
+    /**
+     * kind => capacidade exigida do `TranslationSchemaGuard`. Cada kind novo
+     * (Fase 3) tem a SUA PRÓPRIA capacidade — uma tabela ausente derruba só o
+     * kind dela, nunca os demais (ver `TranslationSchema::REQUIREMENTS`).
+     *
+     * @var array<string, string>
+     */
+    private const CAPABILITY_BY_KIND = [
+        self::KIND_PRODUCT => TranslationSchema::CAPABILITY_DYNAMIC,
+        self::KIND_PRODUCT_GROUP => TranslationSchema::CAPABILITY_DYNAMIC,
+        self::KIND_CUSTOM_FIELD => TranslationSchema::CAPABILITY_DYNAMIC_CUSTOM_FIELD,
+        self::KIND_PRODUCT_ADDON => TranslationSchema::CAPABILITY_DYNAMIC_PRODUCT_ADDON,
+        self::KIND_TICKET_DEPARTMENT => TranslationSchema::CAPABILITY_DYNAMIC_TICKET_DEPARTMENT,
     ];
 
     /** @return array<int, string> */
@@ -78,6 +139,27 @@ final class DynamicTranslationMap
     {
         return self::fields($kind)[$field]
             ?? throw new \InvalidArgumentException("DynamicTranslationMap: unknown field '{$field}' for kind '{$kind}'.");
+    }
+
+    /**
+     * Coluna REAL da tabela fonte para o campo público `$field`. Igual ao
+     * nome público, exceto quando `source_columns` do kind diz o contrário
+     * (hoje só `custom_field.name` -> `fieldname`).
+     */
+    public static function sourceColumn(string $kind, string $field): string
+    {
+        if (!self::isValidField($kind, $field)) {
+            throw new \InvalidArgumentException("DynamicTranslationMap: unknown field '{$field}' for kind '{$kind}'.");
+        }
+
+        return self::MAP[$kind]['source_columns'][$field] ?? $field;
+    }
+
+    /** Capacidade do `TranslationSchemaGuard` exigida para operar neste kind. */
+    public static function capabilityFor(string $kind): string
+    {
+        return self::CAPABILITY_BY_KIND[$kind]
+            ?? throw new \InvalidArgumentException("DynamicTranslationMap: unknown kind '{$kind}'.");
     }
 
     /**

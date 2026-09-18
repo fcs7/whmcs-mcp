@@ -1,6 +1,6 @@
 # NT MCP — WHMCS MCP Server Addon
 
-Addon PHP para WHMCS que expõe 79 tools via Model Context Protocol.
+Addon PHP para WHMCS que expõe 85 tools via Model Context Protocol.
 Repo: `git@github.com:fcs7/whmcs-mcp.git`
 
 ## Commands
@@ -10,7 +10,7 @@ cd modules/addons/nt_mcp
 composer install --ignore-platform-req=ext-iconv   # OBRIGATÓRIO em worktree novo: vendor/ não é versionado
 ./vendor/bin/phpunit --testdox                    # tests
 composer audit                                    # check dependency CVEs
-rg -o "name: '[a-z_0-9]+'" src/Tools/*.php | wc -l  # 79 tools total (rg -o '#\[McpTool' conta mais: descontar os comentários "sem #[McpTool]" de QuoteTools.php e ChipTools.php)
+rg -o "name: '[a-z_0-9]+'" src/Tools/*.php | wc -l  # 85 tools total (rg -o '#\[McpTool' conta mais: descontar os comentários "sem #[McpTool]" de QuoteTools.php e ChipTools.php)
 # Deploy manual via FTP (from modules/addons/nt_mcp/). A credencial DEV compartilhada
 # fica fora do git no repo do tema 2026; nunca pedir a senha novamente nem copiá-la
 # para este repositório.
@@ -54,7 +54,7 @@ npx -y @modelcontextprotocol/inspector --cli --transport http --server-url "http
 - `src/Admin/` — AdminController (auth dashboard), OAuthApprovalController (5-layer approval)
 - `src/Whmcs/` — LocalApiClient (55 comandos na allowlist + gates READ/WRITE/DESTRUCTIVE/FINANCIAL/COST/COMMS), ResponseRedactor, CompatContainer, SystemUrl, AdminSession, GateSettings (leitura das flags de gate — ponto único, usada por LocalApiClient, ChipGuard e TranslationGuard), ChipBridge/ChipGuard (integração com o addon nt_chips)
 - `src/Translation/` — tools de tradução em massa, domínio FORA da LocalAPI. Fase 1 (e-mail, `tblemailtemplates`): `TranslationSchema`/`TranslationSchemaGuard` (mesmo contrato do `CrmSchemaGuard`, reusando `NtMcp\Crm\CrmSchemaProbe`/`CapsuleSchemaProbe`; `assert(string $capability)` é genérico por capacidade), `EmailTemplateRepository` (ÚNICA classe que toca `tblemailtemplates`; transação com `lockForUpdate`, hash otimista, backup antes da escrita), `TranslationValidator` (paridade de tags Smarty/HTML entre PT e EN; `validateField()` é a variante de um único texto usada pela Fase 2), `TranslationBackup` (JSONL em `data/translation-backups/`, 0700/0600; `append($entry, $domain='emailtemplates')` — `$domain` generalizado para `dynamic-<kind>` na Fase 2, arquivo continua `<domain>-<target>-YYYYMMDD.jsonl`), `TranslationGuard` (mesmo desenho do `ChipGuard::assertWriteAllowed`, sem allowlist de cliente, reusado pelas Fases 1 e 2), `TranslationStatusReader` (contagem de `tblclients.language`, leitura de "Enable Dynamic Translations" e, desde a Fase 2, contagem de `tbldynamic_translations` por idioma e por `related_type`). Fase 2 (produto/grupo de produto, `tbldynamic_translations`): `DynamicTranslationMap` (catálogo FECHADO de `kind`/`field` — `product`: name/description; `product_group`: name/headline/tagline; Fase 3 só acrescenta entradas), `DynamicTranslationRepository` (ÚNICA classe que toca `tbldynamic_translations`; NUNCA escreve nas tabelas fonte `tblproducts`/`tblproductgroups`, só lê sob `lockForUpdate`; `related_type` gravado é o LITERAL com `{id}`, ex. `product.{id}.name` — o id real é `related_id`; timestamps `created_at`/`updated_at` só preenchidos se a coluna existir, via probe, nunca exigidos). `target_language` da Fase 2 aceita SOMENTE `'english'` (`SUPPORTED_TARGET_LANGUAGES` diferente da Fase 1, que aceita `'english'`/`'portuguese-br'`).
-- `src/Tools/*.php` — 14 tool classes, 79 tools: Client(12), ProjectManager(9), Order(7), Quote(7), Chip(6), System(6), Ticket(5), Domain(5), Billing(5), CRM(4), Translation(4), TranslationCatalog(5), SupportInfo(3), Service(1)
+- `src/Tools/*.php` — 15 tool classes, 85 tools: Client(12), ProjectManager(9), Order(7), Quote(7), Chip(6), System(6), Ticket(5), Domain(5), Billing(5), CRM(4), Translation(4), TranslationCatalog(5), TranslationCatalogExtras(6), SupportInfo(3), Service(1)
 - `templates/admin/` — dashboard.php, oauth-approve.php (output escapado via htmlspecialchars)
 
 ### Admin Binding Flow

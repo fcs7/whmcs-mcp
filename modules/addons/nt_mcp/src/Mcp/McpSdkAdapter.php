@@ -29,6 +29,7 @@ use NtMcp\Tools\ServiceTools;
 use NtMcp\Tools\SupportInfoTools;
 use NtMcp\Tools\SystemTools;
 use NtMcp\Tools\TicketTools;
+use NtMcp\Tools\TranslationCatalogExtrasTools;
 use NtMcp\Tools\TranslationCatalogTools;
 use NtMcp\Tools\TranslationTools;
 use NtMcp\Whmcs\CompatContainer;
@@ -63,7 +64,7 @@ use Psr\Log\LoggerInterface;
 final class McpSdkAdapter implements ServerAdapterInterface
 {
     public const SERVER_NAME = 'NT Web WHMCS MCP Server';
-    public const SERVER_VERSION = '2.6.0';
+    public const SERVER_VERSION = '2.7.0';
     public const MAX_BODY_BYTES = 1048576;
     public const SESSION_TTL = 3600;
     public const ELEMENTS_CACHE_FILE = 'mcp_elements.json';
@@ -170,6 +171,10 @@ final class McpSdkAdapter implements ServerAdapterInterface
         // tbldynamic_translations) — repositório e mapa próprios, mesmo
         // padrão de TranslationTools.
         $container->set(TranslationCatalogTools::class, new TranslationCatalogTools());
+        // Fase 3 do mesmo domínio (custom field, addon de produto,
+        // departamento de suporte) — classe própria só para não ultrapassar
+        // ~400 linhas em TranslationCatalogTools; mesmo padrão de dado/guard.
+        $container->set(TranslationCatalogExtrasTools::class, new TranslationCatalogExtrasTools());
         $container->set(LoggerInterface::class, $logger);
 
         $server = McpServer::builder()

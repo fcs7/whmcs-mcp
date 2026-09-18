@@ -10,6 +10,7 @@ use NtMcp\Translation\TranslationBackup;
 use NtMcp\Translation\TranslationSchemaGuard;
 use NtMcp\Tests\Support\FakeCapsule;
 use NtMcp\Tests\Support\FakeCrmSchemaProbe;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 
@@ -20,6 +21,12 @@ final class DynamicTranslationRepositoryTest extends TestCase
     private const PRODUCT_COLUMNS = ['id', 'gid', 'name', 'description', 'hidden', 'retired'];
 
     private const PRODUCT_GROUP_COLUMNS = ['id', 'name', 'headline', 'tagline', 'hidden'];
+
+    private const CUSTOM_FIELD_COLUMNS = ['id', 'type', 'relid', 'fieldname', 'description', 'adminonly'];
+
+    private const PRODUCT_ADDON_COLUMNS = ['id', 'name', 'description', 'hidden'];
+
+    private const TICKET_DEPARTMENT_COLUMNS = ['id', 'name', 'description', 'hidden'];
 
     protected function setUp(): void
     {
@@ -37,6 +44,9 @@ final class DynamicTranslationRepositoryTest extends TestCase
             'tbldynamic_translations' => array_merge(self::DYNAMIC_COLUMNS, $extraColumns),
             'tblproducts' => self::PRODUCT_COLUMNS,
             'tblproductgroups' => self::PRODUCT_GROUP_COLUMNS,
+            'tblcustomfields' => self::CUSTOM_FIELD_COLUMNS,
+            'tbladdons' => self::PRODUCT_ADDON_COLUMNS,
+            'tblticketdepartments' => self::TICKET_DEPARTMENT_COLUMNS,
         ]);
     }
 
@@ -66,6 +76,33 @@ final class DynamicTranslationRepositoryTest extends TestCase
         FakeCapsule::withRows('tblproductgroups', [
             ['id' => 5, 'name' => 'Internet', 'headline' => 'Internet rapida', 'tagline' => 'Sempre conectado', 'hidden' => '0'],
             ['id' => 7, 'name' => 'Movel', 'headline' => 'Planos moveis', 'tagline' => 'Fale sem limites', 'hidden' => '0'],
+        ]);
+    }
+
+    private function seedCustomFields(): void
+    {
+        FakeCapsule::withRows('tblcustomfields', [
+            ['id' => 1, 'type' => 'product', 'relid' => 5, 'fieldname' => 'CPF', 'description' => 'Documento do titular', 'adminonly' => ''],
+            ['id' => 2, 'type' => 'product', 'relid' => 5, 'fieldname' => 'RG', 'description' => '', 'adminonly' => ''],
+            // adminonly preenchido: NUNCA aparece na listagem, mesmo com texto-fonte nao vazio.
+            ['id' => 3, 'type' => 'client', 'relid' => 0, 'fieldname' => 'Nota interna', 'description' => 'Somente admin', 'adminonly' => 'on'],
+            ['id' => 4, 'type' => 'dropdown', 'relid' => 7, 'fieldname' => 'Plano', 'description' => 'Selecione o plano', 'adminonly' => ''],
+        ]);
+    }
+
+    private function seedProductAddons(): void
+    {
+        FakeCapsule::withRows('tbladdons', [
+            ['id' => 1, 'name' => 'IP Fixo', 'description' => '<p>Endereco IP dedicado</p>', 'hidden' => '0'],
+            ['id' => 2, 'name' => 'Backup Extra', 'description' => '<p>Espaco adicional de backup</p>', 'hidden' => '0'],
+        ]);
+    }
+
+    private function seedTicketDepartments(): void
+    {
+        FakeCapsule::withRows('tblticketdepartments', [
+            ['id' => 1, 'name' => 'Suporte Tecnico', 'description' => 'Duvidas tecnicas', 'hidden' => '0'],
+            ['id' => 2, 'name' => 'Financeiro', 'description' => 'Duvidas de cobranca', 'hidden' => '0'],
         ]);
     }
 
@@ -540,5 +577,304 @@ final class DynamicTranslationRepositoryTest extends TestCase
         );
 
         $this->assertSame('invalid_target_language', $result['error_code']);
+    }
+
+    // -----------------------------------------------------------
+    // Fase 3 — custom_field / product_addon / ticket_department
+    // -----------------------------------------------------------
+
+    #[Test]
+    public function custom_field_list_reads_the_fieldname_column_under_the_public_name_key(): void
+    {
+        $this->seedCustomFields();
+        $repo = $this->repo();
+
+        $result = $repo->listEntities(DynamicTranslationMap::KIND_CUSTOM_FIELD, null, false, 50, 0, 'english');
+
+        $byId = [];
+        foreach ($result['items'] as $item) {
+            $byId[$item['id']] = $item;
+        }
+        $this->assertSame('CPF', $byId[1]['fields']['name']['source']);
+        $this->assertSame('RG', $byId[2]['fields']['name']['source']);
+    }
+
+    #[Test]
+    public function custom_field_list_never_returns_admin_only_fields(): void
+    {
+        $this->seedCustomFields();
+        $repo = $this->repo();
+
+        $result = $repo->listEntities(DynamicTranslationMap::KIND_CUSTOM_FIELD, null, false, 50, 0, 'english');
+
+        $this->assertNotContains(3, array_column($result['items'], 'id'));
+    }
+
+    #[Test]
+    public function custom_field_list_filters_by_type_when_provided(): void
+    {
+        $this->seedCustomFields();
+        $repo = $this->repo();
+
+        $result = $repo->listEntities(DynamicTranslationMap::KIND_CUSTOM_FIELD, null, false, 50, 0, 'english', 'dropdown');
+
+        $this->assertSame([4], array_column($result['items'], 'id'));
+    }
+
+    #[Test]
+    public function custom_field_list_ignores_type_filter_when_empty(): void
+    {
+        $this->seedCustomFields();
+        $repo = $this->repo();
+
+        $result = $repo->listEntities(DynamicTranslationMap::KIND_CUSTOM_FIELD, null, false, 50, 0, 'english', null);
+
+        // 3 visiveis (id=3 e admin-only, sempre excluido).
+        $this->assertCount(3, $result['items']);
+    }
+
+    #[Test]
+    public function custom_field_list_exposes_type_and_relid(): void
+    {
+        $this->seedCustomFields();
+        $repo = $this->repo();
+
+        $result = $repo->listEntities(DynamicTranslationMap::KIND_CUSTOM_FIELD, null, false, 50, 0, 'english');
+
+        $byId = [];
+        foreach ($result['items'] as $item) {
+            $byId[$item['id']] = $item;
+        }
+        $this->assertSame('product', $byId[1]['type']);
+        $this->assertSame(5, $byId[1]['relid']);
+    }
+
+    #[Test]
+    public function product_addon_list_returns_full_text_and_hidden(): void
+    {
+        $this->seedProductAddons();
+        $repo = $this->repo();
+
+        $result = $repo->listEntities(DynamicTranslationMap::KIND_PRODUCT_ADDON, null, false, 50, 0, 'english');
+
+        $this->assertCount(2, $result['items']);
+        $this->assertSame('<p>Endereco IP dedicado</p>', $result['items'][0]['fields']['description']['source']);
+        $this->assertSame('0', $result['items'][0]['hidden']);
+    }
+
+    #[Test]
+    public function ticket_department_list_returns_full_text_and_hidden(): void
+    {
+        $this->seedTicketDepartments();
+        $repo = $this->repo();
+
+        $result = $repo->listEntities(DynamicTranslationMap::KIND_TICKET_DEPARTMENT, null, false, 50, 0, 'english');
+
+        $this->assertCount(2, $result['items']);
+        $this->assertSame('Suporte Tecnico', $result['items'][0]['fields']['name']['source']);
+    }
+
+    #[Test]
+    public function a_kind_with_a_missing_source_table_is_unavailable_without_affecting_the_other_kinds(): void
+    {
+        $this->seedProducts();
+        $this->seedProductAddons();
+        $probe = $this->healthyProbe();
+        $probe->dropTable('tblcustomfields');
+        $repo = new DynamicTranslationRepository(new TranslationSchemaGuard($probe), null, $probe);
+
+        $unavailable = $repo->listEntities(DynamicTranslationMap::KIND_CUSTOM_FIELD, null, false, 50, 0, 'english');
+        $this->assertSame('translation_unavailable', $unavailable['error_code']);
+
+        // Produto e addon de produto continuam funcionando: capacidades ISOLADAS por kind.
+        $product = $repo->listEntities(DynamicTranslationMap::KIND_PRODUCT, 0, false, 25, 0, 'english');
+        $this->assertSame('success', $product['result']);
+
+        $addon = $repo->listEntities(DynamicTranslationMap::KIND_PRODUCT_ADDON, null, false, 50, 0, 'english');
+        $this->assertSame('success', $addon['result']);
+    }
+
+    #[Test]
+    public function a_missing_dynamic_translations_table_only_affects_kinds_that_actually_query_it(): void
+    {
+        $this->seedTicketDepartments();
+        $this->seedProducts();
+        $probe = $this->healthyProbe();
+        $probe->dropTable('tbladdons');
+        $repo = new DynamicTranslationRepository(new TranslationSchemaGuard($probe), null, $probe);
+
+        $unavailableAddon = $repo->listEntities(DynamicTranslationMap::KIND_PRODUCT_ADDON, null, false, 50, 0, 'english');
+        $this->assertSame('translation_unavailable', $unavailableAddon['error_code']);
+
+        $department = $repo->listEntities(DynamicTranslationMap::KIND_TICKET_DEPARTMENT, null, false, 50, 0, 'english');
+        $this->assertSame('success', $department['result']);
+    }
+
+    #[Test]
+    public function custom_field_list_returns_a_collection_when_get_is_traversable_not_array(): void
+    {
+        $this->seedCustomFields();
+        FakeCapsule::$collectionTables = ['tblcustomfields', 'tbldynamic_translations'];
+        $repo = $this->repo();
+
+        $result = $repo->listEntities(DynamicTranslationMap::KIND_CUSTOM_FIELD, null, false, 50, 0, 'english');
+
+        $this->assertSame('success', $result['result']);
+        $this->assertCount(3, $result['items']);
+    }
+
+    #[Test]
+    public function apply_batch_inserts_custom_field_translation_under_the_public_name_literal(): void
+    {
+        $this->seedCustomFields();
+        $repo = $this->repo();
+
+        $result = $repo->applyBatch(
+            DynamicTranslationMap::KIND_CUSTOM_FIELD,
+            [['id' => 1, 'field' => 'name', 'text' => 'SSN', 'expected_hash' => 'absent']],
+            $this->backup(),
+            false,
+            'english'
+        );
+
+        $this->assertSame('success', $result['result']);
+        $insert = FakeCapsule::$mutations[0];
+        $this->assertSame('INSERT', $insert['verb']);
+        $this->assertSame('custom_field.{id}.name', $insert['values']['related_type']);
+        $this->assertSame(1, $insert['values']['related_id']);
+    }
+
+    #[Test]
+    public function apply_batch_updates_an_existing_custom_field_translation_with_a_matching_hash(): void
+    {
+        $this->seedCustomFields();
+        FakeCapsule::withRows('tbldynamic_translations', [
+            ['id' => 99, 'related_type' => 'custom_field.{id}.name', 'related_id' => 1, 'language' => 'english', 'translation' => 'Old', 'input_type' => 'text'],
+        ]);
+        $repo = $this->repo();
+
+        $result = $repo->applyBatch(
+            DynamicTranslationMap::KIND_CUSTOM_FIELD,
+            [['id' => 1, 'field' => 'name', 'text' => 'SSN', 'expected_hash' => hash('sha256', 'Old')]],
+            $this->backup(),
+            false,
+            'english'
+        );
+
+        $this->assertSame('success', $result['result']);
+        $update = FakeCapsule::$mutations[0];
+        $this->assertSame('UPDATE', $update['verb']);
+        $this->assertSame(['translation'], array_keys($update['values']));
+    }
+
+    #[Test]
+    public function apply_batch_rejects_custom_field_hash_conflict_without_writing(): void
+    {
+        $this->seedCustomFields();
+        $repo = $this->repo();
+
+        $result = $repo->applyBatch(
+            DynamicTranslationMap::KIND_CUSTOM_FIELD,
+            [['id' => 1, 'field' => 'name', 'text' => 'SSN', 'expected_hash' => 'wrong']],
+            $this->backup(),
+            false,
+            'english'
+        );
+
+        $this->assertSame('hash_conflict', $result['error_code']);
+        $this->assertSame([], FakeCapsule::$mutations);
+    }
+
+    #[Test]
+    public function apply_batch_dry_run_previews_custom_field_insert_without_writing(): void
+    {
+        $this->seedCustomFields();
+        $repo = $this->repo();
+
+        $result = $repo->applyBatch(
+            DynamicTranslationMap::KIND_CUSTOM_FIELD,
+            [['id' => 1, 'field' => 'name', 'text' => 'SSN', 'expected_hash' => 'absent']],
+            $this->backup(),
+            true,
+            'english'
+        );
+
+        $this->assertSame('success', $result['result']);
+        $this->assertTrue($result['dry_run']);
+        $this->assertSame('insert', $result['items'][0]['action']);
+        $this->assertSame([], FakeCapsule::$mutations);
+    }
+
+    #[Test]
+    public function apply_batch_rolls_back_the_whole_batch_for_custom_field_when_an_item_is_invalid(): void
+    {
+        $this->seedCustomFields();
+        $repo = $this->repo();
+
+        $result = $repo->applyBatch(
+            DynamicTranslationMap::KIND_CUSTOM_FIELD,
+            [
+                ['id' => 1, 'field' => 'name', 'text' => 'SSN', 'expected_hash' => 'absent'],
+                ['id' => 2, 'field' => 'name', 'text' => 'x', 'expected_hash' => 'wrong-hash'],
+            ],
+            $this->backup(),
+            false,
+            'english'
+        );
+
+        $this->assertSame('error', $result['result']);
+        $this->assertSame([], FakeCapsule::$mutations, 'rollback deve reverter tambem o item valido anterior');
+    }
+
+    /**
+     * @return array<string, array{0:string,1:string,2:string,3:array<string,mixed>}>
+     */
+    public static function newKindProvider(): array
+    {
+        return [
+            'custom_field' => [
+                DynamicTranslationMap::KIND_CUSTOM_FIELD,
+                'tblcustomfields',
+                'name',
+                ['id' => 1, 'type' => 'product', 'relid' => 5, 'fieldname' => 'CPF', 'description' => 'Documento', 'adminonly' => ''],
+            ],
+            'product_addon' => [
+                DynamicTranslationMap::KIND_PRODUCT_ADDON,
+                'tbladdons',
+                'name',
+                ['id' => 1, 'name' => 'IP Fixo', 'description' => 'Endereco IP dedicado', 'hidden' => '0'],
+            ],
+            'ticket_department' => [
+                DynamicTranslationMap::KIND_TICKET_DEPARTMENT,
+                'tblticketdepartments',
+                'name',
+                ['id' => 1, 'name' => 'Suporte Tecnico', 'description' => 'Duvidas tecnicas', 'hidden' => '0'],
+            ],
+        ];
+    }
+
+    #[Test]
+    #[DataProvider('newKindProvider')]
+    public function apply_batch_inserts_and_never_writes_to_the_source_table_for_every_phase_3_kind(
+        string $kind,
+        string $table,
+        string $field,
+        array $row
+    ): void {
+        FakeCapsule::withRows($table, [$row]);
+        $repo = $this->repo();
+
+        $result = $repo->applyBatch(
+            $kind,
+            [['id' => (int) $row['id'], 'field' => $field, 'text' => 'Translated', 'expected_hash' => 'absent']],
+            $this->backup(),
+            false,
+            'english'
+        );
+
+        $this->assertSame('success', $result['result']);
+        foreach (FakeCapsule::$mutations as $mutation) {
+            $this->assertNotSame($table, $mutation['table']);
+        }
     }
 }

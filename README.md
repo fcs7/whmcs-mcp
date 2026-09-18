@@ -1,16 +1,16 @@
 # NT MCP Server — WHMCS Addon
 
-Servidor MCP (Model Context Protocol) que expoe 79 ferramentas WHMCS como ferramentas para o Claude. Funciona como **Conector** — conecta o Claude ao seu WHMCS para gerenciar clientes, faturas, tickets, servicos, dominios, pedidos, projetos, CRM e chips via conversacao.
+Servidor MCP (Model Context Protocol) que expoe 85 ferramentas WHMCS como ferramentas para o Claude. Funciona como **Conector** — conecta o Claude ao seu WHMCS para gerenciar clientes, faturas, tickets, servicos, dominios, pedidos, projetos, CRM e chips via conversacao.
 
-> **Para a experiencia completa**, combine este Conector com a **Habilidade** (Skill) que ensina o Claude a usar as 79 tools → **[fcs7/whmcs-mcp-plugin](https://github.com/fcs7/whmcs-mcp-plugin)**
+> **Para a experiencia completa**, combine este Conector com a **Habilidade** (Skill) que ensina o Claude a usar as 85 tools → **[fcs7/whmcs-mcp-plugin](https://github.com/fcs7/whmcs-mcp-plugin)**
 
-> 📖 **Catalogo completo das 79 tools** (comando WHMCS, classe de gate, risco e recomendacao de corte 1-a-1): **[modules/addons/nt_mcp/docs/TOOLS.md](modules/addons/nt_mcp/docs/TOOLS.md)**
+> 📖 **Catalogo completo das 85 tools** (comando WHMCS, classe de gate, risco e recomendacao de corte 1-a-1): **[modules/addons/nt_mcp/docs/TOOLS.md](modules/addons/nt_mcp/docs/TOOLS.md)**
 
 ### Como os componentes se encaixam
 
 | Conceito | O que faz | Repositorio |
 |----------|-----------|-------------|
-| **Conector** (este repo) | Expoe 79 tools MCP via HTTP — o Claude *pode* usar | Voce esta aqui |
+| **Conector** (este repo) | Expoe 85 tools MCP via HTTP — o Claude *pode* usar | Voce esta aqui |
 | **Habilidade** ([plugin repo](https://github.com/fcs7/whmcs-mcp-plugin)) | Ensina o Claude *como* usar os tools — parametros, workflows, boas praticas | [fcs7/whmcs-mcp-plugin](https://github.com/fcs7/whmcs-mcp-plugin) |
 
 > Sem a Habilidade o Claude tem acesso aos tools mas pode errar parametros ou nao saber a melhor sequencia de operacoes. Sem o Conector, a Habilidade nao tem como executar nada.
@@ -122,7 +122,7 @@ Use um cliente FTP como FileZilla, WinSCP ou Cyberduck:
           OAuth/
             OAuthRouter.php
             Handlers/
-          Tools/            # 13 classes com 79 tools
+          Tools/            # 15 classes com 85 tools
           Whmcs/
             LocalApiClient.php   # Wrapper localAPI() com allowlist + gates
             ResponseRedactor.php # Pipeline unico de saida (normalizacao + scrub)
@@ -445,7 +445,7 @@ claude        # iniciar o Claude Code
 /mcp          # ver status dos servidores MCP
 ```
 
-O servidor deve aparecer como `connected` com 79 tools disponiveis.
+O servidor deve aparecer como `connected` com 85 tools disponiveis.
 
 **Debug:**
 
@@ -489,12 +489,12 @@ O OAuth e iniciado automaticamente na primeira chamada de tool.
 
 Va em **Settings > Habilidades** e crie uma **habilidade pessoal** com o conteudo do arquivo [`SKILL.md` do plugin](https://github.com/fcs7/whmcs-mcp-plugin/blob/main/skills/whmcs-mcp/SKILL.md).
 
-Sem a Habilidade, o Claude tem acesso às 79 tools mas nao sabe os parametros de cabeca — pode errar nomes de campo ou esquecer parametros obrigatorios.
+Sem a Habilidade, o Claude tem acesso às 85 tools mas nao sabe os parametros de cabeca — pode errar nomes de campo ou esquecer parametros obrigatorios.
 
 **Verificar:**
 
 1. Reinicie o Claude Desktop
-2. As 79 tools do WHMCS devem aparecer na lista de ferramentas
+2. As 85 tools do WHMCS devem aparecer na lista de ferramentas
 3. Teste: pergunte "liste meus clientes do WHMCS"
 
 **Troubleshooting Claude Desktop:**
@@ -520,7 +520,7 @@ Sem a Habilidade, o Claude tem acesso às 79 tools mas nao sabe os parametros de
 Apos configurar qualquer cliente, confirme que:
 
 1. **Conexao** — o cliente mostra o servidor como conectado
-2. **Tools** — 79 ferramentas visiveis na lista
+2. **Tools** — 85 ferramentas visiveis na lista
 3. **Execucao** — pergunte "liste os clientes do WHMCS" e confirme que retorna dados reais
 
 ## Autenticacao
@@ -595,7 +595,7 @@ Ao exceder, retorna `429 Too Many Requests` com header `Retry-After`.
 
 ## Ferramentas Disponiveis
 
-79 ferramentas organizadas em 14 categorias:
+85 ferramentas organizadas em 15 categorias:
 
 | Categoria | Qty | Descricao |
 |-----------|:---:|-----------|
@@ -613,6 +613,7 @@ Ao exceder, retorna `429 Too Many Requests` com header `Retry-After`.
 | **ChipTools** | 6 | Buscar e administrar chips fisicos/eSIM via addon NT Chips; 5 operacoes exigem gate WRITE |
 | **TranslationTools** | 4 | Tradução em massa de templates de e-mail (Fase 1): status, listar masters, obter pares PT/EN, gravar EN via repositório Capsule proprio (fora da LocalAPI) |
 | **TranslationCatalogTools** | 5 | Tradução em massa de produto e grupo de produto (Fase 2), via `tbldynamic_translations`: listar, obter e gravar EN por campo (name/description/headline/tagline) — mesmo repositório Capsule proprio (fora da LocalAPI) |
+| **TranslationCatalogExtrasTools** | 6 | Tradução em massa de custom field, addon de produto e departamento de suporte (Fase 3), via `tbldynamic_translations`: listar e gravar EN por campo (name/description) — mesmo repositório Capsule proprio (fora da LocalAPI); literais related_type PENDENTES de confirmação ao vivo |
 
 > Catalogo completo, com o comando WHMCS e a classe de gate de cada tool:
 > [modules/addons/nt_mcp/docs/TOOLS.md](modules/addons/nt_mcp/docs/TOOLS.md).
@@ -692,7 +693,7 @@ scp -r . usuario@servidor:httpdocs/modules/addons/nt_mcp/
 
 ## Habilidade (Skill) — Ensinar o Claude a Usar os Tools
 
-Este servidor (Conector) expoe 79 tools via MCP. A **Habilidade** ensina o Claude *como* usa-los — parametros, workflows, boas praticas.
+Este servidor (Conector) expoe 85 tools via MCP. A **Habilidade** ensina o Claude *como* usa-los — parametros, workflows, boas praticas.
 
 **[fcs7/whmcs-mcp-plugin](https://github.com/fcs7/whmcs-mcp-plugin)** — Conector + Habilidade + Hooks de seguranca
 
@@ -709,7 +710,7 @@ Este servidor (Conector) expoe 79 tools via MCP. A **Habilidade** ensina o Claud
 │  Addon WHMCS (PHP):          │      │  Claude Code: Plugin auto    │
 │  • mcp.php (endpoint HTTP)   │      │  Claude Desktop: SKILL.md    │
 │  • oauth.php (OAuth 2.1)     │ ──── │                              │
-│  • src/Tools/ (79 tools)     │ MCP  │  • SKILL.md (referencia)     │
+│  • src/Tools/ (85 tools)     │ MCP  │  • SKILL.md (referencia)     │
 │  • src/Auth/ (Bearer+OAuth)  │      │  • .mcp.json (conector auto) │
 │                              │      │  • hooks.json (seguranca)    │
 │  Roda em: Servidor WHMCS     │      │                              │
