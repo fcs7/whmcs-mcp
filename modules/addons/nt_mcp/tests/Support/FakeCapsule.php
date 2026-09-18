@@ -431,6 +431,13 @@ final class FakeCapsuleQuery
         return $this->get()[0] ?? null;
     }
 
+    public function value(string $column): mixed
+    {
+        FakeCapsule::$calls[] = "value({$column})";
+
+        return $this->first()?->{$column};
+    }
+
     /** @param array<string, mixed> $values */
     public function insertGetId(array $values): int
     {

@@ -14,6 +14,7 @@ use NtMcp\Security\CsrfProtection;
 use NtMcp\Whmcs\AdminSession;
 use NtMcp\Whmcs\ConfigFlag;
 use NtMcp\Whmcs\SystemUrl;
+use NtMcp\WebMcp\ClientBootstrap;
 
 /**
  * Admin dashboard controller — Auth management UI.
@@ -54,7 +55,8 @@ final class AdminController
             $flashClass     = 'info';
             $flashPlaintext = '';
 
-            $csrfOk = CsrfProtection::verify($_POST['_csrf_token'] ?? '');
+            $submittedCsrf = $_POST['_csrf_token'] ?? '';
+            $csrfOk = is_string($submittedCsrf) && CsrfProtection::verify($submittedCsrf);
 
             if (!$csrfOk) {
                 $flashMessage = 'Erro: token CSRF invalido. Recarregue a pagina e tente novamente.';
@@ -133,6 +135,37 @@ final class AdminController
                         Diagnostics::report(Diagnostics::CATEGORY_ADMIN_UI, 'oauth_client_remove', $ex);
                         $flashMessage = 'Erro ao remover client. Verifique o log de erros.';
                         $flashClass   = 'danger';
+                    }
+                }
+            } elseif (isset($_POST['save_webmcp_config'])) {
+                $enabled = ConfigFlag::parse($_POST['webmcp_enabled'] ?? '0');
+                if ($currentAdminId <= 0) {
+                    $flashMessage = 'Erro: sessao administrativa necessaria para alterar o WebMCP.';
+                    $flashClass = 'danger';
+                } elseif ($enabled !== ConfigFlag::On && $enabled !== ConfigFlag::Off) {
+                    $flashMessage = 'Erro: valor invalido para ativacao do WebMCP.';
+                    $flashClass = 'danger';
+                } else {
+                    try {
+                        \WHMCS\Config\Setting::setValue(
+                            ClientBootstrap::ENABLED_SETTING,
+                            $enabled === ConfigFlag::On ? '1' : '0'
+                        );
+                        ActivityLog::record(
+                            ActivityEvent::ADMIN_WEBMCP_CONFIG_CHANGED,
+                            AuditMetadata::forParams([
+                                'adminid' => $currentAdminId,
+                                ClientBootstrap::ENABLED_SETTING => $enabled === ConfigFlag::On,
+                            ])
+                        );
+                        $flashMessage = $enabled === ConfigFlag::On
+                            ? 'Base WebMCP ativada. Nenhuma ferramenta registrada.'
+                            : 'Base WebMCP desativada. A mudanca vale ao recarregar as paginas.';
+                        $flashClass = 'success';
+                    } catch (\Throwable $ex) {
+                        Diagnostics::report(Diagnostics::CATEGORY_ADMIN_UI, 'webmcp_config_save', $ex);
+                        $flashMessage = 'Erro ao salvar WebMCP. Verifique o log de erros.';
+                        $flashClass = 'danger';
                     }
                 }
             } elseif (isset($_POST['save_gate_config'])) {
@@ -252,6 +285,14 @@ final class AdminController
                 $flashMessage = 'Aviso: Nao foi possivel carregar dados OAuth. Verifique a conexao com o banco.';
                 $flashClass   = 'warning';
             }
+        }
+
+        // Independent from the administrative MCP gates; absent/invalid is off.
+        $webmcpFlag = null;
+        try {
+            $webmcpFlag = ConfigFlag::parse(\WHMCS\Config\Setting::getValue(ClientBootstrap::ENABLED_SETTING));
+        } catch (\Throwable $ex) {
+            Diagnostics::report(Diagnostics::CATEGORY_ADMIN_UI, 'webmcp_config_load', $ex);
         }
 
         // Painel de gates: estado cru → ConfigFlag por toggle (a UI mostra

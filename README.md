@@ -15,7 +15,20 @@ Servidor MCP (Model Context Protocol) que expoe 70 ferramentas WHMCS como ferram
 
 > Sem a Habilidade o Claude tem acesso aos tools mas pode errar parametros ou nao saber a melhor sequencia de operacoes. Sem o Conector, a Habilidade nao tem como executar nada.
 
-## Requisitos
+## WebMCP no navegador — etapa 1
+
+O addon inclui uma base WebMCP independente do conector administrativo, **desativada
+por padrão e sem nenhuma tool**. O controle fica em **Addons > NT MCP Server >
+WebMCP — Base do navegador**. Quando ativada, a base carrega somente na landing de
+hospedagem do tema `ntweb-2026-theme`, por HTTPS, para visitantes deslogados.
+Esta base exige **WHMCS 8.0+ e PHP 8.1+**.
+
+Consulte [ativação, diagnóstico e testes da base](modules/addons/nt_mcp/docs/WEBMCP.md).
+A visão de chaves por cliente e permissões por chave está registrada no
+[roadmap do cliente](modules/addons/nt_mcp/docs/CLIENT-MCP-ROADMAP.md); essas funções
+permanecem para etapas futuras.
+
+## Requisitos do servidor MCP administrativo
 
 - **PHP** >= 8.1 (desenvolvimento e producao rodam 8.1; o `composer.json` pina `platform.php=8.1.34`)
 - **WHMCS** 7.x ou 8.x
@@ -81,6 +94,8 @@ Se nao tem acesso SSH, use o File Manager do Plesk:
    - `composer.lock`
    - `.htaccess`
    - `src/` (pasta inteira)
+   - `assets/` (JavaScript público da base WebMCP)
+   - `hooks.php` (enviar depois de `src/` e `assets/`)
    - `.well-known/` (pasta inteira)
 
    **Dica:** Compacte `src/` e `.well-known/` em ZIP antes do upload, depois extraia no Plesk para acelerar.
@@ -107,6 +122,9 @@ Use um cliente FTP como FileZilla, WinSCP ou Cyberduck:
         mcp.php             # Endpoint principal MCP (START_POINT)
         oauth.php           # Servidor OAuth 2.1
         nt_mcp.php          # Addon hooks (ativacao, admin UI)
+        hooks.php           # Registro do hook público WebMCP
+        assets/
+          webmcp.js         # Base sem tools
         composer.json
         composer.lock
         .htaccess           # Protecao: rejeita acesso direto a vendor/, src/, etc

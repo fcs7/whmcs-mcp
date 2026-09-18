@@ -10,6 +10,34 @@ use PHPUnit\Framework\TestCase;
 
 final class AdminDashboardTemplateTest extends TestCase
 {
+    public function test_webmcp_control_defaults_off_and_uses_its_own_csrf_protected_form(): void
+    {
+        $html = $this->renderDashboard([]);
+
+        $this->assertStringContainsString('name="webmcp_enabled" value="1">', $html);
+        $this->assertStringContainsString('name="save_webmcp_config"', $html);
+        $this->assertStringContainsString('Ferramentas registradas por esta integração: 0.', $html);
+        $this->assertMatchesRegularExpression(
+            '~<form method="post">\s*<input type="hidden" name="_csrf_token" value="csrf-test">\s*<div class="checkbox">~',
+            $html
+        );
+        $this->assertStringContainsString(
+            'name="webmcp_enabled" value="1" checked',
+            $this->renderDashboard([], webmcpFlag: ConfigFlag::On)
+        );
+    }
+
+    public function test_invalid_webmcp_state_is_off_and_unreadable_state_cannot_be_saved(): void
+    {
+        $invalid = $this->renderDashboard([], webmcpFlag: ConfigFlag::Invalid);
+        $this->assertStringContainsString('Configuração WebMCP inválida', $invalid);
+        $this->assertStringContainsString('name="webmcp_enabled" value="1">', $invalid);
+
+        $unreadable = $this->renderDashboard([], webmcpFlag: null);
+        $this->assertStringNotContainsString('name="save_webmcp_config"', $unreadable);
+        $this->assertStringContainsString('Não foi possível carregar a configuração WebMCP', $unreadable);
+    }
+
     public function test_gate_panel_renders_toggles_badges_and_allowlists(): void
     {
         $html = $this->renderDashboard(
@@ -89,6 +117,7 @@ final class AdminDashboardTemplateTest extends TestCase
         array $oauthTokens,
         ?array $gateToggles = null,
         ?array $gateAllowlists = null,
+        ?ConfigFlag $webmcpFlag = ConfigFlag::Absent,
     ): string {
         $gateToggles ??= array_fill_keys(GateConfigAction::TOGGLE_KEYS, ConfigFlag::Absent);
         $gateAllowlists ??= array_fill_keys(GateConfigAction::ALLOWLIST_KEYS, '');

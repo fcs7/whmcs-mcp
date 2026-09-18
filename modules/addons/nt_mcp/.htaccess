@@ -1,9 +1,9 @@
 # NT MCP Addon — Root .htaccess
 # Infrastructure Security Control (9.1)
 #
-# Only mcp.php and nt_mcp.php are web-accessible.
-# All other files (composer.json, composer.lock, phpunit.xml, .gitignore,
-# source code, vendor libraries, tests, caches) are blocked.
+# Only mcp.php, oauth.php and nt_mcp.php are allowed PHP entry points.
+# Public static assets (assets/webmcp.js) are served normally. Sensitive file
+# extensions, source code, vendor libraries, tests and caches are blocked below.
 
 # ---------------------------------------------------------------
 # Deny access to sensitive files by extension / name
@@ -49,7 +49,7 @@
 </IfModule>
 
 # Layer 3: Whitelist approach — only allow specific PHP entry points.
-# This is the strongest protection: deny everything, then allow only mcp.php,
+# This is the strongest PHP protection: deny PHP files, then allow only mcp.php,
 # oauth.php, and nt_mcp.php. Works even if mod_rewrite and mod_alias fail.
 <FilesMatch "\.php$">
     <IfModule mod_authz_core.c>

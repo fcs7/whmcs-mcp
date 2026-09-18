@@ -86,6 +86,7 @@ final class AuditMetadata
         'nt_mcp_readonly', 'nt_mcp_enable_write', 'nt_mcp_enable_destructive',
         'nt_mcp_enable_financial', 'nt_mcp_enable_cost', 'nt_mcp_enable_comms',
         'nt_mcp_write_allowlist_clientids', 'nt_mcp_write_allowlist_ticketids',
+        'nt_mcp_webmcp_enabled',
     ];
 
     /** Campos cujo VALOR pode ser registrado — e só como inteiro. */
@@ -103,6 +104,7 @@ final class AuditMetadata
         'productemails', 'supportemails',
         'nt_mcp_readonly', 'nt_mcp_enable_write', 'nt_mcp_enable_destructive',
         'nt_mcp_enable_financial', 'nt_mcp_enable_cost', 'nt_mcp_enable_comms',
+        'nt_mcp_webmcp_enabled',
     ];
 
     /** Campos de coleção: registra-se o tamanho, nunca o conteúdo. */

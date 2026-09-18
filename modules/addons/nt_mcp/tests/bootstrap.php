@@ -127,6 +127,10 @@ if (!class_exists('\WHMCS\Config\Setting')) {
     ');
 }
 
+if (!class_exists('\WHMCS\Authentication\CurrentUser')) {
+    class_alias(\NtMcp\Tests\Support\FakeCurrentUser::class, '\WHMCS\Authentication\CurrentUser');
+}
+
 // Ensure Mockery expectations are verified after each test
 register_shutdown_function(function () {
     \Mockery::close();

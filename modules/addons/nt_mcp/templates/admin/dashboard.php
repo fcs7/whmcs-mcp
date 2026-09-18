@@ -6,7 +6,8 @@
  * Variables in scope: $e, $mcpUrl, $currentAdminId, $currentAdminName,
  * $tokenHash, $tokenAdmin, $tokenCreated, $flashPlaintext, $flashMessage,
  * $flashClass, $csrf, $oauthTokens, $oauthClients, $hasAdminUserCol, $hasLastUsedAtCol,
- * $gateToggles (chave => ConfigFlag), $gateAllowlists (chave => CSV cru)
+ * $gateToggles (chave => ConfigFlag), $gateAllowlists (chave => CSV cru),
+ * $webmcpFlag (ConfigFlag|null; null quando a leitura falha)
  */
 
 use NtMcp\Whmcs\ConfigFlag;
@@ -203,6 +204,34 @@ $cleanExpiredBtn = $expiredCount > 0
             </thead>
             <tbody><?= $clientsRows ?></tbody>
         </table>
+
+        <hr>
+        <h4>WebMCP &mdash; Base do navegador</h4>
+        <p class="text-muted">
+            Base experimental na página pública de hospedagem, para visitantes deslogados.
+            <strong>Ferramentas registradas por esta integração: 0.</strong>
+        </p>
+<?php if (($webmcpFlag ?? null) instanceof ConfigFlag): ?>
+<?php if ($webmcpFlag === ConfigFlag::Invalid): ?>
+        <div class="alert alert-warning">Configuração WebMCP inválida. A base permanece desativada até salvar um valor válido.</div>
+<?php endif; ?>
+        <form method="post">
+            <input type="hidden" name="_csrf_token" value="<?= $escapedCsrf ?>">
+            <div class="checkbox">
+                <label for="nt-mcp-webmcp-enabled">
+                    <input type="checkbox" id="nt-mcp-webmcp-enabled" name="webmcp_enabled" value="1"<?= $webmcpFlag === ConfigFlag::On ? ' checked' : '' ?>>
+                    Ativar base WebMCP
+                </label>
+            </div>
+            <p class="text-muted"><small>
+                Desativada por padrão. A alteração vale ao recarregar as páginas.
+                Este controle é independente das permissões do MCP administrativo.
+            </small></p>
+            <button type="submit" name="save_webmcp_config" value="1" class="btn btn-primary">Salvar WebMCP</button>
+        </form>
+<?php else: ?>
+        <div class="alert alert-warning">Não foi possível carregar a configuração WebMCP. Recarregue a página antes de alterar.</div>
+<?php endif; ?>
 
         <hr>
         <h4>Gates de Efeito Colateral</h4>
