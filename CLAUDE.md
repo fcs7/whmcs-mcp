@@ -15,9 +15,9 @@ rg -o "name: '[a-z_0-9]+'" src/Tools/*.php | wc -l  # 70 tools total (rg -o '#\[
 # fica fora do git no repo do tema 2026; nunca pedir a senha novamente nem copiá-la
 # para este repositório.
 source /home/fcs/Documents/ntweb/whmcs-tema-2026/whmcs-theme/.env.deploy
-lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY_CERTIFICATE:-yes}; set ftp:ssl-force ${FTP_SSL_FORCE:-yes}; set ftp:ssl-protect-data ${FTP_SSL_FORCE:-yes}; mirror -R --only-newer --exclude .git/ --exclude vendor/ --exclude tests/ --exclude data/ --exclude .phpunit.cache/ --exclude .omc/ --exclude .full-review/ --exclude .security-hardening/ --exclude .security-hardening-archive-20260329/ . /httpdocs/modules/addons/nt_mcp/; bye" 191.7.26.232
+lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY_CERTIFICATE:-yes}; set ftp:ssl-force ${FTP_SSL_FORCE:-yes}; set ftp:ssl-protect-data ${FTP_SSL_FORCE:-yes}; mirror -R --only-newer --exclude .git/ --exclude vendor/ --exclude tests/ --exclude data/ --exclude .phpunit.cache/ --exclude .omc/ --exclude .full-review/ --exclude .security-hardening/ --exclude .security-hardening-archive-20260329/ . /httpdocs/modules/addons/nt_mcp/; bye" vangogh.ntweb.com.br
 # Deploy com vendor/ (troca de lib SDK — sem --exclude vendor/)
-lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY_CERTIFICATE:-yes}; set ftp:ssl-force ${FTP_SSL_FORCE:-yes}; set ftp:ssl-protect-data ${FTP_SSL_FORCE:-yes}; mirror -R --only-newer --exclude .git/ --exclude tests/ --exclude data/ --exclude vendor/bin/ --exclude .phpunit.cache/ --exclude .omc/ --exclude .full-review/ --exclude .security-hardening/ --exclude .security-hardening-archive-20260329/ . /httpdocs/modules/addons/nt_mcp/; bye" 191.7.26.232
+lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY_CERTIFICATE:-yes}; set ftp:ssl-force ${FTP_SSL_FORCE:-yes}; set ftp:ssl-protect-data ${FTP_SSL_FORCE:-yes}; mirror -R --only-newer --exclude .git/ --exclude tests/ --exclude data/ --exclude vendor/bin/ --exclude .phpunit.cache/ --exclude .omc/ --exclude .full-review/ --exclude .security-hardening/ --exclude .security-hardening-archive-20260329/ . /httpdocs/modules/addons/nt_mcp/; bye" vangogh.ntweb.com.br
 # Testes de subprocesso (McpEndpointHttpTest, DiagnosticBoundaryTest) falham no PHP 8.5 local — rodar em container:
 # `-u 1000:1000` e `zend.exception_ignore_args=1` são OBRIGATÓRIOS: como root o chmod 0000 do
 # SecureFileSessionStoreTest não bloqueia a escrita, e sem php.ini os args entram no stack trace,
@@ -27,7 +27,7 @@ docker run --rm -v "$PWD:/app" -w /app -u 1000:1000 php:8.3-cli-bookworm php -d 
 docker run --rm -v "$PWD:/app" -w /app php:8.1-cli-bookworm sh -c 'find src -name "*.php" -exec php -l {} \;' | grep -v "^No syntax errors"
 # Verify desenv: download deployed tools and count MCP attributes (usa o mesmo
 # $FTP_PASS carregado acima)
-lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY_CERTIFICATE:-yes}; set ftp:ssl-force ${FTP_SSL_FORCE:-yes}; set ftp:ssl-protect-data ${FTP_SSL_FORCE:-yes}; mirror /httpdocs/modules/addons/nt_mcp/src/Tools/ /tmp/nt_mcp_desenv_check/src/Tools/; bye" 191.7.26.232 && test -f /tmp/nt_mcp_desenv_check/src/Tools/CrmTools.php && rg -o '#\[McpTool' /tmp/nt_mcp_desenv_check/src/Tools/*.php | wc -l
+lftp -u "desenvnt5442,$FTP_PASS" -e "set ssl:verify-certificate ${FTP_SSL_VERIFY_CERTIFICATE:-yes}; set ftp:ssl-force ${FTP_SSL_FORCE:-yes}; set ftp:ssl-protect-data ${FTP_SSL_FORCE:-yes}; mirror /httpdocs/modules/addons/nt_mcp/src/Tools/ /tmp/nt_mcp_desenv_check/src/Tools/; bye" vangogh.ntweb.com.br && test -f /tmp/nt_mcp_desenv_check/src/Tools/CrmTools.php && rg -o '#\[McpTool' /tmp/nt_mcp_desenv_check/src/Tools/*.php | wc -l
 # Testar tools ao vivo via MCP Inspector CLI (precisa Bearer token do dashboard admin nt_mcp).
 # URL termina em .php (não /mcp) => --transport é obrigatório; com --transport, usar --server-url (não posicional).
 npx -y @modelcontextprotocol/inspector --cli --transport http --server-url "https://<host>/modules/addons/nt_mcp/mcp.php" \
@@ -158,7 +158,7 @@ npx -y @modelcontextprotocol/inspector --cli --transport http --server-url "http
 - **Bearer Token** armazenado em tblconfiguration, gerado na ativação do addon
 - **Nunca criar debug/token files no servidor** — `debug-log.php` e `mcp-make-token.php` são backdoors; usar WHMCS Activity Log
 - **Sempre comparar git vs prod** antes e depois de deploy — servidor pode ter arquivos extras ou versões antigas
-- **Credencial FTP DEV compartilhada** — fonte de verdade: `/home/fcs/Documents/ntweb/whmcs-tema-2026/whmcs-theme/.env.deploy` (arquivo local 0600, fora do git). Carregar com `source` antes do `lftp`; nunca pedir a senha ao usuário nem gravá-la neste repositório. O host operacional é `191.7.26.232` e o usuário é `desenvnt5442`
+- **Credencial FTP DEV compartilhada** — fonte de verdade: `/home/fcs/Documents/ntweb/whmcs-tema-2026/whmcs-theme/.env.deploy` (arquivo local 0600, fora do git). Carregar com `source` antes do `lftp`; nunca pedir a senha ao usuário nem gravá-la neste repositório. O host operacional é `vangogh.ntweb.com.br` (= 191.7.26.232; usar o hostname — o certificado FTPS é desse nome e a verificação TLS falha no IP) e o usuário é `desenvnt5442`
 - **`mcp/sdk` pinado em 0.8.1** (pre-1.0) — a 0.8.0 introduziu o transporte dual-era; qualquer upgrade continua exigindo branch dedicada e bateria legado+moderno
 - **`php-http/discovery` é plugin composer** — `allow-plugins` já no composer.json; sem isso, `composer install` falha
 - **Deploy com troca de lib PRECISA incluir `vendor/`** — o comando padrão exclui vendor; usar comando "deploy com vendor/" listado em Commands
