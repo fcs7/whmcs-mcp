@@ -20,9 +20,12 @@ final class DynamicTranslationMapTest extends TestCase
     }
 
     #[Test]
-    public function product_fields_are_name_and_description(): void
+    public function product_fields_are_name_description_tagline_and_short_description(): void
     {
-        $this->assertSame(['name' => 'text', 'description' => 'textarea'], DynamicTranslationMap::fields('product'));
+        $this->assertSame(
+            ['name' => 'text', 'description' => 'textarea', 'tagline' => 'text', 'short_description' => 'text'],
+            DynamicTranslationMap::fields('product')
+        );
     }
 
     #[Test]
@@ -99,6 +102,8 @@ final class DynamicTranslationMapTest extends TestCase
     {
         $this->assertSame('product.{id}.name', DynamicTranslationMap::relatedType('product', 'name'));
         $this->assertSame('product.{id}.description', DynamicTranslationMap::relatedType('product', 'description'));
+        $this->assertSame('product.{id}.tagline', DynamicTranslationMap::relatedType('product', 'tagline'));
+        $this->assertSame('product.{id}.short_description', DynamicTranslationMap::relatedType('product', 'short_description'));
         $this->assertSame('product_group.{id}.headline', DynamicTranslationMap::relatedType('product_group', 'headline'));
 
         // Mesmo literal para IDs diferentes — a distinção fica em related_id, coluna separada.

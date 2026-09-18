@@ -18,7 +18,7 @@ final class DynamicTranslationRepositoryTest extends TestCase
 {
     private const DYNAMIC_COLUMNS = ['id', 'related_type', 'related_id', 'language', 'translation', 'input_type'];
 
-    private const PRODUCT_COLUMNS = ['id', 'gid', 'name', 'description', 'hidden', 'retired'];
+    private const PRODUCT_COLUMNS = ['id', 'gid', 'name', 'description', 'tagline', 'short_description', 'hidden', 'retired'];
 
     private const PRODUCT_GROUP_COLUMNS = ['id', 'name', 'headline', 'tagline', 'hidden'];
 
@@ -65,9 +65,9 @@ final class DynamicTranslationRepositoryTest extends TestCase
     private function seedProducts(): void
     {
         FakeCapsule::withRows('tblproducts', [
-            ['id' => 1, 'gid' => 5, 'name' => 'Fibra 500', 'description' => '<p>Descricao 500</p>', 'hidden' => '0', 'retired' => '0'],
-            ['id' => 2, 'gid' => 5, 'name' => 'Fibra 1000', 'description' => '<p>Descricao 1000</p>', 'hidden' => '0', 'retired' => '0'],
-            ['id' => 3, 'gid' => 7, 'name' => 'Voz Movel', 'description' => '', 'hidden' => '1', 'retired' => '0'],
+            ['id' => 1, 'gid' => 5, 'name' => 'Fibra 500', 'description' => '<p>Descricao 500</p>', 'tagline' => 'Rapida e estavel', 'short_description' => 'Fibra 500 Mbps', 'hidden' => '0', 'retired' => '0'],
+            ['id' => 2, 'gid' => 5, 'name' => 'Fibra 1000', 'description' => '<p>Descricao 1000</p>', 'tagline' => 'A mais rapida', 'short_description' => 'Fibra 1000 Mbps', 'hidden' => '0', 'retired' => '0'],
+            ['id' => 3, 'gid' => 7, 'name' => 'Voz Movel', 'description' => '', 'tagline' => '', 'short_description' => '', 'hidden' => '1', 'retired' => '0'],
         ]);
     }
 
@@ -238,6 +238,63 @@ final class DynamicTranslationRepositoryTest extends TestCase
 
         $this->assertSame('success', $result['result']);
         $this->assertCount(3, $result['items']);
+    }
+
+    #[Test]
+    public function list_exposes_tagline_and_short_description_alongside_name_and_description(): void
+    {
+        $this->seedProducts();
+        $repo = $this->repo();
+
+        $result = $repo->listEntities(DynamicTranslationMap::KIND_PRODUCT, 0, false, 25, 0, 'english');
+
+        $byId = [];
+        foreach ($result['items'] as $item) {
+            $byId[$item['id']] = $item;
+        }
+        $this->assertSame('Rapida e estavel', $byId[1]['fields']['tagline']['source']);
+        $this->assertSame('Fibra 500 Mbps', $byId[1]['fields']['short_description']['source']);
+        $this->assertSame('absent', $byId[1]['fields']['tagline']['target_hash']);
+    }
+
+    #[Test]
+    public function apply_batch_inserts_a_product_tagline_translation(): void
+    {
+        $this->seedProducts();
+        $repo = $this->repo();
+
+        $result = $repo->applyBatch(
+            DynamicTranslationMap::KIND_PRODUCT,
+            [['id' => 1, 'field' => 'tagline', 'text' => 'Fast and stable', 'expected_hash' => 'absent']],
+            $this->backup(),
+            false,
+            'english'
+        );
+
+        $this->assertSame('success', $result['result']);
+        $insert = FakeCapsule::$mutations[0];
+        $this->assertSame('product.{id}.tagline', $insert['values']['related_type']);
+        $this->assertSame(1, $insert['values']['related_id']);
+    }
+
+    #[Test]
+    public function apply_batch_inserts_a_product_short_description_translation(): void
+    {
+        $this->seedProducts();
+        $repo = $this->repo();
+
+        $result = $repo->applyBatch(
+            DynamicTranslationMap::KIND_PRODUCT,
+            [['id' => 1, 'field' => 'short_description', 'text' => '500 Mbps fiber', 'expected_hash' => 'absent']],
+            $this->backup(),
+            false,
+            'english'
+        );
+
+        $this->assertSame('success', $result['result']);
+        $insert = FakeCapsule::$mutations[0];
+        $this->assertSame('product.{id}.short_description', $insert['values']['related_type']);
+        $this->assertSame(1, $insert['values']['related_id']);
     }
 
     // -----------------------------------------------------------

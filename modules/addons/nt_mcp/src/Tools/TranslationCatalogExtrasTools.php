@@ -23,10 +23,10 @@ use Mcp\Schema\Result\CallToolResult;
  * naquele arquivo; o contrato (schema guard, gates, backup, validação) é
  * idêntico.
  *
- * IMPORTANTE — os três `related_type` desta fase (`custom_field.{id}.*`,
- * `product_addon.{id}.*`, `ticket_department.{id}.*`) seguem a MESMA
- * convenção confirmada para produto/grupo, mas ainda NÃO foram confirmados ao
- * vivo contra o banco real (ver `DynamicTranslationMap`). Use
+ * `custom_field.{id}.name`/`description` e `product_addon.{id}.name`/`description`
+ * estão CONFIRMADOS ao vivo no desenv (linhas reais em `tbldynamic_translations`).
+ * `ticket_department.{id}.*` segue a MESMA convenção, mas ainda NÃO tem nenhuma
+ * linha gravada no banco real (ver `DynamicTranslationMap`). Use
  * `whmcs_translation_status` para conferir os `related_type` já gravados de
  * fato antes de depender deste literal em produção.
  *
@@ -70,9 +70,8 @@ class TranslationCatalogExtrasTools
             . 'nesta fase). Campos admin-only (adminonly preenchido) NUNCA aparecem: nao sao visiveis ao cliente e '
             . 'nao fazem sentido traduzir. type filtra por tipo de campo (ex.: \'text\', \'dropdown\'); vazio (padrao) '
             . 'nao filtra. only_missing=true (padrao) mostra so campos com pelo menos um texto nao vazio ainda sem '
-            . 'traducao. Requer "Enable Dynamic Translations" ligado no WHMCS (ver whmcs_translation_status). PENDENTE '
-            . 'de confirmacao ao vivo: o literal related_type (custom_field.{id}.name/description) segue a convencao '
-            . 'de product/product_group mas ainda nao foi confirmado contra o banco real. limit ate 50.'
+            . 'traducao. Requer "Enable Dynamic Translations" ligado no WHMCS (ver whmcs_translation_status). O literal '
+            . 'related_type (custom_field.{id}.name/description) esta CONFIRMADO ao vivo no desenv. limit ate 50.'
     )]
     #[Schema(additionalProperties: false)]
     public function customFieldList(
@@ -122,9 +121,8 @@ class TranslationCatalogExtrasTools
             . 'description), has_target e target_hash (\'absent\' quando a traducao ainda nao existe) por campo, '
             . 'para target_language (somente \'english\' nesta fase). only_missing=true (padrao) mostra so addons '
             . 'com pelo menos um campo de texto nao vazio ainda sem traducao. Requer "Enable Dynamic Translations" '
-            . 'ligado no WHMCS (ver whmcs_translation_status). PENDENTE de confirmacao ao vivo: o literal related_type '
-            . '(product_addon.{id}.name/description) segue a convencao de product/product_group mas ainda nao foi '
-            . 'confirmado contra o banco real. limit ate 50.'
+            . 'ligado no WHMCS (ver whmcs_translation_status). O literal related_type '
+            . '(product_addon.{id}.name/description) esta CONFIRMADO ao vivo no desenv. limit ate 50.'
     )]
     #[Schema(additionalProperties: false)]
     public function productAddonList(

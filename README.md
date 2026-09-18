@@ -612,8 +612,8 @@ Ao exceder, retorna `429 Too Many Requests` com header `Retry-After`.
 | **ServiceTools** | 1 | Servicos de um cliente |
 | **ChipTools** | 6 | Buscar e administrar chips fisicos/eSIM via addon NT Chips; 5 operacoes exigem gate WRITE |
 | **TranslationTools** | 4 | Tradução em massa de templates de e-mail (Fase 1): status, listar masters, obter pares PT/EN, gravar EN via repositório Capsule proprio (fora da LocalAPI) |
-| **TranslationCatalogTools** | 5 | Tradução em massa de produto e grupo de produto (Fase 2), via `tbldynamic_translations`: listar, obter e gravar EN por campo (name/description/headline/tagline) — mesmo repositório Capsule proprio (fora da LocalAPI) |
-| **TranslationCatalogExtrasTools** | 6 | Tradução em massa de custom field, addon de produto e departamento de suporte (Fase 3), via `tbldynamic_translations`: listar e gravar EN por campo (name/description) — mesmo repositório Capsule proprio (fora da LocalAPI); literais related_type PENDENTES de confirmação ao vivo |
+| **TranslationCatalogTools** | 5 | Tradução em massa de produto e grupo de produto (Fase 2), via `tbldynamic_translations`: listar, obter e gravar EN por campo (produto: name/description/tagline/short_description; grupo: name/headline/tagline) — mesmo repositório Capsule proprio (fora da LocalAPI) |
+| **TranslationCatalogExtrasTools** | 6 | Tradução em massa de custom field, addon de produto e departamento de suporte (Fase 3), via `tbldynamic_translations`: listar e gravar EN por campo (name/description) — mesmo repositório Capsule proprio (fora da LocalAPI); literais related_type de custom_field e product_addon CONFIRMADOS ao vivo no desenv, ticket_department ainda PENDENTE |
 
 > Catalogo completo, com o comando WHMCS e a classe de gate de cada tool:
 > [modules/addons/nt_mcp/docs/TOOLS.md](modules/addons/nt_mcp/docs/TOOLS.md).

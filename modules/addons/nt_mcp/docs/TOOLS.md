@@ -224,22 +224,23 @@ Legenda de risco:
 
 | # | Tool | Origem | Gate | Default | Risco | Descrição |
 |---|------|--------|------|---------|-------|-----------|
-| 75 | `whmcs_translation_product_list` | DynamicTranslationRepository / tblproducts | READ | on | 🟢 | Lista produtos com `has_target`/`target_hash` por campo (`name`, `description` truncada a 200 chars); filtro opcional `gid` |
-| 76 | `whmcs_translation_product_get` | DynamicTranslationRepository / tblproducts | READ | on | 🟢 | Obtém até 10 produtos com texto-fonte COMPLETO por campo + tradução atual (ou `null`) + `target_hash` |
-| 77 | `whmcs_translation_product_set` | DynamicTranslationRepository | WRITE | ⛔ off | 🟡 | Grava até 20 traduções de campo (`name`/`description`) em lote (tudo-ou-nada); `confirm=false` é dry-run sem gate |
+| 75 | `whmcs_translation_product_list` | DynamicTranslationRepository / tblproducts | READ | on | 🟢 | Lista produtos com `has_target`/`target_hash` por campo (`name`, `description` truncada a 200 chars, `tagline`, `short_description`); filtro opcional `gid` |
+| 76 | `whmcs_translation_product_get` | DynamicTranslationRepository / tblproducts | READ | on | 🟢 | Obtém até 10 produtos com texto-fonte COMPLETO por campo (`name`, `description`, `tagline`, `short_description`) + tradução atual (ou `null`) + `target_hash` |
+| 77 | `whmcs_translation_product_set` | DynamicTranslationRepository | WRITE | ⛔ off | 🟡 | Grava até 20 traduções de campo (`name`/`description`/`tagline`/`short_description`) em lote (tudo-ou-nada); `confirm=false` é dry-run sem gate |
 | 78 | `whmcs_translation_product_group_list` | DynamicTranslationRepository / tblproductgroups | READ | on | 🟢 | Lista grupos de produto com texto-fonte COMPLETO (`name`, `headline`, `tagline`) e `has_target`/`target_hash` por campo |
 | 79 | `whmcs_translation_product_group_set` | DynamicTranslationRepository | WRITE | ⛔ off | 🟡 | Grava até 20 traduções de campo (`name`/`headline`/`tagline`) em lote (tudo-ou-nada); `confirm=false` é dry-run sem gate |
 
 > Mesmo desenho de `TranslationTools` (Fase 1): não passa pela LocalAPI (não existe
 > comando WHMCS de escrita para `tbldynamic_translations`). `DynamicTranslationRepository`
 > é a ÚNICA classe que toca a tabela, e `DynamicTranslationMap` é o catálogo FECHADO de
-> `kind`/`field` aceito (`product`: `name`/`description`; `product_group`:
-> `name`/`headline`/`tagline`) — Fase 3 só acrescenta entradas ali.
+> `kind`/`field` aceito (`product`: `name`/`description`/`tagline`/`short_description`;
+> `product_group`: `name`/`headline`/`tagline`) — Fase 3 só acrescenta entradas ali.
 >
 > **FATO CONFIRMADO no desenv**: `related_type` é o texto LITERAL com a string `{id}`
 > (nunca o id numérico substituído) — ex.: `product.{id}.name`. O id real fica em
 > `related_id`, coluna separada; o mesmo literal serve para qualquer produto/grupo daquele
-> campo.
+> campo. Status ao vivo confirma linhas reais para `product.{id}.name`,
+> `product.{id}.description`, `product.{id}.tagline` e `product.{id}.short_description`.
 >
 > `target_language` aceita SOMENTE `'english'` nesta fase (`invalid_target_language` para
 > qualquer outro valor, recusado ANTES de qualquer consulta). Nesta fase só a tradução
@@ -247,8 +248,8 @@ Legenda de risco:
 >
 > `_set` exige hash otimista (`expected_hash`) por item, valida com
 > `TranslationValidator::validateField()` (paridade Smarty/HTML quando presentes; campos
-> `text` — `name`/`headline`/`tagline` — têm limite de 255 caracteres; `description`
-> (`textarea`) não tem limite, só paridade HTML), recusa item duplicado no mesmo lote
+> `text` — `name`/`headline`/`tagline`/`short_description` — têm limite de 255 caracteres;
+> `description` (`textarea`) não tem limite, só paridade HTML), recusa item duplicado no mesmo lote
 > (`duplicate_item`), grava backup JSONL do estado anterior em
 > `data/translation-backups/dynamic-<kind>-<target>-YYYYMMDD.jsonl` ANTES de cada escrita e
 > só passa por `TranslationGuard::assertWriteAllowed` quando `confirm=true`. `UPDATE` toca
@@ -283,10 +284,11 @@ Legenda de risco:
 > a tool sempre expõe/recebe `name`, nunca `fieldname`. Custom fields com `adminonly`
 > preenchido NUNCA aparecem na listagem (não são visíveis ao cliente).
 >
-> **PENDENTE de confirmação ao vivo**: os literais `custom_field.{id}.*`,
-> `product_addon.{id}.*` e `ticket_department.{id}.*` seguem a MESMA convenção confirmada
-> para `product`/`product_group`, mas ainda não foram confirmados contra o banco real —
-> use `whmcs_translation_status` para conferir os `related_type` já gravados de fato.
+> **CONFIRMADO ao vivo no desenv**: os literais `custom_field.{id}.name`/`description` e
+> `product_addon.{id}.name`/`description` têm linhas reais em `tbldynamic_translations`.
+> **PENDENTE de confirmação ao vivo**: `ticket_department.{id}.*` segue a MESMA convenção,
+> mas ainda não tem nenhuma linha gravada no banco real — use `whmcs_translation_status`
+> para conferir os `related_type` já gravados de fato.
 
 ---
 

@@ -56,9 +56,10 @@ class TranslationCatalogTools
 
     #[McpTool(
         name: 'whmcs_translation_product_list',
-        description: 'Lista produtos (tblproducts) com o texto-fonte PT por campo (name, description — description '
-            . 'vem TRUNCADA a 200 caracteres nesta listagem; use whmcs_translation_product_get para o texto '
-            . 'completo), has_target e target_hash (\'absent\' quando a tradução ainda nao existe) por campo, para '
+        description: 'Lista produtos (tblproducts) com o texto-fonte PT por campo (name, description, tagline, '
+            . 'short_description — description vem TRUNCADA a 200 caracteres nesta listagem; use '
+            . 'whmcs_translation_product_get para o texto completo; tagline e short_description sao curtos, sem '
+            . 'truncamento), has_target e target_hash (\'absent\' quando a tradução ainda nao existe) por campo, para '
             . 'target_language (somente \'english\' nesta fase). gid=0 (padrao) lista todos os grupos; gid>0 filtra '
             . 'por grupo. only_missing=true (padrao) mostra so produtos com pelo menos um campo de texto nao vazio '
             . 'ainda sem traducao. Requer "Enable Dynamic Translations" ligado no WHMCS (ver whmcs_translation_status). '
@@ -85,7 +86,8 @@ class TranslationCatalogTools
     #[McpTool(
         name: 'whmcs_translation_product_get',
         description: 'Obtem ate 10 produtos (tblproducts) com o texto-fonte PT COMPLETO por campo (name, '
-            . 'description) mais a traducao atual em target_language (ou null) e o target_hash correspondente '
+            . 'description, tagline, short_description) mais a traducao atual em target_language (ou null) e o '
+            . 'target_hash correspondente '
             . '(\'absent\' quando nao existe). Use o target_hash retornado como expected_hash em '
             . 'whmcs_translation_product_set para evitar sobrescrever uma edicao concorrente. Preserve tags HTML de '
             . 'description tal como estao no PT; nao traduza marcas de produto (NT-Fiber, NT-Cloud, NTHOSTING, '
@@ -102,11 +104,12 @@ class TranslationCatalogTools
 
     #[McpTool(
         name: 'whmcs_translation_product_set',
-        description: 'Grava de 1 a 20 traducoes de campo de produto (name ou description) para target_language '
-            . '(somente \'english\' nesta fase). Cada item exige id, field, text e expected_hash (o target_hash '
-            . 'devolvido por whmcs_translation_product_get/_list); hash divergente recusa apenas o item, mas o LOTE '
-            . 'inteiro nao e gravado (transacao unica, tudo ou nada). Requer paridade de tags HTML em description; '
-            . 'name tem limite de 255 caracteres. confirm=false (padrao) so valida e devolve um preview (action '
+        description: 'Grava de 1 a 20 traducoes de campo de produto (name, description, tagline ou '
+            . 'short_description) para target_language (somente \'english\' nesta fase). Cada item exige id, field, '
+            . 'text e expected_hash (o target_hash devolvido por whmcs_translation_product_get/_list); hash '
+            . 'divergente recusa apenas o item, mas o LOTE inteiro nao e gravado (transacao unica, tudo ou nada). '
+            . 'Requer paridade de tags HTML em description; name/tagline/short_description tem limite de 255 '
+            . 'caracteres. confirm=false (padrao) so valida e devolve um preview (action '
             . 'insert|update, trecho antes/depois); nada e gravado e o gate de escrita nao e verificado. confirm=true '
             . 'exige o gate WRITE habilitado e grava de fato, com backup do estado anterior. Fluxo recomendado: '
             . 'whmcs_translation_product_get -> set(confirm=false) para revisar o diff -> set(confirm=true) reusando '

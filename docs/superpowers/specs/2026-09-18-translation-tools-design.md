@@ -81,6 +81,16 @@ implementadas. Fase 3 (custom field, addon de produto, departamento de
 suporte) implementada nesta entrega — ver `TranslationCatalogExtrasTools`.
 Fase 4 (KB e anúncio) pendente.
 
+**Ajuste com dado real do desenv (mesma entrega da Fase 3)**: o status ao vivo de
+`tbldynamic_translations` (por `related_type`) confirmou linhas reais para
+`custom_field.{id}.name`/`description`, `product_addon.{id}.name`/`description` e
+também `product.{id}.tagline`/`product.{id}.short_description` — dois campos de
+`tblproducts` que não estavam no mapa original da Fase 2. `DynamicTranslationMap`
+ganhou `tagline` e `short_description` no kind `product` (colunas
+`tblproducts.tagline`/`tblproducts.short_description`, ambas `input_type='text'`),
+expostos por `whmcs_translation_product_list`/`_get`/`_set`. Único kind ainda SEM
+nenhuma linha confirmada no banco: `ticket_department`.
+
 **Regra de corte** entre `list+set` e `list+get+set`: texto curto (nome de
 produto/grupo/config option/custom field/departamento — cabe na listagem)
 usa `list+set`; texto longo (assunto+corpo de e-mail, descrição de

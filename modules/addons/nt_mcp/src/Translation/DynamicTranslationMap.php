@@ -18,11 +18,18 @@ namespace NtMcp\Translation;
  * real fica na coluna `related_id`. `relatedType()` reflete isso: o mesmo
  * literal serve para qualquer id daquele kind+field.
  *
- * PENDENTE DE CONFIRMAÇÃO AO VIVO: os literais `custom_field.{id}.*`,
- * `product_addon.{id}.*` e `ticket_department.{id}.*` (Fase 3) seguem a MESMA
- * convenção observada e confirmada para `product`/`product_group`, mas ainda
- * NÃO foram confirmados contra o banco real — `whmcs_translation_status`
- * (via `TranslationStatusReader::dynamicTranslationCounts()`) lista os
+ * CONFIRMADO AO VIVO no desenv (status real de `tbldynamic_translations`,
+ * por `related_type`): `product.{id}.name`, `product.{id}.description`,
+ * `product.{id}.tagline`, `product.{id}.short_description`,
+ * `product_group.{id}.name`/`headline`/`tagline`, `custom_field.{id}.name`,
+ * `custom_field.{id}.description`, `product_addon.{id}.name` e
+ * `product_addon.{id}.description` — todos com linhas reais no banco.
+ *
+ * PENDENTE DE CONFIRMAÇÃO AO VIVO: só `ticket_department.{id}.*` (Fase 3)
+ * segue sem nenhuma linha em `tbldynamic_translations` até o momento — segue
+ * a MESMA convenção dos demais kinds, mas isso ainda não foi observado no
+ * banco real. `whmcs_translation_status` (via
+ * `TranslationStatusReader::dynamicTranslationCounts()`) lista os
  * `related_type` que já existem de fato e serve para essa confirmação.
  */
 final class DynamicTranslationMap
@@ -54,6 +61,8 @@ final class DynamicTranslationMap
             'fields' => [
                 'name' => 'text',
                 'description' => 'textarea',
+                'tagline' => 'text',
+                'short_description' => 'text',
             ],
         ],
         self::KIND_PRODUCT_GROUP => [

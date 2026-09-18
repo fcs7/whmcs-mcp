@@ -67,7 +67,7 @@ final class TranslationSchema
         self::CAPABILITY_DYNAMIC => [
             self::TABLE_DYNAMIC_TRANSLATIONS => self::DYNAMIC_TRANSLATIONS_COLUMNS,
             self::TABLE_PRODUCTS => [
-                'id', 'gid', 'name', 'description', 'hidden', 'retired',
+                'id', 'gid', 'name', 'description', 'tagline', 'short_description', 'hidden', 'retired',
             ],
             self::TABLE_PRODUCT_GROUPS => [
                 'id', 'name', 'headline', 'tagline', 'hidden',

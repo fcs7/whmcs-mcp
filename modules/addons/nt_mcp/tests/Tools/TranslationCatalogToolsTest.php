@@ -20,7 +20,7 @@ final class TranslationCatalogToolsTest extends TestCase
 {
     private const DYNAMIC_COLUMNS = ['id', 'related_type', 'related_id', 'language', 'translation', 'input_type'];
 
-    private const PRODUCT_COLUMNS = ['id', 'gid', 'name', 'description', 'hidden', 'retired'];
+    private const PRODUCT_COLUMNS = ['id', 'gid', 'name', 'description', 'tagline', 'short_description', 'hidden', 'retired'];
 
     private const PRODUCT_GROUP_COLUMNS = ['id', 'name', 'headline', 'tagline', 'hidden'];
 
@@ -46,7 +46,7 @@ final class TranslationCatalogToolsTest extends TestCase
     private function seedProducts(): void
     {
         FakeCapsule::withRows('tblproducts', [
-            ['id' => 1, 'gid' => 5, 'name' => 'Fibra 500', 'description' => '<p>Descricao 500</p>', 'hidden' => '0', 'retired' => '0'],
+            ['id' => 1, 'gid' => 5, 'name' => 'Fibra 500', 'description' => '<p>Descricao 500</p>', 'tagline' => 'Rapida e estavel', 'short_description' => 'Fibra 500 Mbps', 'hidden' => '0', 'retired' => '0'],
         ]);
     }
 
@@ -100,6 +100,18 @@ final class TranslationCatalogToolsTest extends TestCase
         $payload = $this->payload($tools->productGet([1]));
 
         $this->assertSame('absent', $payload['items'][0]['fields']['name']['target_hash']);
+    }
+
+    #[Test]
+    public function product_get_exposes_tagline_and_short_description(): void
+    {
+        $this->seedProducts();
+        $tools = $this->tools();
+
+        $payload = $this->payload($tools->productGet([1]));
+
+        $this->assertSame('Rapida e estavel', $payload['items'][0]['fields']['tagline']['source']);
+        $this->assertSame('Fibra 500 Mbps', $payload['items'][0]['fields']['short_description']['source']);
     }
 
     #[Test]
