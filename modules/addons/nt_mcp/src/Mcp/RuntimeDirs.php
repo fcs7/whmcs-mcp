@@ -12,10 +12,14 @@ namespace NtMcp\Mcp;
  * O `FileSessionStore` do SDK criaria `sessions/` com 0775 (e arquivos pelo
  * umask, tipicamente 0644) — sessões carregam client_info e filas de
  * mensagens; ninguém além do processo PHP deve lê-las.
+ *
+ * `translation-backups/` guarda o JSONL de estado anterior gravado por
+ * `NtMcp\Translation\TranslationBackup` antes de cada upsert de tradução —
+ * mesma exigência de isolamento 0700/0600 dos demais subdiretórios.
  */
 final class RuntimeDirs
 {
-    public const SUBDIRS = ['cache', 'sessions', 'session-locks'];
+    public const SUBDIRS = ['cache', 'sessions', 'session-locks', 'translation-backups'];
     public const MODE = 0700;
 
     /** @return string|null Mensagem de erro, ou null se tudo provisionado. */

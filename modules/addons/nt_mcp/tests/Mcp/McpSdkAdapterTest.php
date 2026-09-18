@@ -120,7 +120,7 @@ final class McpSdkAdapterTest extends TestCase
     }
 
     #[Test]
-    public function tools_list_returns_exactly_70_tools_with_whmcs_prefix(): void
+    public function tools_list_returns_exactly_74_tools_with_whmcs_prefix(): void
     {
         $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
         $factory = new Psr17Factory();
@@ -154,7 +154,7 @@ final class McpSdkAdapterTest extends TestCase
         $body = json_decode((string) $listResponse->getBody(), true);
 
         $tools = $body['result']['tools'] ?? [];
-        $this->assertCount(70, $tools);
+        $this->assertCount(74, $tools);
 
         foreach ($tools as $tool) {
             $this->assertStringStartsWith('whmcs_', $tool['name']);
@@ -703,7 +703,7 @@ final class McpSdkAdapterTest extends TestCase
         $this->assertSame(200, $response->getStatusCode(), json_encode($body));
         $this->assertSame('', $response->getHeaderLine('Mcp-Session-Id'));
         $this->assertSame('complete', $body['result']['resultType'] ?? null);
-        $this->assertCount(70, $body['result']['tools'] ?? []);
+        $this->assertCount(74, $body['result']['tools'] ?? []);
         $this->assertSame([], glob($this->tempDir . '/sessions/*') ?: []);
     }
 
@@ -940,7 +940,7 @@ final class McpSdkAdapterTest extends TestCase
     }
 
     #[Test]
-    public function warm_cache_still_lists_70_tools(): void
+    public function warm_cache_still_lists_74_tools(): void
     {
         $adapter = new McpSdkAdapter($this->api, $this->baseDir, $this->tempDir);
         $factory = new Psr17Factory();
@@ -1007,8 +1007,8 @@ final class McpSdkAdapterTest extends TestCase
         $body2 = json_decode((string) $listResp2->getBody(), true);
         $count2 = count($body2['result']['tools'] ?? []);
 
-        $this->assertSame(70, $count1);
-        $this->assertSame(70, $count2);
+        $this->assertSame(74, $count1);
+        $this->assertSame(74, $count2);
     }
 
     #[Test]

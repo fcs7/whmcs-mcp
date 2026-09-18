@@ -29,6 +29,7 @@ use NtMcp\Tools\ServiceTools;
 use NtMcp\Tools\SupportInfoTools;
 use NtMcp\Tools\SystemTools;
 use NtMcp\Tools\TicketTools;
+use NtMcp\Tools\TranslationTools;
 use NtMcp\Whmcs\CompatContainer;
 use NtMcp\Whmcs\LocalApiClient;
 use Psr\Http\Message\ResponseInterface;
@@ -61,7 +62,7 @@ use Psr\Log\LoggerInterface;
 final class McpSdkAdapter implements ServerAdapterInterface
 {
     public const SERVER_NAME = 'NT Web WHMCS MCP Server';
-    public const SERVER_VERSION = '2.4.0';
+    public const SERVER_VERSION = '2.5.0';
     public const MAX_BODY_BYTES = 1048576;
     public const SESSION_TTL = 3600;
     public const ELEMENTS_CACHE_FILE = 'mcp_elements.json';
@@ -160,6 +161,10 @@ final class McpSdkAdapter implements ServerAdapterInterface
         // Domínio nt_chips: não usa LocalAPI (não há comando WHMCS para chips),
         // então tem ponte e guard próprios em vez do LocalApiClient.
         $container->set(ChipTools::class, new ChipTools());
+        // Domínio de tradução (Fase 1: e-mail): também não usa LocalAPI (não há
+        // comando de escrita para tblemailtemplates), então tem repositório
+        // Capsule e guard próprios, no mesmo padrão do nt_chips.
+        $container->set(TranslationTools::class, new TranslationTools());
         $container->set(LoggerInterface::class, $logger);
 
         $server = McpServer::builder()

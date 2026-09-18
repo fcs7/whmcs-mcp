@@ -1,6 +1,6 @@
 # NT MCP — WHMCS MCP Server Addon
 
-Addon PHP para WHMCS que expõe 70 tools via Model Context Protocol.
+Addon PHP para WHMCS que expõe 74 tools via Model Context Protocol.
 Repo: `git@github.com:fcs7/whmcs-mcp.git`
 
 ## Commands
@@ -10,7 +10,7 @@ cd modules/addons/nt_mcp
 composer install --ignore-platform-req=ext-iconv   # OBRIGATÓRIO em worktree novo: vendor/ não é versionado
 ./vendor/bin/phpunit --testdox                    # tests
 composer audit                                    # check dependency CVEs
-rg -o "name: '[a-z_0-9]+'" src/Tools/*.php | wc -l  # 70 tools total (rg -o '#\[McpTool' dá 72: conta os comentários "sem #[McpTool]" de QuoteTools.php e ChipTools.php)
+rg -o "name: '[a-z_0-9]+'" src/Tools/*.php | wc -l  # 74 tools total (rg -o '#\[McpTool' conta mais: descontar os comentários "sem #[McpTool]" de QuoteTools.php e ChipTools.php)
 # Deploy manual via FTP (from modules/addons/nt_mcp/). A credencial DEV compartilhada
 # fica fora do git no repo do tema 2026; nunca pedir a senha novamente nem copiá-la
 # para este repositório.
@@ -52,8 +52,9 @@ npx -y @modelcontextprotocol/inspector --cli --transport http --server-url "http
 - `src/Http/` — IpResolver, IpAllowlist, TlsEnforcer, SecurityHeaders, CorsHandler
 - `src/OAuth/` — OAuthRouter, OAuthMigration, OAuthHelper, Handlers/{Token,Authorization,Registration,Metadata}Handler
 - `src/Admin/` — AdminController (auth dashboard), OAuthApprovalController (5-layer approval)
-- `src/Whmcs/` — LocalApiClient (55 comandos na allowlist + gates READ/WRITE/DESTRUCTIVE/FINANCIAL/COST/COMMS), ResponseRedactor, CompatContainer, SystemUrl, AdminSession, GateSettings (leitura das flags de gate — ponto único, usada por LocalApiClient e ChipGuard), ChipBridge/ChipGuard (integração com o addon nt_chips)
-- `src/Tools/*.php` — 12 tool classes, 70 tools: Client(12), ProjectManager(9), Order(7), Quote(7), Chip(6), System(6), Ticket(5), Domain(5), Billing(5), CRM(4), SupportInfo(3), Service(1)
+- `src/Whmcs/` — LocalApiClient (55 comandos na allowlist + gates READ/WRITE/DESTRUCTIVE/FINANCIAL/COST/COMMS), ResponseRedactor, CompatContainer, SystemUrl, AdminSession, GateSettings (leitura das flags de gate — ponto único, usada por LocalApiClient, ChipGuard e TranslationGuard), ChipBridge/ChipGuard (integração com o addon nt_chips)
+- `src/Translation/` — Fase 1 (e-mail) das tools de tradução em massa, domínio FORA da LocalAPI (não existe comando WHMCS de escrita para `tblemailtemplates`): `TranslationSchema`/`TranslationSchemaGuard` (mesmo contrato do `CrmSchemaGuard`, reusando `NtMcp\Crm\CrmSchemaProbe`/`CapsuleSchemaProbe`), `EmailTemplateRepository` (ÚNICA classe que toca `tblemailtemplates`; transação com `lockForUpdate`, hash otimista, backup antes da escrita), `TranslationValidator` (paridade de tags Smarty/HTML entre PT e EN), `TranslationBackup` (JSONL em `data/translation-backups/`, 0700/0600), `TranslationGuard` (mesmo desenho do `ChipGuard::assertWriteAllowed`, sem allowlist de cliente), `TranslationStatusReader` (contagem de `tblclients.language` e leitura de "Enable Dynamic Translations")
+- `src/Tools/*.php` — 13 tool classes, 74 tools: Client(12), ProjectManager(9), Order(7), Quote(7), Chip(6), System(6), Ticket(5), Domain(5), Billing(5), CRM(4), Translation(4), SupportInfo(3), Service(1)
 - `templates/admin/` — dashboard.php, oauth-approve.php (output escapado via htmlspecialchars)
 
 ### Admin Binding Flow
@@ -162,8 +163,8 @@ npx -y @modelcontextprotocol/inspector --cli --transport http --server-url "http
 - **`mcp/sdk` pinado em 0.8.1** (pre-1.0) — a 0.8.0 introduziu o transporte dual-era; qualquer upgrade continua exigindo branch dedicada e bateria legado+moderno
 - **`php-http/discovery` é plugin composer** — `allow-plugins` já no composer.json; sem isso, `composer install` falha
 - **Deploy com troca de lib PRECISA incluir `vendor/`** — o comando padrão exclui vendor; usar comando "deploy com vendor/" listado em Commands
-- **`data/sessions/`, `data/cache/` e `data/session-locks/` devem ser excluídos do deploy e são 0700** — sessões dinâmicas + cache de discovery + locks; excluir sempre (o comando padrão já exclui `data/`)
-- **`nt_mcp_upgrade()` apaga `mcp_elements.json`** — quando há mudança de schema (tools/prompts novos), isso força rediscovery. Também limpa legacy `mcp_state.json` e reprovisiona `data/{cache,sessions,session-locks}` 0700. Sessões NÃO são afetadas (arquivos próprios). `nt_mcp_config()['version']` referencia `McpSdkAdapter::SERVER_VERSION` (atual `2.4.0`) — subir a constante é o que dispara o upgrade no WHMCS. **A chave do cache NÃO é derivada do conteúdo/mtime dos arquivos de tools** — é `md5(basePath+directories+excludeDirs)`, sempre igual. Deploy que adiciona/remove tool SEM bumpar `SERVER_VERSION` continua servindo a contagem antiga até `data/cache/mcp_elements.json` ser apagado manualmente (via lftp `rm`) ou a versão subir. Desde 2.1.0, ativação e upgrade chamam `nt_mcp_warm_element_cache()` (→ `McpSdkAdapter::warmElementCache()`, builder com `setLazyLoading(false)`): o cache é regravado ali, fora do caminho de request — antes o PRIMEIRO request pagava o discovery inteiro SEGURANDO o `SessionLock`, o que aparecia no cliente como `DeadlineExceeded`.
+- **`data/sessions/`, `data/cache/`, `data/session-locks/` e `data/translation-backups/` devem ser excluídos do deploy e são 0700** — sessões dinâmicas + cache de discovery + locks + backups de tradução; excluir sempre (o comando padrão já exclui `data/`)
+- **`nt_mcp_upgrade()` apaga `mcp_elements.json`** — quando há mudança de schema (tools/prompts novos), isso força rediscovery. Também limpa legacy `mcp_state.json` e reprovisiona `data/{cache,sessions,session-locks,translation-backups}` 0700. Sessões NÃO são afetadas (arquivos próprios). `nt_mcp_config()['version']` referencia `McpSdkAdapter::SERVER_VERSION` (atual `2.5.0`) — subir a constante é o que dispara o upgrade no WHMCS. **A chave do cache NÃO é derivada do conteúdo/mtime dos arquivos de tools** — é `md5(basePath+directories+excludeDirs)`, sempre igual. Deploy que adiciona/remove tool SEM bumpar `SERVER_VERSION` continua servindo a contagem antiga até `data/cache/mcp_elements.json` ser apagado manualmente (via lftp `rm`) ou a versão subir. Desde 2.1.0, ativação e upgrade chamam `nt_mcp_warm_element_cache()` (→ `McpSdkAdapter::warmElementCache()`, builder com `setLazyLoading(false)`): o cache é regravado ali, fora do caminho de request — antes o PRIMEIRO request pagava o discovery inteiro SEGURANDO o `SessionLock`, o que aparecia no cliente como `DeadlineExceeded`.
 - **Versões de protocolo**: SDK 0.8.x mantém o handshake legado com `2025-11-25` e sessão obrigatória após `initialize`; a era moderna é pinada em `2026-07-28`, usa headers `MCP-Method`/`MCP-Name` e é stateless (`server/discover`, `tools/list`, `tools/call` sem initialize). Header/body incompatíveis falham fechados
 - **Audit fix IDs** — comentários `// SECURITY FIX (Fn)`/`(M-02)` referenciam findings da auditoria de production readiness; não remover. Com a migração pro SDK, os fixes F5 (lock_open_failed) e F6 (resposta vazia → -32603) do Server.php antigo ficaram obsoletos: não há mais lock global e o SDK responde sempre. M-02 (1 MB) continua em Server.php + `maxBodyBytes`
 - **Pending audit findings** — F-05, F-10, F-12 resolvidos. Resolvidos no refactor: F-07 (RateLimiter), F-11 (TokenHandler). Mitigados: F-06 (IpAllowlist), F-14 (SystemUrl — intencional)

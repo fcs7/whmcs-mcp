@@ -356,7 +356,7 @@ final class FileElementCacheTest extends TestCase
         );
         $src = realpath(__DIR__ . '/../../src');
         $fresh = $discoverer->discover($src, ['Tools'], []);
-        $this->assertCount(70, $fresh->getTools());
+        $this->assertCount(74, $fresh->getTools());
         $this->assertFileExists($this->cacheFile);
 
         // Processo novo: relê do arquivo pela fronteira endurecida.
@@ -371,7 +371,7 @@ final class FileElementCacheTest extends TestCase
             $logger
         );
         $cached = $second->discover($src, ['Tools'], []);
-        $this->assertCount(70, $cached->getTools());
+        $this->assertCount(74, $cached->getTools());
     }
 
     #[Test]

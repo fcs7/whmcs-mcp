@@ -1,11 +1,13 @@
-# Catálogo de Tools — NT MCP (70 tools)
+# Catálogo de Tools — NT MCP (74 tools)
 
-> Atualizado em 2026-08-26. Fonte de verdade: atributos `#[McpTool(...)]` em
-> `src/Tools/*.php`; gates LocalAPI em `src/Whmcs/LocalApiClient.php` e gates das
-> `whmcs_chip_*` em `src/Whmcs/ChipGuard.php`, com acesso via `ChipBridge.php`.
-> Contagem verificada: `grep -oh "name: '[a-z_0-9]*'" src/Tools/*.php | sort -u | wc -l` = **70**.
+> Atualizado em 2026-09-18. Fonte de verdade: atributos `#[McpTool(...)]` em
+> `src/Tools/*.php`; gates LocalAPI em `src/Whmcs/LocalApiClient.php`, gates das
+> `whmcs_chip_*` em `src/Whmcs/ChipGuard.php` (acesso via `ChipBridge.php`) e gates das
+> `whmcs_translation_*` em `src/Translation/TranslationGuard.php` (acesso via
+> `EmailTemplateRepository.php`).
+> Contagem verificada: `grep -oh "name: '[a-z_0-9]*'" src/Tools/*.php | sort -u | wc -l` = **74**.
 
-Este documento lista **todas as 70 tools** uma a uma, com o comando WHMCS que
+Este documento lista **todas as 74 tools** uma a uma, com o comando WHMCS que
 cada uma invoca (ou a integração direta usada por CRM e NT Chips), a classe do gate de segurança (WO-2),
 se está **ligada por padrão**, e o **nível de risco** — para avaliar a necessidade de cada
 tool e decidir cortes.
@@ -187,6 +189,26 @@ Legenda de risco:
 
 ---
 
+## TranslationTools (4) — Fase 1: templates de e-mail
+
+| # | Tool | Origem | Gate | Default | Risco | Descrição |
+|---|------|--------|------|---------|-------|-----------|
+| 71 | `whmcs_translation_status` | EmailTemplateRepository / tblclients | READ | on | 🟢 | Panorama: contagem por idioma, amostra de subjects, contagem de clientes por idioma e status de "Enable Dynamic Translations" |
+| 72 | `whmcs_translation_email_list` | EmailTemplateRepository | READ | on | 🟢 | Lista templates master (idioma fonte, `type<>admin`) com `has_en` |
+| 73 | `whmcs_translation_email_get` | EmailTemplateRepository | READ | on | 🟢 | Obtém até 10 pares PT/EN completos + `en_hash` para uso em `email_set` |
+| 74 | `whmcs_translation_email_set` | EmailTemplateRepository | WRITE | ⛔ off | 🟡 | Grava até 10 traduções em lote (tudo-ou-nada); `confirm=false` é dry-run sem gate |
+
+> Assim como o domínio de chips, tradução não passa pela LocalAPI (não existe comando
+> WHMCS de escrita para `tblemailtemplates`). `EmailTemplateRepository` é a única classe
+> que toca a tabela; `TranslationSchemaGuard` (mesmo contrato do `CrmSchemaGuard`) barra
+> qualquer query antes de a instalação provar as colunas esperadas. `email_set` exige hash
+> otimista (`expected_hash`) por item, valida paridade de tags Smarty/HTML entre PT e EN,
+> grava backup JSONL do estado anterior em `data/translation-backups/` ANTES de cada
+> escrita e só passa por `TranslationGuard::assertWriteAllowed` (mesmas flags do
+> `ChipGuard`, sem allowlist de cliente) quando `confirm=true`.
+
+---
+
 ## Qual ID usar
 
 Guia rápido para evitar confundir IDs:
@@ -210,16 +232,17 @@ Guia rápido para evitar confundir IDs:
 
 | Gate | Qtde | Default | Tools |
 |------|------|---------|-------|
-| READ | 39 | on | consultas LocalAPI/NT Chips — sem risco |
-| WRITE | 24 | ⛔ **off** | administrativas reversíveis — opt-in via `nt_mcp_enable_write=1` |
+| READ | 42 | on | consultas LocalAPI/NT Chips/Tradução — sem risco |
+| WRITE | 25 | ⛔ **off** | administrativas reversíveis — opt-in via `nt_mcp_enable_write=1` |
 | DESTRUCTIVE | 2 | ⛔ off | cancel_order, delete_quote (exigem confirm=true) |
 | FINANCIAL | 1 | ⛔ off | convert_quote_to_invoice (não idempotente) |
 | CRM-READ | 4 | on | leituras do CRM mgCRM2 (MgCrmRepository) |
-| **Total** | **70** | | |
+| **Total** | **74** | | |
 
 > **Nota:** COMMS é um gate ortogonal acionado por `notify_client=true`; não acrescenta
 > tools à contagem. AddClient, OpenTicket e AddTicketReply continuam em suas classes base.
-> As cinco tools mutáveis de chips estão incluídas na classe WRITE.
+> As cinco tools mutáveis de chips e `whmcs_translation_email_set` estão incluídas na
+> classe WRITE; as três leituras de tradução estão incluídas na classe READ.
 
 ---
 

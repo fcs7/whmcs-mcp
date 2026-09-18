@@ -187,6 +187,26 @@ final class FakeCapsuleConnection
         return FakeCapsule::table($table);
     }
 
+    /**
+     * Reproduz `Illuminate\Database\Connection::transaction()`: begin, executa
+     * o callback, commit; qualquer exceção faz rollback e relança.
+     *
+     * @param callable(): mixed $callback
+     */
+    public function transaction(callable $callback): mixed
+    {
+        $this->beginTransaction();
+        try {
+            $result = $callback();
+        } catch (\Throwable $e) {
+            $this->rollBack();
+            throw $e;
+        }
+        $this->commit();
+
+        return $result;
+    }
+
     public function getSchemaBuilder(): FakeCapsuleSchemaBuilder
     {
         return new FakeCapsuleSchemaBuilder($this);
@@ -328,7 +348,18 @@ final class FakeCapsuleQuery
     private ?int $take = null;
     private int $skip = 0;
 
+    /** Registrado só para o teste provar que a linha foi lida sob lock. */
+    private bool $lockedForUpdate = false;
+
     public function __construct(private readonly string $table) {}
+
+    public function lockForUpdate(): self
+    {
+        FakeCapsule::$calls[] = 'lockForUpdate()';
+        $this->lockedForUpdate = true;
+
+        return $this;
+    }
 
     /** Aceita `select('a')` e `select(['a','b'])`, como o builder real. */
     public function select(array|string ...$columns): self
