@@ -358,21 +358,21 @@ final class EmailTemplateRepositoryTest extends TestCase
         $this->seedRows();
         $repo = $this->repo();
 
-        // Item inválido PRIMEIRO: o fake registra mutações no momento em que a
-        // query roda (não simula rollback físico), então a única forma de
-        // provar "nada sobrevive" é garantir que a falha ocorre antes de
-        // qualquer escrita ser sequer tentada.
+        // Item VÁLIDO primeiro (grava uma mutação de verdade), item inválido
+        // por último: só é possível provar "rollback reverte de fato" com o
+        // item válido processado ANTES do erro — agora que FakeCapsule
+        // restaura um snapshot real de `$mutations` em `rollBack()`.
         $result = $repo->applyBatch(
             [
-                ['id' => 1, 'subject' => 'x', 'message' => 'y', 'expected_hash' => 'wrong-hash'],
                 ['id' => 4, 'subject' => 'Your invoice', 'message' => 'Your invoice arrived', 'expected_hash' => 'absent'],
+                ['id' => 1, 'subject' => 'x', 'message' => 'y', 'expected_hash' => 'wrong-hash'],
             ],
             $this->backup(),
             false
         );
 
         $this->assertSame('error', $result['result']);
-        $this->assertSame([], FakeCapsule::$mutations, 'nenhuma escrita do lote pode sobreviver a um item inválido');
+        $this->assertSame([], FakeCapsule::$mutations, 'o rollback deve reverter tambem a escrita do item valido anterior');
     }
 
     #[Test]
@@ -397,5 +397,63 @@ final class EmailTemplateRepositoryTest extends TestCase
         } finally {
             $this->assertSame([], FakeCapsule::$mutations);
         }
+    }
+
+    #[Test]
+    public function apply_batch_backup_failure_on_second_item_rolls_back_everything(): void
+    {
+        FakeCapsule::withRows('tblemailtemplates', [
+            $this->common(['id' => 10, 'type' => 'general', 'name' => 'Alpha', 'subject' => 'Assunto A', 'message' => 'Corpo A', 'language' => '']),
+            $this->common(['id' => 20, 'type' => 'general', 'name' => 'Beta', 'subject' => 'Assunto B', 'message' => 'Corpo B', 'language' => '']),
+            // Sibling EN de "Beta" com bytes UTF-8 inválidos no conteúdo ANTERIOR
+            // — isso entra em `previous` no backup, e faz `json_encode()` do
+            // TranslationBackup devolver false (sem JSON_INVALID_UTF8_SUBSTITUTE).
+            $this->common(['id' => 21, 'type' => 'general', 'name' => 'Beta', 'subject' => "Bad \xB1\x31", 'message' => 'old', 'language' => 'english']),
+        ]);
+        $repo = $this->repo();
+        $badHash = hash('sha256', "Bad \xB1\x31" . "\0" . 'old');
+
+        $this->expectException(\RuntimeException::class);
+        try {
+            $repo->applyBatch(
+                [
+                    ['id' => 10, 'subject' => 'Subject A EN', 'message' => 'Body A EN', 'expected_hash' => 'absent'],
+                    ['id' => 20, 'subject' => 'Subject B EN', 'message' => 'Body B EN', 'expected_hash' => $badHash],
+                ],
+                $this->backup(),
+                false
+            );
+        } finally {
+            $this->assertSame(
+                [],
+                FakeCapsule::$mutations,
+                'a escrita do primeiro item nao pode sobreviver a falha de backup no segundo'
+            );
+        }
+    }
+
+    // -----------------------------------------------------------
+    // Collection (Illuminate\Support\Collection) no lugar de array
+    // -----------------------------------------------------------
+
+    #[Test]
+    public function english_names_lookup_works_when_get_returns_a_traversable_collection(): void
+    {
+        $this->seedRows();
+        FakeCapsule::$collectionTables = ['tblemailtemplates'];
+
+        // No WHMCS real, `->get()` devolve `Illuminate\Support\Collection`, não
+        // um array — `englishNames()` usava `array_map()` direto sobre esse
+        // retorno, o que produz TypeError em produção. Este teste falharia com
+        // essa implementação antiga.
+        $result = $this->repo()->listMasters(null, false, 25, 0);
+
+        $byId = [];
+        foreach ($result['items'] as $item) {
+            $byId[$item['id']] = $item;
+        }
+
+        $this->assertTrue($byId[1]['has_en']);
+        $this->assertFalse($byId[4]['has_en']);
     }
 }

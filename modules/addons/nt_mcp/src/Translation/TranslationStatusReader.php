@@ -66,11 +66,36 @@ final class TranslationStatusReader
                 return 'unknown';
             }
 
-            if ($raw === null) {
-                return 'unknown';
-            }
-
-            return ((string) $raw === '1' || $raw === true) ? 'enabled' : 'disabled';
+            return self::normalizeFlag($raw);
         };
+    }
+
+    /**
+     * Normaliza um valor de flag de `tblconfiguration` (WHMCS guarda checkbox
+     * como `'on'`, mas também aceitamos `'1'`/`'true'`/`'yes'` e a forma
+     * booleana). Qualquer outro valor é `'unknown'` — nunca assume um dos dois
+     * estados quando o dado não é reconhecido.
+     */
+    public static function normalizeFlag(mixed $raw): string
+    {
+        if ($raw === null) {
+            return 'unknown';
+        }
+
+        if (is_bool($raw)) {
+            return $raw ? 'enabled' : 'disabled';
+        }
+
+        $value = strtolower(trim((string) $raw));
+
+        if (in_array($value, ['1', 'on', 'true', 'yes'], true)) {
+            return 'enabled';
+        }
+
+        if (in_array($value, ['', '0', 'off', 'false', 'no'], true)) {
+            return 'disabled';
+        }
+
+        return 'unknown';
     }
 }

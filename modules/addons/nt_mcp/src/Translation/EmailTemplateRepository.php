@@ -405,7 +405,12 @@ final class EmailTemplateRepository
             ->select(['name'])
             ->get();
 
-        return array_map(static fn(mixed $row): string => self::text($row, 'name'), $rows);
+        $names = [];
+        foreach ($rows as $row) {
+            $names[] = self::text($row, 'name');
+        }
+
+        return $names;
     }
 
     private function findEnglishSibling(string $name): mixed

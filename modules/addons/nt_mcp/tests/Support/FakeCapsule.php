@@ -52,6 +52,27 @@ final class FakeCapsule
 
     public static int $ambientTransactionLevel = 0;
 
+    /**
+     * Tabelas cujo `get()` devolve um `FakeCollection` (Traversable não-array,
+     * como `Illuminate\Support\Collection` no WHMCS real) em vez de um array
+     * puro. Desligado por padrão — só os testes de tradução ligam, para provar
+     * que o código de produção não quebra com `array_map()`/`array_filter()`
+     * direto sobre o retorno de `get()`.
+     *
+     * @var array<int, string>
+     */
+    public static array $collectionTables = [];
+
+    /**
+     * Pilha de snapshots de transação (`rows`/`mutations`/`nextInsertId`).
+     * `beginTransaction()` empilha, `commit()` descarta o topo e `rollBack()`
+     * restaura o topo — o fake antigo só desfazia o contador de nível, nunca
+     * as mutações, então um "rollback" não revertia nada de fato.
+     *
+     * @var array<int, array{rows: array<string, array<int, object>>, mutations: array<int, array{verb:string, table:string, values:array<string,mixed>}>, nextInsertId: int}>
+     */
+    private static array $transactionSnapshots = [];
+
     private static ?FakeCapsuleConnection $connection = null;
 
     public static function reset(): void
@@ -68,6 +89,37 @@ final class FakeCapsule
         self::$ambientTransaction = false;
         self::$ambientTransactionLevel = 0;
         self::$connection = null;
+        self::$collectionTables = [];
+        self::$transactionSnapshots = [];
+    }
+
+    /** Empilha o estado atual (`rows`/`mutations`/`nextInsertId`). */
+    public static function pushTransactionSnapshot(): void
+    {
+        self::$transactionSnapshots[] = [
+            'rows' => self::$rows,
+            'mutations' => self::$mutations,
+            'nextInsertId' => self::$nextInsertId,
+        ];
+    }
+
+    /** Descarta o snapshot do topo sem restaurar (equivalente a um commit). */
+    public static function discardTransactionSnapshot(): void
+    {
+        array_pop(self::$transactionSnapshots);
+    }
+
+    /** Restaura o snapshot do topo (equivalente a um rollback real). */
+    public static function restoreTransactionSnapshot(): void
+    {
+        $snapshot = array_pop(self::$transactionSnapshots);
+        if ($snapshot === null) {
+            return;
+        }
+
+        self::$rows = $snapshot['rows'];
+        self::$mutations = $snapshot['mutations'];
+        self::$nextInsertId = $snapshot['nextInsertId'];
     }
 
     /** Popula uma tabela com valores da coluna `gateway`. */
@@ -160,6 +212,7 @@ final class FakeCapsuleConnection
         // O Illuminate incrementa o nível após chamar o PDO; mesmo um driver
         // que devolve false precisa ser detectado pelo boundary pós-begin.
         $this->transactions++;
+        FakeCapsule::pushTransactionSnapshot();
 
         return $result;
     }
@@ -168,6 +221,7 @@ final class FakeCapsuleConnection
     {
         $result = $this->writePdo->commit();
         $this->transactions = max(0, $this->transactions - 1);
+        FakeCapsule::discardTransactionSnapshot();
 
         return $result;
     }
@@ -176,6 +230,7 @@ final class FakeCapsuleConnection
     {
         $result = $this->writePdo->rollBack();
         $this->transactions = 0;
+        FakeCapsule::restoreTransactionSnapshot();
 
         return $result;
     }
@@ -459,7 +514,7 @@ final class FakeCapsuleQuery
     {
         FakeCapsule::$calls[] = 'first()';
 
-        return $this->get()[0] ?? null;
+        return $this->computeRows()[0] ?? null;
     }
 
     /** @param array<string, mixed> $values */
@@ -497,11 +552,26 @@ final class FakeCapsuleQuery
         return $deleted;
     }
 
-    /** @return array<int, object> linhas com APENAS as colunas projetadas */
-    public function get(): array
+    /**
+     * @return array<int, object>|FakeCollection linhas com APENAS as colunas
+     *     projetadas. Devolve `FakeCollection` (Traversable não-array) quando a
+     *     tabela está em `FakeCapsule::$collectionTables` — reproduz
+     *     `Illuminate\Support\Collection`, que é o que o WHMCS real devolve.
+     */
+    public function get(): array|FakeCollection
     {
         FakeCapsule::$calls[] = 'get()';
 
+        $rows = $this->computeRows();
+
+        return in_array($this->table, FakeCapsule::$collectionTables, true)
+            ? new FakeCollection($rows)
+            : $rows;
+    }
+
+    /** @return array<int, object> */
+    private function computeRows(): array
+    {
         $rows = $this->matchingRows();
 
         foreach (array_reverse($this->orders) as [$column, $direction]) {
@@ -602,5 +672,32 @@ final class FakeCapsuleQuery
         }
 
         return $leftNegative ? -$comparison : $comparison;
+    }
+}
+
+/**
+ * Reproduz o formato real de `->get()` no WHMCS (`Illuminate\Support\Collection`):
+ * Traversable + Countable, NÃO um array. Usada só pelas tabelas listadas em
+ * `FakeCapsule::$collectionTables`, para provar que código de produção que
+ * aplica `array_map()`/`array_filter()`/`array_slice()` direto sobre o
+ * retorno de `get()` quebra com `TypeError` no ambiente real.
+ *
+ * @implements \IteratorAggregate<int, object>
+ */
+final class FakeCollection implements \IteratorAggregate, \Countable
+{
+    /** @param array<int, object> $rows */
+    public function __construct(private readonly array $rows)
+    {
+    }
+
+    public function getIterator(): \ArrayIterator
+    {
+        return new \ArrayIterator($this->rows);
+    }
+
+    public function count(): int
+    {
+        return count($this->rows);
     }
 }
