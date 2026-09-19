@@ -49,4 +49,44 @@ class SystemUrlTest extends TestCase
         // Ambas devem ser iguais (mesma resolução)
         $this->assertSame($host1, $host2);
     }
+
+    public function test_admin_folder_uses_custom_path(): void
+    {
+        SystemUrl::setAdminFolderResolverForTesting(fn () => 'gestor');
+
+        $this->assertSame('gestor', SystemUrl::adminFolder());
+    }
+
+    public function test_admin_folder_falls_back_to_admin_when_unresolvable(): void
+    {
+        SystemUrl::setAdminFolderResolverForTesting(fn () => null);
+
+        $this->assertSame('admin', SystemUrl::adminFolder());
+    }
+
+    public function test_admin_folder_falls_back_to_admin_on_invalid_value(): void
+    {
+        SystemUrl::setAdminFolderResolverForTesting(fn () => '../x');
+
+        $this->assertSame('admin', SystemUrl::adminFolder());
+    }
+
+    public function test_admin_authorize_url_uses_custom_admin_folder(): void
+    {
+        SystemUrl::setAdminFolderResolverForTesting(fn () => 'gestor');
+
+        $url = SystemUrl::adminAuthorizeUrl('req-123');
+
+        $this->assertStringContainsString('/gestor/addonmodules.php?module=nt_mcp&authorize=req-123', $url);
+        $this->assertStringNotContainsString('/admin/addonmodules.php', $url);
+    }
+
+    public function test_admin_url_defaults_to_admin_folder(): void
+    {
+        SystemUrl::setAdminFolderResolverForTesting(fn () => null);
+
+        $url = SystemUrl::adminUrl('addonmodules.php?module=nt_mcp');
+
+        $this->assertStringContainsString('/admin/addonmodules.php?module=nt_mcp', $url);
+    }
 }
