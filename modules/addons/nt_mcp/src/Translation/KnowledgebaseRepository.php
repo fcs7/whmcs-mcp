@@ -574,7 +574,14 @@ final class KnowledgebaseRepository
             ];
         }
 
-        $errors = $this->validator->validate(self::text($original, 'name'), self::text($original, 'description'), $name, $description);
+        $sourceDescription = self::text($original, 'description');
+        $errors = $this->validator->validate(self::text($original, 'name'), $sourceDescription, $name, $description);
+        if (trim($sourceDescription) === '' && trim($description) === '') {
+            $errors = array_values(array_filter(
+                $errors,
+                static fn (array $error): bool => $error['code'] !== 'empty_message'
+            ));
+        }
         if ($errors !== []) {
             return [
                 'result' => 'error',

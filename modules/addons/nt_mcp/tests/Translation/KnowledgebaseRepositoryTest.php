@@ -465,6 +465,61 @@ final class KnowledgebaseRepositoryTest extends TestCase
         }
     }
 
+    #[Test]
+    public function apply_category_batch_allows_empty_description_when_source_is_also_empty(): void
+    {
+        FakeCapsule::withRows('tblknowledgebasecats', [
+            ['id' => 1, 'parentid' => 0, 'name' => 'a', 'description' => '', 'hidden' => '0', 'catid' => 0, 'language' => ''],
+        ]);
+        $repo = $this->repo();
+
+        $dryRun = $repo->applyCategoryBatch(
+            [['id' => 1, 'name' => 'a', 'description' => '', 'expected_hash' => 'absent']],
+            $this->backup(),
+            true,
+            'english'
+        );
+        $this->assertSame('success', $dryRun['result']);
+        $this->assertSame('insert', $dryRun['items'][0]['action']);
+
+        $result = $repo->applyCategoryBatch(
+            [['id' => 1, 'name' => 'a', 'description' => '', 'expected_hash' => 'absent']],
+            $this->backup(),
+            false,
+            'english'
+        );
+
+        $this->assertSame('success', $result['result']);
+        $this->assertSame('insert', $result['items'][0]['action']);
+
+        $insert = null;
+        foreach (FakeCapsule::$mutations as $mutation) {
+            if ($mutation['verb'] === 'INSERT') {
+                $insert = $mutation;
+            }
+        }
+        $this->assertNotNull($insert);
+        $this->assertSame('', $insert['values']['description']);
+    }
+
+    #[Test]
+    public function apply_category_batch_still_rejects_empty_description_when_source_is_not_empty(): void
+    {
+        $this->seedCategories();
+        $repo = $this->repo();
+
+        $result = $repo->applyCategoryBatch(
+            [['id' => 3, 'name' => 'Billing', 'description' => '', 'expected_hash' => 'absent']],
+            $this->backup(),
+            false,
+            'english'
+        );
+
+        $this->assertSame('validation_failed', $result['error_code']);
+        $this->assertSame('empty_message', $result['errors'][0]['code']);
+        $this->assertSame([], FakeCapsule::$mutations);
+    }
+
     // -----------------------------------------------------------
     // Collection (Illuminate\Support\Collection)
     // -----------------------------------------------------------
