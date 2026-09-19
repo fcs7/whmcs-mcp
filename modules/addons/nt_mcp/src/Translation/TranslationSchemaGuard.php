@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace NtMcp\Translation;
 
+use NtMcp\Crm\CapsuleEngineProbe;
+use NtMcp\Crm\CrmEngineProbe;
 use NtMcp\Crm\CrmSchemaProbe;
 
 /**
@@ -24,8 +26,13 @@ final class TranslationSchemaGuard
     /** @var array<string, true|TranslationException> apenas decisões conclusivas */
     private array $decided = [];
 
-    public function __construct(private readonly CrmSchemaProbe $probe)
-    {
+    /** @var array<string, true|TranslationException> apenas decisões conclusivas, por tabela */
+    private array $decidedEngines = [];
+
+    public function __construct(
+        private readonly CrmSchemaProbe $probe,
+        private readonly CrmEngineProbe $engineProbe = new CapsuleEngineProbe(),
+    ) {
     }
 
     /** @throws TranslationException */
@@ -48,6 +55,54 @@ final class TranslationSchemaGuard
         if ($decision instanceof TranslationException) {
             throw $decision;
         }
+    }
+
+    /**
+     * Barreira de ENGINE, para o caminho de ESCRITA apenas — tudo-ou-nada e
+     * `lockForUpdate()` assumem InnoDB (MyISAM não tem transação nem lock de
+     * linha real). Chamar SÓ antes de `applyBatch()`/`applyArticleBatch()`/
+     * `applyCategoryBatch()`, nunca nos caminhos de leitura.
+     *
+     * `$table` é sempre uma constante de `TranslationSchema` — nunca input do
+     * chamador MCP. Tabela ausente da metadata (probe já falhou antes desta
+     * checagem no fluxo normal) é tratada como engine incompatível, não como
+     * `translation_unavailable` — essa distinção já foi feita por `assert()`.
+     *
+     * @throws TranslationException `unsupported_engine` ou `downstream`
+     */
+    public function assertInnoDb(string $table): void
+    {
+        if (isset($this->decidedEngines[$table])) {
+            $decision = $this->decidedEngines[$table];
+            if ($decision instanceof TranslationException) {
+                throw $decision;
+            }
+
+            return;
+        }
+
+        $decision = $this->decideEngine($table);
+
+        $this->decidedEngines[$table] = $decision;
+
+        if ($decision instanceof TranslationException) {
+            throw $decision;
+        }
+    }
+
+    /**
+     * @return true|TranslationException conclusão memorizável
+     * @throws TranslationException `downstream` quando a metadata é indisponível
+     */
+    private function decideEngine(string $table): bool|TranslationException
+    {
+        $fact = $this->engineProbe->isInnoDb($table);
+
+        if ($fact->isUnknown()) {
+            throw TranslationException::downstream((string) $fact->correlationId);
+        }
+
+        return $fact->isPresent() ? true : TranslationException::unsupportedEngine($table);
     }
 
     /**

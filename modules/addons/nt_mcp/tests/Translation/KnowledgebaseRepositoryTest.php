@@ -521,6 +521,160 @@ final class KnowledgebaseRepositoryTest extends TestCase
     }
 
     // -----------------------------------------------------------
+    // InnoDB guard (write path only)
+    // -----------------------------------------------------------
+
+    #[Test]
+    public function apply_article_batch_fails_closed_when_table_is_not_innodb(): void
+    {
+        $this->seedArticles();
+        FakeCapsule::withTableEngine('tblknowledgebase', 'MyISAM');
+        $repo = $this->repo();
+
+        $result = $repo->applyArticleBatch(
+            [['id' => 3, 'title' => 'Password reset', 'article' => 'Instructions', 'expected_hash' => 'absent']],
+            $this->backup(),
+            false,
+            'english'
+        );
+
+        $this->assertSame('unsupported_engine', $result['error_code']);
+        $this->assertSame([], FakeCapsule::$mutations);
+    }
+
+    #[Test]
+    public function apply_category_batch_fails_closed_when_table_is_not_innodb(): void
+    {
+        $this->seedCategories();
+        FakeCapsule::withTableEngine('tblknowledgebasecats', 'MyISAM');
+        $repo = $this->repo();
+
+        $result = $repo->applyCategoryBatch(
+            [['id' => 3, 'name' => 'Billing', 'description' => 'Billing category', 'expected_hash' => 'absent']],
+            $this->backup(),
+            false,
+            'english'
+        );
+
+        $this->assertSame('unsupported_engine', $result['error_code']);
+        $this->assertSame([], FakeCapsule::$mutations);
+    }
+
+    // -----------------------------------------------------------
+    // Dry-run nunca segura lock de linha
+    // -----------------------------------------------------------
+
+    #[Test]
+    public function apply_article_batch_dry_run_never_calls_lock_for_update(): void
+    {
+        $this->seedArticles();
+        $repo = $this->repo();
+
+        $repo->applyArticleBatch(
+            [['id' => 3, 'title' => 'Password reset', 'article' => 'Instructions', 'expected_hash' => 'absent']],
+            $this->backup(),
+            true,
+            'english'
+        );
+
+        $this->assertNotContains('lockForUpdate()', FakeCapsule::$calls);
+    }
+
+    #[Test]
+    public function apply_article_batch_confirm_calls_lock_for_update(): void
+    {
+        $this->seedArticles();
+        $repo = $this->repo();
+
+        $repo->applyArticleBatch(
+            [['id' => 3, 'title' => 'Password reset', 'article' => 'Instructions', 'expected_hash' => 'absent']],
+            $this->backup(),
+            false,
+            'english'
+        );
+
+        $this->assertContains('lockForUpdate()', FakeCapsule::$calls);
+    }
+
+    #[Test]
+    public function apply_category_batch_dry_run_never_calls_lock_for_update(): void
+    {
+        $this->seedCategories();
+        $repo = $this->repo();
+
+        $repo->applyCategoryBatch(
+            [['id' => 3, 'name' => 'Billing', 'description' => 'Billing category', 'expected_hash' => 'absent']],
+            $this->backup(),
+            true,
+            'english'
+        );
+
+        $this->assertNotContains('lockForUpdate()', FakeCapsule::$calls);
+    }
+
+    // -----------------------------------------------------------
+    // Deterministic duplicates: menor id vence, list/get e apply concordam
+    // -----------------------------------------------------------
+
+    #[Test]
+    public function category_list_picks_the_lowest_id_target_when_duplicates_exist(): void
+    {
+        FakeCapsule::withRows('tblknowledgebasecats', [
+            ['id' => 1, 'parentid' => 0, 'name' => 'Geral', 'description' => 'Categoria geral', 'hidden' => '0', 'catid' => 0, 'language' => ''],
+            ['id' => 20, 'parentid' => 0, 'name' => 'General (newer)', 'description' => 'x', 'hidden' => '0', 'catid' => 1, 'language' => 'english'],
+            ['id' => 10, 'parentid' => 0, 'name' => 'General (older)', 'description' => 'y', 'hidden' => '0', 'catid' => 1, 'language' => 'english'],
+        ]);
+        $repo = $this->repo();
+
+        $result = $repo->listCategories(false, 25, 0, 'english');
+        $byId = [];
+        foreach ($result['items'] as $item) {
+            $byId[$item['id']] = $item;
+        }
+        $this->assertSame('General (older)', $byId[1]['target']['name']);
+    }
+
+    #[Test]
+    public function get_articles_picks_the_lowest_id_target_when_duplicates_exist(): void
+    {
+        FakeCapsule::withRows('tblknowledgebase', [
+            ['id' => 1, 'title' => 'Como configurar', 'article' => '<p>Passo a passo</p>', 'views' => 100, 'votes' => 10, 'useful' => 8, 'private' => '0', 'order' => 5, 'parentid' => 0, 'language' => ''],
+            ['id' => 30, 'title' => 'How to configure (newer)', 'article' => 'x', 'views' => 0, 'votes' => 0, 'useful' => 0, 'private' => '0', 'order' => 5, 'parentid' => 1, 'language' => 'english'],
+            ['id' => 15, 'title' => 'How to configure (older)', 'article' => 'y', 'views' => 0, 'votes' => 0, 'useful' => 0, 'private' => '0', 'order' => 5, 'parentid' => 1, 'language' => 'english'],
+        ]);
+        $repo = $this->repo();
+
+        $result = $repo->getArticles([1], 'english');
+
+        $this->assertSame('How to configure (older)', $result['items'][0]['target']['title']);
+    }
+
+    // -----------------------------------------------------------
+    // Paginacao em SQL para listArticles
+    // -----------------------------------------------------------
+
+    #[Test]
+    public function list_articles_paginates_and_reports_total_and_has_more(): void
+    {
+        FakeCapsule::withRows('tblknowledgebase', [
+            ['id' => 1, 'title' => 'A', 'article' => 'a', 'views' => 0, 'votes' => 0, 'useful' => 0, 'private' => '0', 'order' => 1, 'parentid' => 0, 'language' => ''],
+            ['id' => 2, 'title' => 'B', 'article' => 'b', 'views' => 0, 'votes' => 0, 'useful' => 0, 'private' => '0', 'order' => 1, 'parentid' => 0, 'language' => ''],
+            ['id' => 3, 'title' => 'C', 'article' => 'c', 'views' => 0, 'votes' => 0, 'useful' => 0, 'private' => '0', 'order' => 1, 'parentid' => 0, 'language' => ''],
+        ]);
+        $repo = $this->repo();
+
+        $page1 = $repo->listArticles(false, 2, 0, 'english');
+        $this->assertSame([1, 2], array_column($page1['items'], 'id'));
+        $this->assertSame(3, $page1['total']);
+        $this->assertTrue($page1['has_more']);
+
+        $page2 = $repo->listArticles(false, 2, 2, 'english');
+        $this->assertSame([3], array_column($page2['items'], 'id'));
+        $this->assertSame(3, $page2['total']);
+        $this->assertFalse($page2['has_more']);
+    }
+
+    // -----------------------------------------------------------
     // Collection (Illuminate\Support\Collection)
     // -----------------------------------------------------------
 

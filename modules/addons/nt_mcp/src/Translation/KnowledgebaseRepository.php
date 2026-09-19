@@ -78,28 +78,71 @@ final class KnowledgebaseRepository
         $limit = max(1, min(100, $limit));
         $offset = max(0, $offset);
 
-        $originals = Capsule::table(self::TABLE_ARTICLES)
+        $targetsByParent = $this->articleTargetsByParentId($targetLanguage);
+
+        $originalsQuery = fn(): mixed => Capsule::table(self::TABLE_ARTICLES)
             ->where('parentid', 0)
-            ->where('language', self::SOURCE_LANGUAGE)
-            ->select(['id', 'title', 'article', 'private'])
+            ->where('language', self::SOURCE_LANGUAGE);
+
+        if (!$onlyMissing) {
+            // Caminho comum: `has_target` não filtra nada, então paginação e
+            // contagem acontecem inteiramente em SQL — nunca lê `article`
+            // (corpo completo), só o excerto truncado via `LEFT()`.
+            $total = $originalsQuery()->count();
+
+            $rows = $originalsQuery()
+                ->select(['id', 'title', 'private'])
+                ->selectRaw('LEFT(article, ' . self::LIST_EXCERPT . ') as excerpt')
+                ->orderBy('id')
+                ->skip($offset)
+                ->take($limit)
+                ->get();
+
+            $items = [];
+            foreach ($rows as $row) {
+                $id = self::intOf($row, 'id');
+                $items[] = [
+                    'id' => $id,
+                    'title' => self::text($row, 'title'),
+                    'excerpt' => self::text($row, 'excerpt'),
+                    'has_target' => isset($targetsByParent[$id]),
+                    'private' => self::text($row, 'private'),
+                ];
+            }
+
+            return [
+                'result' => 'success',
+                'target_language' => $targetLanguage,
+                'items' => $items,
+                'total' => $total,
+                'limit' => $limit,
+                'offset' => $offset,
+                'has_more' => ($offset + count($items)) < $total,
+            ];
+        }
+
+        // `only_missing` depende de um cruzamento com a tabela de variantes —
+        // ainda lê todos os originais, mas nunca o corpo completo (`article`
+        // vem truncado via `LEFT()`), e pagina em PHP só sobre o conjunto já
+        // filtrado.
+        $rows = $originalsQuery()
+            ->select(['id', 'title', 'private'])
+            ->selectRaw('LEFT(article, ' . self::LIST_EXCERPT . ') as excerpt')
             ->orderBy('id')
             ->get();
 
-        $targetsByParent = $this->articleTargetsByParentId($targetLanguage);
-
         $items = [];
-        foreach ($originals as $row) {
+        foreach ($rows as $row) {
             $id = self::intOf($row, 'id');
-            $hasTarget = isset($targetsByParent[$id]);
-            if ($onlyMissing && $hasTarget) {
+            if (isset($targetsByParent[$id])) {
                 continue;
             }
 
             $items[] = [
                 'id' => $id,
                 'title' => self::text($row, 'title'),
-                'excerpt' => mb_substr(self::text($row, 'article'), 0, self::LIST_EXCERPT),
-                'has_target' => $hasTarget,
+                'excerpt' => self::text($row, 'excerpt'),
+                'has_target' => false,
                 'private' => self::text($row, 'private'),
             ];
         }
@@ -209,6 +252,7 @@ final class KnowledgebaseRepository
 
         try {
             $this->guard->assert(TranslationSchema::CAPABILITY_KB_ARTICLE);
+            $this->guard->assertInnoDb(self::TABLE_ARTICLES);
         } catch (TranslationException $e) {
             return $e->toPublicArray();
         }
@@ -266,13 +310,16 @@ final class KnowledgebaseRepository
             return ['result' => 'error', 'error_code' => 'missing_id', 'message' => 'id é obrigatório em cada item.'];
         }
 
-        $original = Capsule::table(self::TABLE_ARTICLES)
+        $originalQuery = Capsule::table(self::TABLE_ARTICLES)
             ->where('id', $id)
             ->where('parentid', 0)
             ->where('language', self::SOURCE_LANGUAGE)
-            ->select(['id', 'title', 'article', 'private', 'order'])
-            ->lockForUpdate()
-            ->first();
+            ->select(['id', 'title', 'article', 'private', 'order']);
+        // Dry-run nunca segura lock de linha — só leitura, sem tudo-ou-nada real.
+        if (!$dryRun) {
+            $originalQuery = $originalQuery->lockForUpdate();
+        }
+        $original = $originalQuery->first();
 
         if ($original === null) {
             return [
@@ -283,12 +330,15 @@ final class KnowledgebaseRepository
             ];
         }
 
-        $target = Capsule::table(self::TABLE_ARTICLES)
+        $targetQuery = Capsule::table(self::TABLE_ARTICLES)
             ->where('parentid', $id)
             ->where('language', $targetLanguage)
             ->select(['id', 'title', 'article'])
-            ->lockForUpdate()
-            ->first();
+            ->orderBy('id');
+        if (!$dryRun) {
+            $targetQuery = $targetQuery->lockForUpdate();
+        }
+        $target = $targetQuery->first();
 
         $currentHash = $this->articleHashOf($target);
         if ($expectedHash !== $currentHash) {
@@ -391,6 +441,7 @@ final class KnowledgebaseRepository
             ->where('parentid', $id)
             ->where('language', $targetLanguage)
             ->select(['id', 'title', 'article'])
+            ->orderBy('id')
             ->first();
     }
 
@@ -482,6 +533,7 @@ final class KnowledgebaseRepository
 
         try {
             $this->guard->assert(TranslationSchema::CAPABILITY_KB_CATEGORY);
+            $this->guard->assertInnoDb(self::TABLE_CATS);
         } catch (TranslationException $e) {
             return $e->toPublicArray();
         }
@@ -539,13 +591,16 @@ final class KnowledgebaseRepository
             return ['result' => 'error', 'error_code' => 'missing_id', 'message' => 'id é obrigatório em cada item.'];
         }
 
-        $original = Capsule::table(self::TABLE_CATS)
+        $originalQuery = Capsule::table(self::TABLE_CATS)
             ->where('id', $id)
             ->where('catid', 0)
             ->where('language', self::SOURCE_LANGUAGE)
-            ->select(['id', 'parentid', 'name', 'description', 'hidden'])
-            ->lockForUpdate()
-            ->first();
+            ->select(['id', 'parentid', 'name', 'description', 'hidden']);
+        // Dry-run nunca segura lock de linha — só leitura, sem tudo-ou-nada real.
+        if (!$dryRun) {
+            $originalQuery = $originalQuery->lockForUpdate();
+        }
+        $original = $originalQuery->first();
 
         if ($original === null) {
             return [
@@ -556,12 +611,15 @@ final class KnowledgebaseRepository
             ];
         }
 
-        $target = Capsule::table(self::TABLE_CATS)
+        $targetQuery = Capsule::table(self::TABLE_CATS)
             ->where('catid', $id)
             ->where('language', $targetLanguage)
             ->select(['id', 'name', 'description'])
-            ->lockForUpdate()
-            ->first();
+            ->orderBy('id');
+        if (!$dryRun) {
+            $targetQuery = $targetQuery->lockForUpdate();
+        }
+        $target = $targetQuery->first();
 
         $currentHash = $this->categoryHashOf($target);
         if ($expectedHash !== $currentHash) {
@@ -646,17 +704,24 @@ final class KnowledgebaseRepository
         return ['id' => $id, 'action' => 'update', 'target_id' => self::intOf($target, 'id')];
     }
 
-    /** @return array<int, object> catid => row */
+    /** @return array<int, object> catid => row (a de menor id, quando houver duplicata) */
     private function categoryTargetsByCatId(string $targetLanguage): array
     {
         $rows = Capsule::table(self::TABLE_CATS)
             ->where('language', $targetLanguage)
-            ->select(['catid', 'name', 'description'])
+            ->select(['id', 'catid', 'name', 'description'])
+            ->orderBy('id')
             ->get();
 
         $byCat = [];
         foreach ($rows as $row) {
-            $byCat[self::intOf($row, 'catid')] = $row;
+            $catId = self::intOf($row, 'catid');
+            // Mantém a primeira (menor id, já garantido pelo `orderBy` acima) —
+            // determinístico em vez de depender da ordem natural do driver.
+            if (isset($byCat[$catId])) {
+                continue;
+            }
+            $byCat[$catId] = $row;
         }
 
         return $byCat;

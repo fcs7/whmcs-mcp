@@ -45,6 +45,18 @@ final class TranslationException extends \RuntimeException
         );
     }
 
+    /** Tabela existe, mas não usa o storage engine InnoDB (lock/transação indisponível). */
+    public static function unsupportedEngine(string $table): self
+    {
+        return new self(
+            sprintf(
+                'Translation write for table "%s" requires the InnoDB storage engine.',
+                Diagnostics::safeToken($table)
+            ),
+            'unsupported_engine'
+        );
+    }
+
     /** Falha inesperada de metadata (driver fora do ar). */
     public static function downstream(string $correlationId): self
     {

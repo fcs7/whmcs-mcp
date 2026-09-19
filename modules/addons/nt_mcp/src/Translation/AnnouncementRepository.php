@@ -82,20 +82,64 @@ final class AnnouncementRepository
         $limit = max(1, min(100, $limit));
         $offset = max(0, $offset);
 
-        $originals = Capsule::table(self::TABLE)
+        $targetsByParent = $this->targetsByParentId($targetLanguage);
+
+        $originalsQuery = fn(): mixed => Capsule::table(self::TABLE)
             ->where('parentid', self::SOURCE_PARENT_ID)
-            ->where('language', self::SOURCE_LANGUAGE)
-            ->select(['id', 'title', 'announcement', 'date', 'published'])
+            ->where('language', self::SOURCE_LANGUAGE);
+
+        if (!$onlyMissing) {
+            // Caminho comum: `has_target` não filtra nada, então paginação e
+            // contagem acontecem inteiramente em SQL — nunca lê `announcement`
+            // (corpo completo), só o excerto truncado via `LEFT()`.
+            $total = $originalsQuery()->count();
+
+            $rows = $originalsQuery()
+                ->select(['id', 'title', 'date', 'published'])
+                ->selectRaw('LEFT(announcement, ' . self::LIST_EXCERPT . ') as excerpt')
+                ->orderBy('id')
+                ->skip($offset)
+                ->take($limit)
+                ->get();
+
+            $items = [];
+            foreach ($rows as $row) {
+                $id = self::intOf($row, 'id');
+                $items[] = [
+                    'id' => $id,
+                    'title' => self::text($row, 'title'),
+                    'date' => self::text($row, 'date'),
+                    'published' => self::text($row, 'published'),
+                    'excerpt' => self::text($row, 'excerpt'),
+                    'has_target' => isset($targetsByParent[$id]),
+                ];
+            }
+
+            return [
+                'result' => 'success',
+                'target_language' => $targetLanguage,
+                'items' => $items,
+                'total' => $total,
+                'limit' => $limit,
+                'offset' => $offset,
+                'has_more' => ($offset + count($items)) < $total,
+            ];
+        }
+
+        // `only_missing` depende de um cruzamento com a tabela de variantes —
+        // ainda lê todos os originais, mas nunca o corpo completo
+        // (`announcement` vem truncado via `LEFT()`), e pagina em PHP só sobre
+        // o conjunto já filtrado.
+        $rows = $originalsQuery()
+            ->select(['id', 'title', 'date', 'published'])
+            ->selectRaw('LEFT(announcement, ' . self::LIST_EXCERPT . ') as excerpt')
             ->orderBy('id')
             ->get();
 
-        $targetsByParent = $this->targetsByParentId($targetLanguage);
-
         $items = [];
-        foreach ($originals as $row) {
+        foreach ($rows as $row) {
             $id = self::intOf($row, 'id');
-            $hasTarget = isset($targetsByParent[$id]);
-            if ($onlyMissing && $hasTarget) {
+            if (isset($targetsByParent[$id])) {
                 continue;
             }
 
@@ -104,8 +148,8 @@ final class AnnouncementRepository
                 'title' => self::text($row, 'title'),
                 'date' => self::text($row, 'date'),
                 'published' => self::text($row, 'published'),
-                'excerpt' => mb_substr(self::text($row, 'announcement'), 0, self::LIST_EXCERPT),
-                'has_target' => $hasTarget,
+                'excerpt' => self::text($row, 'excerpt'),
+                'has_target' => false,
             ];
         }
 
@@ -220,6 +264,7 @@ final class AnnouncementRepository
 
         try {
             $this->guard->assert(TranslationSchema::CAPABILITY_ANNOUNCEMENT);
+            $this->guard->assertInnoDb(self::TABLE);
         } catch (TranslationException $e) {
             return $e->toPublicArray();
         }
@@ -277,13 +322,16 @@ final class AnnouncementRepository
             return ['result' => 'error', 'error_code' => 'missing_id', 'message' => 'id é obrigatório em cada item.'];
         }
 
-        $original = Capsule::table(self::TABLE)
+        $originalQuery = Capsule::table(self::TABLE)
             ->where('id', $id)
             ->where('parentid', self::SOURCE_PARENT_ID)
             ->where('language', self::SOURCE_LANGUAGE)
-            ->select(['id', 'title', 'announcement', 'date', 'published'])
-            ->lockForUpdate()
-            ->first();
+            ->select(['id', 'title', 'announcement', 'date', 'published']);
+        // Dry-run nunca segura lock de linha — só leitura, sem tudo-ou-nada real.
+        if (!$dryRun) {
+            $originalQuery = $originalQuery->lockForUpdate();
+        }
+        $original = $originalQuery->first();
 
         if ($original === null) {
             return [
@@ -294,12 +342,15 @@ final class AnnouncementRepository
             ];
         }
 
-        $target = Capsule::table(self::TABLE)
+        $targetQuery = Capsule::table(self::TABLE)
             ->where('parentid', $id)
             ->where('language', $targetLanguage)
             ->select(['id', 'title', 'announcement'])
-            ->lockForUpdate()
-            ->first();
+            ->orderBy('id');
+        if (!$dryRun) {
+            $targetQuery = $targetQuery->lockForUpdate();
+        }
+        $target = $targetQuery->first();
 
         $currentHash = $this->hashOf($target);
         if ($expectedHash !== $currentHash) {
@@ -403,6 +454,7 @@ final class AnnouncementRepository
             ->where('parentid', $id)
             ->where('language', $targetLanguage)
             ->select(['id', 'title', 'announcement'])
+            ->orderBy('id')
             ->first();
     }
 

@@ -305,6 +305,108 @@ final class AnnouncementRepositoryTest extends TestCase
         }
     }
 
+    // -----------------------------------------------------------
+    // InnoDB guard (write path only)
+    // -----------------------------------------------------------
+
+    #[Test]
+    public function apply_batch_fails_closed_when_table_is_not_innodb(): void
+    {
+        $this->seedRows();
+        FakeCapsule::withTableEngine('tblannouncements', 'MyISAM');
+        $repo = $this->repo();
+
+        $result = $repo->applyBatch(
+            [['id' => 3, 'title' => 'News', 'announcement' => 'New feature', 'expected_hash' => 'absent']],
+            $this->backup(),
+            false,
+            'english'
+        );
+
+        $this->assertSame('unsupported_engine', $result['error_code']);
+        $this->assertSame([], FakeCapsule::$mutations);
+    }
+
+    // -----------------------------------------------------------
+    // Dry-run nunca segura lock de linha
+    // -----------------------------------------------------------
+
+    #[Test]
+    public function apply_batch_dry_run_never_calls_lock_for_update(): void
+    {
+        $this->seedRows();
+        $repo = $this->repo();
+
+        $repo->applyBatch(
+            [['id' => 3, 'title' => 'News', 'announcement' => 'New feature', 'expected_hash' => 'absent']],
+            $this->backup(),
+            true,
+            'english'
+        );
+
+        $this->assertNotContains('lockForUpdate()', FakeCapsule::$calls);
+    }
+
+    #[Test]
+    public function apply_batch_confirm_calls_lock_for_update(): void
+    {
+        $this->seedRows();
+        $repo = $this->repo();
+
+        $repo->applyBatch(
+            [['id' => 3, 'title' => 'News', 'announcement' => 'New feature', 'expected_hash' => 'absent']],
+            $this->backup(),
+            false,
+            'english'
+        );
+
+        $this->assertContains('lockForUpdate()', FakeCapsule::$calls);
+    }
+
+    // -----------------------------------------------------------
+    // Deterministic duplicates: menor id vence
+    // -----------------------------------------------------------
+
+    #[Test]
+    public function get_announcements_picks_the_lowest_id_target_when_duplicates_exist(): void
+    {
+        FakeCapsule::withRows('tblannouncements', [
+            ['id' => 1, 'date' => '2026-01-01', 'title' => 'Manutencao', 'announcement' => '<p>Manutencao programada</p>', 'published' => '1', 'parentid' => 0, 'language' => ''],
+            ['id' => 30, 'date' => '2026-01-02', 'title' => 'Maintenance (newer)', 'announcement' => 'x', 'published' => '1', 'parentid' => 1, 'language' => 'english'],
+            ['id' => 15, 'date' => '2026-01-02', 'title' => 'Maintenance (older)', 'announcement' => 'y', 'published' => '1', 'parentid' => 1, 'language' => 'english'],
+        ]);
+        $repo = $this->repo();
+
+        $result = $repo->getAnnouncements([1], 'english');
+
+        $this->assertSame('Maintenance (older)', $result['items'][0]['target']['title']);
+    }
+
+    // -----------------------------------------------------------
+    // Paginacao em SQL para listAnnouncements
+    // -----------------------------------------------------------
+
+    #[Test]
+    public function list_announcements_paginates_and_reports_total_and_has_more(): void
+    {
+        FakeCapsule::withRows('tblannouncements', [
+            ['id' => 1, 'date' => '2026-01-01', 'title' => 'A', 'announcement' => 'a', 'published' => '1', 'parentid' => 0, 'language' => ''],
+            ['id' => 2, 'date' => '2026-01-02', 'title' => 'B', 'announcement' => 'b', 'published' => '1', 'parentid' => 0, 'language' => ''],
+            ['id' => 3, 'date' => '2026-01-03', 'title' => 'C', 'announcement' => 'c', 'published' => '1', 'parentid' => 0, 'language' => ''],
+        ]);
+        $repo = $this->repo();
+
+        $page1 = $repo->listAnnouncements(false, 2, 0, 'english');
+        $this->assertSame([1, 2], array_column($page1['items'], 'id'));
+        $this->assertSame(3, $page1['total']);
+        $this->assertTrue($page1['has_more']);
+
+        $page2 = $repo->listAnnouncements(false, 2, 2, 'english');
+        $this->assertSame([3], array_column($page2['items'], 'id'));
+        $this->assertSame(3, $page2['total']);
+        $this->assertFalse($page2['has_more']);
+    }
+
     #[Test]
     public function collection_mode_works_for_listing_and_get(): void
     {

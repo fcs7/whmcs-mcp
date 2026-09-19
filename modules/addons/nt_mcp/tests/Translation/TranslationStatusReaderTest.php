@@ -97,6 +97,23 @@ final class TranslationStatusReaderTest extends TestCase
     }
 
     #[Test]
+    public function content_variant_counts_reports_unavailable_when_table_exists_but_language_column_is_missing(): void
+    {
+        FakeCapsule::withRows('tblannouncements', [
+            ['language' => ''],
+            ['language' => 'english'],
+        ]);
+        // Tabela presente na metadata, mas SEM a coluna `language` — contrato
+        // mudou (ou nunca teve essa coluna); não pode ser lida direto.
+        $probe = new FakeCrmSchemaProbe(['tblannouncements' => ['id']]);
+        $reader = new TranslationStatusReader(static fn(): string => 'unknown', $probe);
+
+        $counts = $reader->contentVariantCounts();
+
+        $this->assertSame('unavailable', $counts['announcements']);
+    }
+
+    #[Test]
     public function content_variant_counts_groups_each_table_independently(): void
     {
         FakeCapsule::withRows('tblannouncements', [['language' => '']]);

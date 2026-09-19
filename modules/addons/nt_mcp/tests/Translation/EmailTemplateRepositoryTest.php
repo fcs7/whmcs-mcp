@@ -500,6 +500,158 @@ final class EmailTemplateRepositoryTest extends TestCase
     // Collection (Illuminate\Support\Collection) no lugar de array
     // -----------------------------------------------------------
 
+    // -----------------------------------------------------------
+    // InnoDB guard (write path only)
+    // -----------------------------------------------------------
+
+    #[Test]
+    public function apply_batch_fails_closed_when_table_is_not_innodb(): void
+    {
+        $this->seedRows();
+        FakeCapsule::withTableEngine('tblemailtemplates', 'MyISAM');
+        $repo = $this->repo();
+
+        $result = $repo->applyBatch(
+            [['id' => 4, 'subject' => 'Your invoice', 'message' => 'Your invoice arrived', 'expected_hash' => 'absent']],
+            $this->backup(),
+            false,
+            'english'
+        );
+
+        $this->assertSame('unsupported_engine', $result['error_code']);
+        $this->assertSame([], FakeCapsule::$mutations);
+    }
+
+    #[Test]
+    public function apply_batch_dry_run_still_passes_when_table_is_innodb(): void
+    {
+        $this->seedRows();
+        FakeCapsule::withTableEngine('tblemailtemplates', 'InnoDB');
+        $repo = $this->repo();
+
+        $result = $repo->applyBatch(
+            [['id' => 4, 'subject' => 'Your invoice', 'message' => 'Your invoice arrived', 'expected_hash' => 'absent']],
+            $this->backup(),
+            true,
+            'english'
+        );
+
+        $this->assertSame('success', $result['result']);
+    }
+
+    #[Test]
+    public function apply_batch_still_detects_innodb_when_information_schema_only_reports_uppercase_engine(): void
+    {
+        // Reproduz o MySQL 8 real: a coluna de `information_schema.tables`
+        // volta como `ENGINE` (maiúsculo) quando não há alias explícito —
+        // `CapsuleEngineProbe::engineOf()` precisa cair no fallback, senão
+        // toda escrita seria rejeitada como `unsupported_engine` em produção.
+        $this->seedRows();
+        FakeCapsule::withTableEngine('tblemailtemplates', 'InnoDB');
+        FakeCapsule::$informationSchemaEngineKey = 'ENGINE';
+        $repo = $this->repo();
+
+        $result = $repo->applyBatch(
+            [['id' => 4, 'subject' => 'Your invoice', 'message' => 'Your invoice arrived', 'expected_hash' => 'absent']],
+            $this->backup(),
+            false,
+            'english'
+        );
+
+        $this->assertSame('success', $result['result']);
+    }
+
+    // -----------------------------------------------------------
+    // Dry-run nunca segura lock de linha
+    // -----------------------------------------------------------
+
+    #[Test]
+    public function apply_batch_dry_run_never_calls_lock_for_update(): void
+    {
+        $this->seedRows();
+        $repo = $this->repo();
+
+        $repo->applyBatch(
+            [['id' => 4, 'subject' => 'Your invoice', 'message' => 'Your invoice arrived', 'expected_hash' => 'absent']],
+            $this->backup(),
+            true,
+            'english'
+        );
+
+        $this->assertNotContains('lockForUpdate()', FakeCapsule::$calls);
+    }
+
+    #[Test]
+    public function apply_batch_confirm_calls_lock_for_update(): void
+    {
+        $this->seedRows();
+        $repo = $this->repo();
+
+        $repo->applyBatch(
+            [['id' => 4, 'subject' => 'Your invoice', 'message' => 'Your invoice arrived', 'expected_hash' => 'absent']],
+            $this->backup(),
+            false,
+            'english'
+        );
+
+        $this->assertContains('lockForUpdate()', FakeCapsule::$calls);
+    }
+
+    // -----------------------------------------------------------
+    // Sibling lookup também respeita o `type` do master
+    // -----------------------------------------------------------
+
+    #[Test]
+    public function variants_and_get_pairs_only_match_the_siblings_with_the_same_type(): void
+    {
+        FakeCapsule::withRows('tblemailtemplates', [
+            $this->common(['id' => 1, 'type' => 'general', 'name' => 'Reminder', 'subject' => 'Lembrete', 'message' => 'Corpo geral', 'language' => '']),
+            $this->common(['id' => 2, 'type' => 'client', 'name' => 'Reminder', 'subject' => 'Lembrete cliente', 'message' => 'Corpo cliente', 'language' => '']),
+            // Sibling EN só do tipo 'client' — não pode ser confundido com o master 'general'.
+            $this->common(['id' => 3, 'type' => 'client', 'name' => 'Reminder', 'subject' => 'Reminder client', 'message' => 'Client body', 'language' => 'english']),
+        ]);
+        $repo = $this->repo();
+
+        $result = $repo->listMasters(null, false, 25, 0, 'english');
+        $byId = [];
+        foreach ($result['items'] as $item) {
+            $byId[$item['id']] = $item;
+        }
+        $this->assertFalse($byId[1]['has_target'], 'master general nao deve herdar o sibling do type client');
+        $this->assertTrue($byId[2]['has_target']);
+
+        $pairs = $repo->getPairs([1, 2], 'english');
+        $this->assertNull($pairs['pairs'][0]['target']);
+        $this->assertSame('Reminder client', $pairs['pairs'][1]['target']['subject']);
+    }
+
+    #[Test]
+    public function apply_batch_insert_matches_target_by_type_and_name(): void
+    {
+        FakeCapsule::withRows('tblemailtemplates', [
+            $this->common(['id' => 1, 'type' => 'general', 'name' => 'Reminder', 'subject' => 'Lembrete', 'message' => 'Corpo geral', 'language' => '']),
+            $this->common(['id' => 2, 'type' => 'client', 'name' => 'Reminder', 'subject' => 'Lembrete cliente', 'message' => 'Corpo cliente', 'language' => '']),
+        ]);
+        $repo = $this->repo();
+
+        $result = $repo->applyBatch(
+            [['id' => 1, 'subject' => 'Reminder', 'message' => 'General body', 'expected_hash' => 'absent']],
+            $this->backup(),
+            false,
+            'english'
+        );
+
+        $this->assertSame('success', $result['result']);
+        $insert = null;
+        foreach (FakeCapsule::$mutations as $mutation) {
+            if ($mutation['verb'] === 'INSERT') {
+                $insert = $mutation;
+            }
+        }
+        $this->assertNotNull($insert);
+        $this->assertSame('general', $insert['values']['type']);
+    }
+
     #[Test]
     public function variants_lookup_works_when_get_returns_a_traversable_collection(): void
     {

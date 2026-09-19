@@ -883,6 +883,126 @@ final class DynamicTranslationRepositoryTest extends TestCase
         $this->assertSame([], FakeCapsule::$mutations, 'rollback deve reverter tambem o item valido anterior');
     }
 
+    // -----------------------------------------------------------
+    // custom_field: adminonly NULL também é excluido (não só '')
+    // -----------------------------------------------------------
+
+    #[Test]
+    public function custom_field_list_includes_a_translatable_field_whose_adminonly_column_is_null(): void
+    {
+        // `adminonly` NULL (nunca setado) é "não admin-only" — igual a ''.
+        // Antes do fix, `where('adminonly', '')` sozinho não bate com NULL no
+        // MySQL real (`NULL = ''` nunca é verdadeiro), e um campo traduzível de
+        // verdade sumia da listagem só por a coluna estar NULL em vez de ''.
+        FakeCapsule::withRows('tblcustomfields', [
+            ['id' => 1, 'type' => 'product', 'relid' => 5, 'fieldname' => 'CPF', 'description' => 'Documento', 'adminonly' => ''],
+            ['id' => 2, 'type' => 'product', 'relid' => 5, 'fieldname' => 'RG', 'description' => 'Documento', 'adminonly' => null],
+            // Verdadeiramente admin-only continua excluído.
+            ['id' => 3, 'type' => 'client', 'relid' => 0, 'fieldname' => 'Nota interna', 'description' => 'Somente admin', 'adminonly' => 'on'],
+        ]);
+        $repo = $this->repo();
+
+        $result = $repo->listEntities(DynamicTranslationMap::KIND_CUSTOM_FIELD, null, false, 50, 0, 'english');
+
+        $this->assertSame([1, 2], array_column($result['items'], 'id'));
+    }
+
+    // -----------------------------------------------------------
+    // InnoDB guard (write path only)
+    // -----------------------------------------------------------
+
+    #[Test]
+    public function apply_batch_fails_closed_when_table_is_not_innodb(): void
+    {
+        $this->seedProducts();
+        FakeCapsule::withTableEngine('tbldynamic_translations', 'MyISAM');
+        $repo = $this->repo();
+
+        $result = $repo->applyBatch(
+            DynamicTranslationMap::KIND_PRODUCT,
+            [['id' => 1, 'field' => 'name', 'text' => 'Fiber 500', 'expected_hash' => 'absent']],
+            $this->backup(),
+            false,
+            'english'
+        );
+
+        $this->assertSame('unsupported_engine', $result['error_code']);
+        $this->assertSame([], FakeCapsule::$mutations);
+    }
+
+    // -----------------------------------------------------------
+    // Dry-run nunca segura lock de linha
+    // -----------------------------------------------------------
+
+    #[Test]
+    public function apply_batch_dry_run_never_calls_lock_for_update(): void
+    {
+        $this->seedProducts();
+        $repo = $this->repo();
+
+        $repo->applyBatch(
+            DynamicTranslationMap::KIND_PRODUCT,
+            [['id' => 1, 'field' => 'name', 'text' => 'Fiber 500', 'expected_hash' => 'absent']],
+            $this->backup(),
+            true,
+            'english'
+        );
+
+        $this->assertNotContains('lockForUpdate()', FakeCapsule::$calls);
+    }
+
+    #[Test]
+    public function apply_batch_confirm_calls_lock_for_update(): void
+    {
+        $this->seedProducts();
+        $repo = $this->repo();
+
+        $repo->applyBatch(
+            DynamicTranslationMap::KIND_PRODUCT,
+            [['id' => 1, 'field' => 'name', 'text' => 'Fiber 500', 'expected_hash' => 'absent']],
+            $this->backup(),
+            false,
+            'english'
+        );
+
+        $this->assertContains('lockForUpdate()', FakeCapsule::$calls);
+    }
+
+    // -----------------------------------------------------------
+    // Deterministic duplicates: menor id vence, list/get e apply concordam
+    // -----------------------------------------------------------
+
+    #[Test]
+    public function list_and_get_pick_the_lowest_id_translation_when_duplicates_exist(): void
+    {
+        $this->seedProducts();
+        FakeCapsule::withRows('tbldynamic_translations', [
+            ['id' => 20, 'related_type' => 'product.{id}.name', 'related_id' => 1, 'language' => 'english', 'translation' => 'Newer (higher id)', 'input_type' => 'text'],
+            ['id' => 10, 'related_type' => 'product.{id}.name', 'related_id' => 1, 'language' => 'english', 'translation' => 'Older (lower id)', 'input_type' => 'text'],
+        ]);
+        $repo = $this->repo();
+
+        $list = $repo->listEntities(DynamicTranslationMap::KIND_PRODUCT, 0, false, 25, 0, 'english');
+        $byId = [];
+        foreach ($list['items'] as $item) {
+            $byId[$item['id']] = $item;
+        }
+        $this->assertSame(hash('sha256', 'Older (lower id)'), $byId[1]['fields']['name']['target_hash']);
+
+        $get = $repo->getEntities(DynamicTranslationMap::KIND_PRODUCT, [1], 'english');
+        $this->assertSame('Older (lower id)', $get['items'][0]['fields']['name']['target']);
+
+        // O `expected_hash` do `set` tem que bater com o mesmo hash que list/get reportaram.
+        $apply = $repo->applyBatch(
+            DynamicTranslationMap::KIND_PRODUCT,
+            [['id' => 1, 'field' => 'name', 'text' => 'Fiber 500', 'expected_hash' => hash('sha256', 'Older (lower id)')]],
+            $this->backup(),
+            false,
+            'english'
+        );
+        $this->assertSame('success', $apply['result']);
+    }
+
     /**
      * @return array<string, array{0:string,1:string,2:string,3:array<string,mixed>}>
      */

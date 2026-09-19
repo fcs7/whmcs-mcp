@@ -65,7 +65,7 @@ class CrmClosedSurfaceTest extends TestCase
     /** Só as duas classes de infraestrutura falam com o Capsule. */
     public function test_only_the_capsule_adapters_touch_the_driver(): void
     {
-        $allowed = ['CapsuleQueryPort.php', 'CapsuleSchemaProbe.php'];
+        $allowed = ['CapsuleQueryPort.php', 'CapsuleSchemaProbe.php', 'CapsuleEngineProbe.php'];
 
         foreach (self::crmSources() as $file) {
             if (in_array(basename($file), $allowed, true)) {

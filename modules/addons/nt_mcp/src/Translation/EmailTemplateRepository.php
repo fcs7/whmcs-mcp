@@ -87,12 +87,12 @@ final class EmailTemplateRepository
         }
 
         $masters = $query->select(['id', 'type', 'name', 'subject'])->orderBy('id')->get();
-        $variantsByName = $this->siblingVariantsByName();
+        $variantsByTypeAndName = $this->siblingVariantsByTypeAndName();
 
         $items = [];
         foreach ($masters as $row) {
             $name = self::text($row, 'name');
-            $variants = $variantsByName[$name] ?? [];
+            $variants = $variantsByTypeAndName[self::text($row, 'type') . "\0" . $name] ?? [];
             $hasTarget = in_array($targetLanguage, $variants, true);
             if ($onlyMissing && $hasTarget) {
                 continue;
@@ -173,7 +173,7 @@ final class EmailTemplateRepository
                 continue;
             }
 
-            $target = $this->findTargetSibling(self::text($row, 'name'), $targetLanguage);
+            $target = $this->findTargetSibling(self::text($row, 'name'), self::text($row, 'type'), $targetLanguage);
             $pairs[] = [
                 'id' => $id,
                 'source' => [
@@ -224,21 +224,31 @@ final class EmailTemplateRepository
             return $e->toPublicArray();
         }
 
-        $rows = Capsule::table(self::TABLE)
+        $languageRows = Capsule::table(self::TABLE)
             ->where('type', '<>', 'admin')
-            ->select(['language', 'subject'])
+            ->select(['language'])
+            ->selectRaw('COUNT(*) as aggregate_count')
+            ->groupBy('language')
             ->get();
 
         $byLanguage = [];
-        $sampleSubjects = [];
-        foreach ($rows as $row) {
-            $language = self::text($row, 'language');
-            $byLanguage[$language] = ($byLanguage[$language] ?? 0) + 1;
-            if ($language === self::SOURCE_LANGUAGE && count($sampleSubjects) < 3) {
-                $sampleSubjects[] = self::text($row, 'subject');
-            }
+        foreach ($languageRows as $row) {
+            $byLanguage[self::text($row, 'language')] = (int) self::rawValue($row, 'aggregate_count');
         }
         ksort($byLanguage);
+
+        $sampleRows = Capsule::table(self::TABLE)
+            ->where('type', '<>', 'admin')
+            ->where('language', self::SOURCE_LANGUAGE)
+            ->select(['subject'])
+            ->orderBy('id')
+            ->take(3)
+            ->get();
+
+        $sampleSubjects = [];
+        foreach ($sampleRows as $row) {
+            $sampleSubjects[] = self::text($row, 'subject');
+        }
 
         return [
             'result' => 'success',
@@ -270,6 +280,7 @@ final class EmailTemplateRepository
 
         try {
             $this->guard->assert();
+            $this->guard->assertInnoDb(self::TABLE);
         } catch (TranslationException $e) {
             return $e->toPublicArray();
         }
@@ -327,13 +338,16 @@ final class EmailTemplateRepository
             return ['result' => 'error', 'error_code' => 'missing_id', 'message' => 'id é obrigatório em cada item.'];
         }
 
-        $master = Capsule::table(self::TABLE)
+        $masterQuery = Capsule::table(self::TABLE)
             ->where('id', $id)
             ->where('type', '<>', 'admin')
             ->where('language', self::SOURCE_LANGUAGE)
-            ->select(array_merge(['id', 'subject', 'message'], self::COPIED_COLUMNS))
-            ->lockForUpdate()
-            ->first();
+            ->select(array_merge(['id', 'subject', 'message'], self::COPIED_COLUMNS));
+        // Dry-run nunca segura lock de linha — só leitura, sem tudo-ou-nada real.
+        if (!$dryRun) {
+            $masterQuery = $masterQuery->lockForUpdate();
+        }
+        $master = $masterQuery->first();
 
         if ($master === null) {
             return [
@@ -344,13 +358,16 @@ final class EmailTemplateRepository
             ];
         }
 
-        $en = Capsule::table(self::TABLE)
+        $enQuery = Capsule::table(self::TABLE)
             ->where('language', $targetLanguage)
-            ->where('type', '<>', 'admin')
+            ->where('type', self::text($master, 'type'))
             ->where('name', self::text($master, 'name'))
             ->select(['id', 'subject', 'message'])
-            ->lockForUpdate()
-            ->first();
+            ->orderBy('id');
+        if (!$dryRun) {
+            $enQuery = $enQuery->lockForUpdate();
+        }
+        $en = $enQuery->first();
 
         $currentHash = $this->hashOf($en);
         if ($expectedHash !== $currentHash) {
@@ -428,42 +445,49 @@ final class EmailTemplateRepository
     }
 
     /**
-     * Idiomas com linha irmã (`language<>''`, `type<>'admin'`), por `name` —
-     * UMA consulta para todos os masters, em vez de N consultas por master.
-     * `->get()` devolve `Illuminate\Support\Collection` em produção; `foreach`
-     * (não `array_map`) funciona igual em array e Collection.
+     * Idiomas com linha irmã (`language<>''`, `type<>'admin'`), por `type` +
+     * `name` — UMA consulta para todos os masters, em vez de N consultas por
+     * master. A chave inclui `type` porque `name` sozinho não é único entre
+     * tipos distintos (ex.: um template `general` e um `support` podem
+     * compartilhar `name`); sem o `type` na chave, um sibling do tipo errado
+     * podia ser contado como variante do master. `->get()` devolve
+     * `Illuminate\Support\Collection` em produção; `foreach` (não
+     * `array_map`) funciona igual em array e Collection.
      *
-     * @return array<string, array<int, string>>
+     * @return array<string, array<int, string>> "type\0name" => idiomas
      */
-    private function siblingVariantsByName(): array
+    private function siblingVariantsByTypeAndName(): array
     {
         $rows = Capsule::table(self::TABLE)
             ->where('language', '<>', self::SOURCE_LANGUAGE)
             ->where('type', '<>', 'admin')
-            ->select(['name', 'language'])
+            ->select(['type', 'name', 'language'])
             ->get();
 
-        $byName = [];
+        $byKey = [];
         foreach ($rows as $row) {
-            $byName[self::text($row, 'name')][] = self::text($row, 'language');
+            $key = self::text($row, 'type') . "\0" . self::text($row, 'name');
+            $byKey[$key][] = self::text($row, 'language');
         }
 
-        foreach ($byName as $name => $languages) {
+        foreach ($byKey as $key => $languages) {
             $languages = array_values(array_unique($languages));
             sort($languages);
-            $byName[$name] = $languages;
+            $byKey[$key] = $languages;
         }
 
-        return $byName;
+        return $byKey;
     }
 
-    private function findTargetSibling(string $name, string $targetLanguage): mixed
+    /** `$type` é sempre o `type` do master (nunca `'admin'`, já filtrado a montante). */
+    private function findTargetSibling(string $name, string $type, string $targetLanguage): mixed
     {
         return Capsule::table(self::TABLE)
             ->where('language', $targetLanguage)
-            ->where('type', '<>', 'admin')
+            ->where('type', $type)
             ->where('name', $name)
             ->select(['id', 'subject', 'message'])
+            ->orderBy('id')
             ->first();
     }
 

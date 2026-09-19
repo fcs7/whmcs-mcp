@@ -119,9 +119,13 @@ final class DynamicTranslationRepository
             $query = $query->where('gid', $gid);
         }
         if ($isCustomField) {
-            // '' == null no operador de igualdade do fake e do MySQL — cobre
-            // NULL e string vazia sem precisar de whereNull() adicional.
-            $query = $query->where('adminonly', '');
+            // NULL não bate em `= ''` no MySQL real (a comparação com NULL
+            // nunca é verdadeira) — o fake aceitava por acidente (`==` solto).
+            // `orWhereNull()` cobre explicitamente as duas formas de "sem
+            // admin-only": string vazia OU coluna nula.
+            $query = $query->where(function ($subquery) {
+                $subquery->where('adminonly', '')->orWhereNull('adminonly');
+            });
             if ($customFieldType !== null && $customFieldType !== '') {
                 $query = $query->where('type', $customFieldType);
             }
@@ -278,6 +282,7 @@ final class DynamicTranslationRepository
 
         try {
             $this->guard->assert(DynamicTranslationMap::capabilityFor($kind));
+            $this->guard->assertInnoDb(self::TABLE);
         } catch (TranslationException $e) {
             return $e->toPublicArray();
         }
@@ -354,11 +359,14 @@ final class DynamicTranslationRepository
         }
 
         $sourceColumn = DynamicTranslationMap::sourceColumn($kind, $field);
-        $sourceRow = Capsule::table(DynamicTranslationMap::sourceTable($kind))
+        $sourceQuery = Capsule::table(DynamicTranslationMap::sourceTable($kind))
             ->where('id', $id)
-            ->select(['id', $sourceColumn])
-            ->lockForUpdate()
-            ->first();
+            ->select(['id', $sourceColumn]);
+        // Dry-run nunca segura lock de linha — só leitura, sem tudo-ou-nada real.
+        if (!$dryRun) {
+            $sourceQuery = $sourceQuery->lockForUpdate();
+        }
+        $sourceRow = $sourceQuery->first();
 
         if ($sourceRow === null) {
             return [
@@ -381,13 +389,16 @@ final class DynamicTranslationRepository
         }
 
         $relatedType = DynamicTranslationMap::relatedType($kind, $field);
-        $existing = Capsule::table(self::TABLE)
+        $existingQuery = Capsule::table(self::TABLE)
             ->where('related_type', $relatedType)
             ->where('related_id', $id)
             ->where('language', $targetLanguage)
             ->select(['id', 'translation'])
-            ->lockForUpdate()
-            ->first();
+            ->orderBy('id');
+        if (!$dryRun) {
+            $existingQuery = $existingQuery->lockForUpdate();
+        }
+        $existing = $existingQuery->first();
 
         $currentHash = $existing === null ? 'absent' : hash('sha256', self::text($existing, 'translation'));
         if ($expectedHash !== $currentHash) {
@@ -492,6 +503,7 @@ final class DynamicTranslationRepository
             ->whereIn('related_type', array_keys($literalToField))
             ->where('language', $targetLanguage)
             ->select(['related_type', 'related_id', 'translation'])
+            ->orderBy('id')
             ->get();
 
         $byFieldId = [];
@@ -500,7 +512,14 @@ final class DynamicTranslationRepository
             if ($field === null) {
                 continue;
             }
-            $byFieldId[$field][self::intOf($row, 'related_id')] = self::text($row, 'translation');
+            $relatedId = self::intOf($row, 'related_id');
+            // Duplicata (não deveria existir, mas se existir): mantém a de
+            // menor id, já garantida pelo `orderBy('id')` acima — determinístico
+            // em vez de depender da ordem natural de retorno do driver.
+            if (isset($byFieldId[$field][$relatedId])) {
+                continue;
+            }
+            $byFieldId[$field][$relatedId] = self::text($row, 'translation');
         }
 
         return $byFieldId;

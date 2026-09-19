@@ -41,16 +41,13 @@ final class TranslationStatusReader
      */
     public function clientLanguageCounts(): array
     {
-        $rows = Capsule::table('tblclients')->select(['language'])->get();
+        $rows = Capsule::table('tblclients')
+            ->select(['language'])
+            ->selectRaw('COUNT(*) as aggregate_count')
+            ->groupBy('language')
+            ->get();
 
-        $counts = [];
-        foreach ($rows as $row) {
-            $language = (string) (is_array($row) ? ($row['language'] ?? '') : ($row->language ?? ''));
-            $counts[$language] = ($counts[$language] ?? 0) + 1;
-        }
-        ksort($counts);
-
-        return $counts;
+        return self::countsFromGroupedRows($rows, 'language');
     }
 
     /**
@@ -81,22 +78,22 @@ final class TranslationStatusReader
             return ['by_language' => [], 'by_related_type' => []];
         }
 
-        $rows = Capsule::table(TranslationSchema::TABLE_DYNAMIC_TRANSLATIONS)
-            ->select(['language', 'related_type'])
+        $languageRows = Capsule::table(TranslationSchema::TABLE_DYNAMIC_TRANSLATIONS)
+            ->select(['language'])
+            ->selectRaw('COUNT(*) as aggregate_count')
+            ->groupBy('language')
             ->get();
 
-        $byLanguage = [];
-        $byRelatedType = [];
-        foreach ($rows as $row) {
-            $language = (string) (is_array($row) ? ($row['language'] ?? '') : ($row->language ?? ''));
-            $relatedType = (string) (is_array($row) ? ($row['related_type'] ?? '') : ($row->related_type ?? ''));
-            $byLanguage[$language] = ($byLanguage[$language] ?? 0) + 1;
-            $byRelatedType[$relatedType] = ($byRelatedType[$relatedType] ?? 0) + 1;
-        }
-        ksort($byLanguage);
-        ksort($byRelatedType);
+        $relatedTypeRows = Capsule::table(TranslationSchema::TABLE_DYNAMIC_TRANSLATIONS)
+            ->select(['related_type'])
+            ->selectRaw('COUNT(*) as aggregate_count')
+            ->groupBy('related_type')
+            ->get();
 
-        return ['by_language' => $byLanguage, 'by_related_type' => $byRelatedType];
+        return [
+            'by_language' => self::countsFromGroupedRows($languageRows, 'language'),
+            'by_related_type' => self::countsFromGroupedRows($relatedTypeRows, 'related_type'),
+        ];
     }
 
     /**
@@ -117,7 +114,12 @@ final class TranslationStatusReader
         ];
     }
 
-    /** @return array<string,int>|string 'unavailable' quando a tabela nao existe */
+    /**
+     * @return array<string,int>|string 'unavailable' quando a tabela ou a
+     *     coluna `language` nao existe — uma tabela cujo contrato mudou (ou
+     *     nunca teve a coluna) não pode ser lida direto; ela é reportada como
+     *     indisponível, igual à tabela ausente.
+     */
     private function languageCountsFor(string $table): array|string
     {
         $tableFact = $this->schemaProbe->hasTable($table);
@@ -125,12 +127,31 @@ final class TranslationStatusReader
             return 'unavailable';
         }
 
-        $rows = Capsule::table($table)->select(['language'])->get();
+        $columnFact = $this->schemaProbe->hasColumn($table, 'language');
+        if (!$columnFact->isPresent()) {
+            return 'unavailable';
+        }
 
+        $rows = Capsule::table($table)
+            ->select(['language'])
+            ->selectRaw('COUNT(*) as aggregate_count')
+            ->groupBy('language')
+            ->get();
+
+        return self::countsFromGroupedRows($rows, 'language');
+    }
+
+    /**
+     * @param iterable<mixed> $rows linhas de uma consulta `groupBy($column)` +
+     *     `selectRaw('COUNT(*) as aggregate_count')`
+     * @return array<string, int>
+     */
+    private static function countsFromGroupedRows(iterable $rows, string $column): array
+    {
         $counts = [];
         foreach ($rows as $row) {
-            $language = (string) (is_array($row) ? ($row['language'] ?? '') : ($row->language ?? ''));
-            $counts[$language] = ($counts[$language] ?? 0) + 1;
+            $key = (string) (is_array($row) ? ($row[$column] ?? '') : ($row->{$column} ?? ''));
+            $counts[$key] = (int) (is_array($row) ? ($row['aggregate_count'] ?? 0) : ($row->aggregate_count ?? 0));
         }
         ksort($counts);
 

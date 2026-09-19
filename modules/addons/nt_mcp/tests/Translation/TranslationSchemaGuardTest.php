@@ -7,6 +7,7 @@ namespace NtMcp\Tests\Translation;
 use NtMcp\Translation\TranslationException;
 use NtMcp\Translation\TranslationSchema;
 use NtMcp\Translation\TranslationSchemaGuard;
+use NtMcp\Tests\Support\FakeCrmEngineProbe;
 use NtMcp\Tests\Support\FakeCrmSchemaProbe;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
@@ -83,5 +84,73 @@ final class TranslationSchemaGuardTest extends TestCase
         $guard2 = new TranslationSchemaGuard($healthyProbe);
         $guard2->assert();
         $this->assertTrue(true);
+    }
+
+    // -----------------------------------------------------------
+    // assertInnoDb() — barreira de ENGINE, só o caminho de escrita
+    // -----------------------------------------------------------
+
+    #[Test]
+    public function innodb_table_passes(): void
+    {
+        $guard = new TranslationSchemaGuard(
+            new FakeCrmSchemaProbe($this->completeInstallation()),
+            new FakeCrmEngineProbe([TranslationSchema::TABLE_EMAIL_TEMPLATES => true])
+        );
+
+        $guard->assertInnoDb(TranslationSchema::TABLE_EMAIL_TEMPLATES);
+
+        $this->assertTrue(true);
+    }
+
+    #[Test]
+    public function non_innodb_table_is_rejected_as_unsupported_engine(): void
+    {
+        $guard = new TranslationSchemaGuard(
+            new FakeCrmSchemaProbe($this->completeInstallation()),
+            new FakeCrmEngineProbe([TranslationSchema::TABLE_EMAIL_TEMPLATES => false])
+        );
+
+        try {
+            $guard->assertInnoDb(TranslationSchema::TABLE_EMAIL_TEMPLATES);
+            $this->fail('deveria lançar TranslationException');
+        } catch (TranslationException $e) {
+            $this->assertSame('unsupported_engine', $e->errorCode);
+        }
+    }
+
+    #[Test]
+    public function engine_probe_failure_is_downstream_and_not_memorized(): void
+    {
+        $engineProbe = (new FakeCrmEngineProbe())->failWith('engine-corr-1');
+        $guard = new TranslationSchemaGuard(new FakeCrmSchemaProbe($this->completeInstallation()), $engineProbe);
+
+        try {
+            $guard->assertInnoDb(TranslationSchema::TABLE_EMAIL_TEMPLATES);
+            $this->fail('deveria lançar TranslationException');
+        } catch (TranslationException $e) {
+            $this->assertSame('downstream', $e->errorCode);
+            $this->assertSame('engine-corr-1', $e->correlationId);
+        }
+
+        // Não memorizado: uma nova tentativa, com o probe saudável, passa.
+        $healthyGuard = new TranslationSchemaGuard(
+            new FakeCrmSchemaProbe($this->completeInstallation()),
+            new FakeCrmEngineProbe([TranslationSchema::TABLE_EMAIL_TEMPLATES => true])
+        );
+        $healthyGuard->assertInnoDb(TranslationSchema::TABLE_EMAIL_TEMPLATES);
+        $this->assertTrue(true);
+    }
+
+    #[Test]
+    public function innodb_decision_is_memoized_per_table(): void
+    {
+        $engineProbe = new FakeCrmEngineProbe([TranslationSchema::TABLE_EMAIL_TEMPLATES => true]);
+        $guard = new TranslationSchemaGuard(new FakeCrmSchemaProbe($this->completeInstallation()), $engineProbe);
+
+        $guard->assertInnoDb(TranslationSchema::TABLE_EMAIL_TEMPLATES);
+        $guard->assertInnoDb(TranslationSchema::TABLE_EMAIL_TEMPLATES);
+
+        $this->assertSame(['isInnoDb(tblemailtemplates)'], $engineProbe->calls);
     }
 }
