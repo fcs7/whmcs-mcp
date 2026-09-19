@@ -1,11 +1,13 @@
-# Catálogo de Tools — NT MCP (70 tools)
+# Catálogo de Tools — NT MCP (93 tools)
 
-> Atualizado em 2026-08-26. Fonte de verdade: atributos `#[McpTool(...)]` em
-> `src/Tools/*.php`; gates LocalAPI em `src/Whmcs/LocalApiClient.php` e gates das
-> `whmcs_chip_*` em `src/Whmcs/ChipGuard.php`, com acesso via `ChipBridge.php`.
-> Contagem verificada: `grep -oh "name: '[a-z_0-9]*'" src/Tools/*.php | sort -u | wc -l` = **70**.
+> Atualizado em 2026-09-18. Fonte de verdade: atributos `#[McpTool(...)]` em
+> `src/Tools/*.php`; gates LocalAPI em `src/Whmcs/LocalApiClient.php`, gates das
+> `whmcs_chip_*` em `src/Whmcs/ChipGuard.php` (acesso via `ChipBridge.php`) e gates das
+> `whmcs_translation_*` em `src/Translation/TranslationGuard.php` (acesso via
+> `EmailTemplateRepository.php`).
+> Contagem verificada: `grep -oh "name: '[a-z_0-9]*'" src/Tools/*.php | sort -u | wc -l` = **85**.
 
-Este documento lista **todas as 70 tools** uma a uma, com o comando WHMCS que
+Este documento lista **todas as 93 tools** uma a uma, com o comando WHMCS que
 cada uma invoca (ou a integração direta usada por CRM e NT Chips), a classe do gate de segurança (WO-2),
 se está **ligada por padrão**, e o **nível de risco** — para avaliar a necessidade de cada
 tool e decidir cortes.
@@ -187,6 +189,148 @@ Legenda de risco:
 
 ---
 
+## TranslationTools (4) — Fase 1: templates de e-mail
+
+| # | Tool | Origem | Gate | Default | Risco | Descrição |
+|---|------|--------|------|---------|-------|-----------|
+| 71 | `whmcs_translation_status` | EmailTemplateRepository / tblclients | READ | on | 🟢 | Panorama: contagem por idioma, amostra de subjects, contagem de clientes por idioma, `supported_target_languages` e status de "Enable Dynamic Translations" |
+| 72 | `whmcs_translation_email_list` | EmailTemplateRepository | READ | on | 🟢 | Lista templates master (`language=''`, `type<>admin`) com `has_target`/`variants` para o `target_language` pedido |
+| 73 | `whmcs_translation_email_get` | EmailTemplateRepository | READ | on | 🟢 | Obtém até 10 pares master/`target_language` completos + `target_hash` para uso em `email_set` |
+| 74 | `whmcs_translation_email_set` | EmailTemplateRepository | WRITE | ⛔ off | 🟡 | Grava até 10 traduções em lote para `target_language` (tudo-ou-nada); `confirm=false` é dry-run sem gate |
+
+> Assim como o domínio de chips, tradução não passa pela LocalAPI (não existe comando
+> WHMCS de escrita para `tblemailtemplates`). `EmailTemplateRepository` é a única classe
+> que toca a tabela; `TranslationSchemaGuard` (mesmo contrato do `CrmSchemaGuard`) barra
+> qualquer query antes de a instalação provar as colunas esperadas.
+>
+> **Achado no desenv (2026-09-18)**: os 92 masters (`language=''`) são MISTOS — a maioria
+> são templates padrão do WHMCS em inglês, uma minoria são customizados em PT. Já existem
+> linhas `portuguese-br` e `english` no banco. Por isso o idioma-alvo não é fixo:
+> `target_language` aceita `'english'` (padrão) ou `'portuguese-br'`; um valor fora dessa
+> lista é recusado (`invalid_target_language`) ANTES de qualquer consulta. Use
+> `'portuguese-br'` para traduzir os masters padrão (em inglês) e `'english'` para os
+> masters customizados (em PT); nunca traduza um master que já esteja no idioma-alvo.
+>
+> `email_set` exige hash otimista (`expected_hash`, comparado contra `target_hash`) por
+> item, valida paridade de tags Smarty/HTML entre o master e o texto enviado, valida UTF-8
+> (`invalid_utf8`) e recusa caracteres fora do BMP como emoji (`unsupported_4byte_char`),
+> grava backup JSONL do estado anterior em `data/translation-backups/emailtemplates-<target>-YYYYMMDD.jsonl`
+> ANTES de cada escrita e só passa por `TranslationGuard::assertWriteAllowed` (mesmas flags
+> do `ChipGuard`, sem allowlist de cliente) quando `confirm=true`.
+
+---
+
+## TranslationCatalogTools (5) — Fase 2: produto e grupo de produto
+
+| # | Tool | Origem | Gate | Default | Risco | Descrição |
+|---|------|--------|------|---------|-------|-----------|
+| 75 | `whmcs_translation_product_list` | DynamicTranslationRepository / tblproducts | READ | on | 🟢 | Lista produtos com `has_target`/`target_hash` por campo (`name`, `description` truncada a 200 chars, `tagline`, `short_description`); filtro opcional `gid` |
+| 76 | `whmcs_translation_product_get` | DynamicTranslationRepository / tblproducts | READ | on | 🟢 | Obtém até 10 produtos com texto-fonte COMPLETO por campo (`name`, `description`, `tagline`, `short_description`) + tradução atual (ou `null`) + `target_hash` |
+| 77 | `whmcs_translation_product_set` | DynamicTranslationRepository | WRITE | ⛔ off | 🟡 | Grava até 20 traduções de campo (`name`/`description`/`tagline`/`short_description`) em lote (tudo-ou-nada); `confirm=false` é dry-run sem gate |
+| 78 | `whmcs_translation_product_group_list` | DynamicTranslationRepository / tblproductgroups | READ | on | 🟢 | Lista grupos de produto com texto-fonte COMPLETO (`name`, `headline`, `tagline`) e `has_target`/`target_hash` por campo |
+| 79 | `whmcs_translation_product_group_set` | DynamicTranslationRepository | WRITE | ⛔ off | 🟡 | Grava até 20 traduções de campo (`name`/`headline`/`tagline`) em lote (tudo-ou-nada); `confirm=false` é dry-run sem gate |
+
+> Mesmo desenho de `TranslationTools` (Fase 1): não passa pela LocalAPI (não existe
+> comando WHMCS de escrita para `tbldynamic_translations`). `DynamicTranslationRepository`
+> é a ÚNICA classe que toca a tabela, e `DynamicTranslationMap` é o catálogo FECHADO de
+> `kind`/`field` aceito (`product`: `name`/`description`/`tagline`/`short_description`;
+> `product_group`: `name`/`headline`/`tagline`) — Fase 3 só acrescenta entradas ali.
+>
+> **FATO CONFIRMADO no desenv**: `related_type` é o texto LITERAL com a string `{id}`
+> (nunca o id numérico substituído) — ex.: `product.{id}.name`. O id real fica em
+> `related_id`, coluna separada; o mesmo literal serve para qualquer produto/grupo daquele
+> campo. Status ao vivo confirma linhas reais para `product.{id}.name`,
+> `product.{id}.description`, `product.{id}.tagline` e `product.{id}.short_description`.
+>
+> `target_language` aceita SOMENTE `'english'` nesta fase (`invalid_target_language` para
+> qualquer outro valor, recusado ANTES de qualquer consulta). Nesta fase só a tradução
+> PT→EN é suportada — sem o par de sentidos que a Fase 1 tem para e-mail.
+>
+> `_set` exige hash otimista (`expected_hash`) por item, valida com
+> `TranslationValidator::validateField()` (paridade Smarty/HTML quando presentes; campos
+> `text` — `name`/`headline`/`tagline`/`short_description` — têm limite de 255 caracteres;
+> `description` (`textarea`) não tem limite, só paridade HTML), recusa item duplicado no mesmo lote
+> (`duplicate_item`), grava backup JSONL do estado anterior em
+> `data/translation-backups/dynamic-<kind>-<target>-YYYYMMDD.jsonl` ANTES de cada escrita e
+> só passa por `TranslationGuard::assertWriteAllowed` quando `confirm=true`. `UPDATE` toca
+> somente a coluna `translation` (e `updated_at`, quando a coluna existe na instalação —
+> detectado por probe, nunca exigido). Pré-requisito: "Enable Dynamic Translations" ligado
+> no WHMCS (`whmcs_translation_status` informa o estado e, desde a Fase 2, também a
+> contagem de linhas de `tbldynamic_translations` por idioma e por `related_type`).
+
+---
+
+## TranslationCatalogExtrasTools (6) — Fase 3: custom field, addon de produto e departamento
+
+| # | Tool | Origem | Gate | Default | Risco | Descrição |
+|---|------|--------|------|---------|-------|-----------|
+| 80 | `whmcs_translation_custom_field_list` | DynamicTranslationRepository / tblcustomfields | READ | on | 🟢 | Lista custom fields visíveis ao cliente (`adminonly` vazio) com `has_target`/`target_hash` por campo (`name` lê a coluna `fieldname`; `description`), mais `type`/`relid`; filtro opcional `type` |
+| 81 | `whmcs_translation_custom_field_set` | DynamicTranslationRepository | WRITE | ⛔ off | 🟡 | Grava até 20 traduções de campo (`name`/`description`) em lote (tudo-ou-nada); `confirm=false` é dry-run sem gate |
+| 82 | `whmcs_translation_product_addon_list` | DynamicTranslationRepository / tbladdons | READ | on | 🟢 | Lista addons de produto com texto-fonte COMPLETO (`name`, `description`) e `has_target`/`target_hash` por campo |
+| 83 | `whmcs_translation_product_addon_set` | DynamicTranslationRepository | WRITE | ⛔ off | 🟡 | Grava até 20 traduções de campo (`name`/`description`) em lote (tudo-ou-nada); `confirm=false` é dry-run sem gate |
+| 84 | `whmcs_translation_department_list` | DynamicTranslationRepository / tblticketdepartments | READ | on | 🟢 | Lista departamentos de suporte com texto-fonte COMPLETO (`name`, `description`) e `has_target`/`target_hash` por campo |
+| 85 | `whmcs_translation_department_set` | DynamicTranslationRepository | WRITE | ⛔ off | 🟡 | Grava até 20 traduções de campo (`name`/`description`) em lote (tudo-ou-nada); `confirm=false` é dry-run sem gate |
+
+> Classe separada de `TranslationCatalogTools` só para não ultrapassar ~400 linhas naquele
+> arquivo — contrato idêntico (schema guard, gates, backup, validação). `DynamicTranslationMap`
+> ganhou os kinds `custom_field`, `product_addon` e `ticket_department`; cada um tem sua
+> PRÓPRIA capacidade no `TranslationSchemaGuard` (`dynamic_translations_custom_field`,
+> `dynamic_translations_product_addon`, `dynamic_translations_ticket_department`) — uma
+> tabela ausente derruba SÓ o kind dela, nunca os demais (inclusive Fase 2).
+>
+> `custom_field.name` é o único campo cujo nome PÚBLICO (o que aparece em `field` e no
+> literal `related_type`, ex.: `custom_field.{id}.name`) diverge da coluna fonte real
+> (`tblcustomfields.fieldname`) — `DynamicTranslationMap::sourceColumn()` faz essa tradução;
+> a tool sempre expõe/recebe `name`, nunca `fieldname`. Custom fields com `adminonly`
+> preenchido NUNCA aparecem na listagem (não são visíveis ao cliente).
+>
+> **CONFIRMADO ao vivo no desenv**: os literais `custom_field.{id}.name`/`description` e
+> `product_addon.{id}.name`/`description` têm linhas reais em `tbldynamic_translations`.
+> **PENDENTE de confirmação ao vivo**: `ticket_department.{id}.*` segue a MESMA convenção,
+> mas ainda não tem nenhuma linha gravada no banco real — use `whmcs_translation_status`
+> para conferir os `related_type` já gravados de fato.
+
+---
+
+## TranslationContentTools (8) — Fase 4 (última): base de conhecimento e anúncio
+
+| # | Tool | Comando/Fonte | Gate | Default | Status | Descrição |
+|---|------|---------------|------|---------|--------|-----------|
+| 86 | `whmcs_translation_kb_category_list` | KnowledgebaseRepository / tblknowledgebasecats | READ | on | 🟢 | Lista categorias de KB originais (`catid=0`, `language=''`) com `name`/`description` PT completos, variante em `target_language` (ou `null`) e `target_hash`. Sem tool de "get" separada — texto cabe na listagem |
+| 87 | `whmcs_translation_kb_category_set` | KnowledgebaseRepository | WRITE | ⛔ off | 🟡 | Grava até 20 traduções de categoria (`name`/`description`) em lote (tudo-ou-nada); a variante nova copia `parentid`/`hidden` do original; `confirm=false` é dry-run sem gate |
+| 88 | `whmcs_translation_kb_article_list` | KnowledgebaseRepository / tblknowledgebase | READ | on | 🟢 | Lista artigos de KB originais (`parentid=0`, `language=''`) com `title`, excerto de `article` (200 chars), `private` e `has_target` |
+| 89 | `whmcs_translation_kb_article_get` | KnowledgebaseRepository | READ | on | 🟢 | Obtém até 10 artigos originais completos (`title`/`article`) + variante atual (ou `null`) + `target_hash` |
+| 90 | `whmcs_translation_kb_article_set` | KnowledgebaseRepository | WRITE | ⛔ off | 🟡 | Grava até 10 traduções de artigo (`title`/`article`) em lote (tudo-ou-nada); a variante nova copia `private`/`order` e zera `views`/`votes`/`useful`; `confirm=false` é dry-run sem gate |
+| 91 | `whmcs_translation_announcement_list` | AnnouncementRepository / tblannouncements | READ | on | 🟢 | Lista anúncios originais (`parentid=0`, `language=''`) com `title`, `date`, `published`, excerto de `announcement` (200 chars) e `has_target` |
+| 92 | `whmcs_translation_announcement_get` | AnnouncementRepository | READ | on | 🟢 | Obtém até 10 anúncios originais completos (`title`/`announcement`/`date`/`published`) + variante atual (ou `null`) + `target_hash` |
+| 93 | `whmcs_translation_announcement_set` | AnnouncementRepository | WRITE | ⛔ off | 🟡 | Grava até 10 traduções de anúncio (`title`/`announcement`) em lote (tudo-ou-nada); a variante nova copia `date`/`published`; `confirm=false` é dry-run sem gate |
+
+> Modelo de armazenamento diferente das Fases 2/3 (não usa `tbldynamic_translations`):
+> linha-filha na MESMA tabela, igual `tblemailtemplates` — a linha original tem
+> `parentid=0` (anúncio, artigo) ou `catid=0` (categoria) e `language=''`; a variante é
+> uma linha FILHA com `parentid=<id>`/`catid=<id>` e `language=target_language`.
+> `KnowledgebaseRepository` é a ÚNICA classe que toca `tblknowledgebase` E
+> `tblknowledgebasecats`; `AnnouncementRepository` é a ÚNICA classe que toca
+> `tblannouncements`. Cada tabela tem sua própria capacidade isolada no
+> `TranslationSchemaGuard` (`kb_article`, `kb_category`, `announcement`) — uma tabela
+> ausente não derruba as demais.
+>
+> **DESVIO do plano original**: a Fase 4 previa `whmcs_translation_announcement_set` via
+> LocalAPI (`AddAnnouncement`/`UpdateAnnouncement`). Decisão revista nesta entrega: esses
+> comandos NÃO expõem `parentid`/`language` — não há como criar uma variante de idioma
+> através deles. A tool usa Capsule direto, igual às demais desta fase.
+>
+> Nenhuma tool devolve o texto ORIGINAL sem passar pela leitura explícita (`get`, ou
+> `list` para categoria, cujo texto é curto); a escrita nunca toca a linha original.
+> `TranslationBackup` grava backup JSONL do estado anterior em
+> `data/translation-backups/{kb-article,kb-category,announcement}-<target>-YYYYMMDD.jsonl`
+> ANTES de cada escrita e só passa por `TranslationGuard::assertWriteAllowed` quando
+> `confirm=true`. `whmcs_translation_status` inclui `content_variants` (contagem por
+> idioma de `tblannouncements`/`tblknowledgebase`/`tblknowledgebasecats`, `'unavailable'`
+> por tabela ausente) para confirmar o modelo ao vivo.
+
+---
+
 ## Qual ID usar
 
 Guia rápido para evitar confundir IDs:
@@ -210,16 +354,22 @@ Guia rápido para evitar confundir IDs:
 
 | Gate | Qtde | Default | Tools |
 |------|------|---------|-------|
-| READ | 39 | on | consultas LocalAPI/NT Chips — sem risco |
-| WRITE | 24 | ⛔ **off** | administrativas reversíveis — opt-in via `nt_mcp_enable_write=1` |
+| READ | 53 | on | consultas LocalAPI/NT Chips/Tradução — sem risco |
+| WRITE | 33 | ⛔ **off** | administrativas reversíveis — opt-in via `nt_mcp_enable_write=1` |
 | DESTRUCTIVE | 2 | ⛔ off | cancel_order, delete_quote (exigem confirm=true) |
 | FINANCIAL | 1 | ⛔ off | convert_quote_to_invoice (não idempotente) |
 | CRM-READ | 4 | on | leituras do CRM mgCRM2 (MgCrmRepository) |
-| **Total** | **70** | | |
+| **Total** | **93** | | |
 
 > **Nota:** COMMS é um gate ortogonal acionado por `notify_client=true`; não acrescenta
 > tools à contagem. AddClient, OpenTicket e AddTicketReply continuam em suas classes base.
-> As cinco tools mutáveis de chips estão incluídas na classe WRITE.
+> As cinco tools mutáveis de chips, `whmcs_translation_email_set`,
+> `whmcs_translation_product_set`, `whmcs_translation_product_group_set`,
+> `whmcs_translation_custom_field_set`, `whmcs_translation_product_addon_set`,
+> `whmcs_translation_department_set`, `whmcs_translation_kb_category_set`,
+> `whmcs_translation_kb_article_set` e `whmcs_translation_announcement_set` estão
+> incluídas na classe WRITE; as demais leituras de tradução (Fases 1 a 4) estão
+> incluídas na classe READ.
 
 ---
 

@@ -52,6 +52,47 @@ final class FakeCapsule
 
     public static int $ambientTransactionLevel = 0;
 
+    /**
+     * Engine reportado por `information_schema.tables` (via `CapsuleEngineProbe`),
+     * por tabela — default `'InnoDB'` para que testes que nunca tocam o assunto
+     * continuem passando sem configurar nada. `withTableEngine()` simula MyISAM
+     * (ou qualquer outro engine) para uma tabela específica.
+     */
+    public static string $defaultEngine = 'InnoDB';
+
+    /** @var array<string, string> tabela => engine, sobrepõe `$defaultEngine` */
+    public static array $tableEngines = [];
+
+    /**
+     * Nome da propriedade do engine na linha sintética de
+     * `information_schema.tables` — default `'engine'`. Testes podem setar
+     * `'ENGINE'` para simular um driver MySQL 8 que devolve a coluna sem
+     * honrar o alias `engine AS engine_name` (`CapsuleEngineProbe::engineOf()`
+     * precisa cair no fallback maiúsculo nesse caso).
+     */
+    public static string $informationSchemaEngineKey = 'engine';
+
+    /**
+     * Tabelas cujo `get()` devolve um `FakeCollection` (Traversable não-array,
+     * como `Illuminate\Support\Collection` no WHMCS real) em vez de um array
+     * puro. Desligado por padrão — só os testes de tradução ligam, para provar
+     * que o código de produção não quebra com `array_map()`/`array_filter()`
+     * direto sobre o retorno de `get()`.
+     *
+     * @var array<int, string>
+     */
+    public static array $collectionTables = [];
+
+    /**
+     * Pilha de snapshots de transação (`rows`/`mutations`/`nextInsertId`).
+     * `beginTransaction()` empilha, `commit()` descarta o topo e `rollBack()`
+     * restaura o topo — o fake antigo só desfazia o contador de nível, nunca
+     * as mutações, então um "rollback" não revertia nada de fato.
+     *
+     * @var array<int, array{rows: array<string, array<int, object>>, mutations: array<int, array{verb:string, table:string, values:array<string,mixed>}>, nextInsertId: int}>
+     */
+    private static array $transactionSnapshots = [];
+
     private static ?FakeCapsuleConnection $connection = null;
 
     public static function reset(): void
@@ -68,6 +109,47 @@ final class FakeCapsule
         self::$ambientTransaction = false;
         self::$ambientTransactionLevel = 0;
         self::$connection = null;
+        self::$collectionTables = [];
+        self::$transactionSnapshots = [];
+        self::$defaultEngine = 'InnoDB';
+        self::$tableEngines = [];
+        self::$informationSchemaEngineKey = 'engine';
+    }
+
+    /** Simula o engine de uma tabela em `information_schema.tables` (ex.: `'MyISAM'`). */
+    public static function withTableEngine(string $table, string $engine): void
+    {
+        self::$enabled = true;
+        self::$tableEngines[$table] = $engine;
+    }
+
+    /** Empilha o estado atual (`rows`/`mutations`/`nextInsertId`). */
+    public static function pushTransactionSnapshot(): void
+    {
+        self::$transactionSnapshots[] = [
+            'rows' => self::$rows,
+            'mutations' => self::$mutations,
+            'nextInsertId' => self::$nextInsertId,
+        ];
+    }
+
+    /** Descarta o snapshot do topo sem restaurar (equivalente a um commit). */
+    public static function discardTransactionSnapshot(): void
+    {
+        array_pop(self::$transactionSnapshots);
+    }
+
+    /** Restaura o snapshot do topo (equivalente a um rollback real). */
+    public static function restoreTransactionSnapshot(): void
+    {
+        $snapshot = array_pop(self::$transactionSnapshots);
+        if ($snapshot === null) {
+            return;
+        }
+
+        self::$rows = $snapshot['rows'];
+        self::$mutations = $snapshot['mutations'];
+        self::$nextInsertId = $snapshot['nextInsertId'];
     }
 
     /** Popula uma tabela com valores da coluna `gateway`. */
@@ -160,6 +242,7 @@ final class FakeCapsuleConnection
         // O Illuminate incrementa o nível após chamar o PDO; mesmo um driver
         // que devolve false precisa ser detectado pelo boundary pós-begin.
         $this->transactions++;
+        FakeCapsule::pushTransactionSnapshot();
 
         return $result;
     }
@@ -168,6 +251,7 @@ final class FakeCapsuleConnection
     {
         $result = $this->writePdo->commit();
         $this->transactions = max(0, $this->transactions - 1);
+        FakeCapsule::discardTransactionSnapshot();
 
         return $result;
     }
@@ -176,6 +260,7 @@ final class FakeCapsuleConnection
     {
         $result = $this->writePdo->rollBack();
         $this->transactions = 0;
+        FakeCapsule::restoreTransactionSnapshot();
 
         return $result;
     }
@@ -185,6 +270,26 @@ final class FakeCapsuleConnection
         $this->getReadPdo()->prepare("query {$table}");
 
         return FakeCapsule::table($table);
+    }
+
+    /**
+     * Reproduz `Illuminate\Database\Connection::transaction()`: begin, executa
+     * o callback, commit; qualquer exceção faz rollback e relança.
+     *
+     * @param callable(): mixed $callback
+     */
+    public function transaction(callable $callback): mixed
+    {
+        $this->beginTransaction();
+        try {
+            $result = $callback();
+        } catch (\Throwable $e) {
+            $this->rollBack();
+            throw $e;
+        }
+        $this->commit();
+
+        return $result;
     }
 
     public function getSchemaBuilder(): FakeCapsuleSchemaBuilder
@@ -313,6 +418,9 @@ final class FakeCapsuleQuery
     /** @var array<string, mixed> */
     private array $wheres = [];
 
+    /** @var array<int, FakeCapsuleWhereGroup> grupos `where(Closure)` — `(a OR b)` */
+    private array $whereGroups = [];
+
     /** @var array<string, array<int, int|string>> */
     private array $inWheres = [];
 
@@ -325,10 +433,30 @@ final class FakeCapsuleQuery
     /** @var array<int, array{0:string,1:string}> */
     private array $orders = [];
 
+    /** @var array<int, string> ignorados na filtragem — só registrados (ex.: `table_schema = database()`) */
+    private array $rawWheres = [];
+
+    /** @var array<int, string> */
+    private array $groupByColumns = [];
+
+    /** @var array<int, string> expressões cruas de `selectRaw()`, ex. `'COUNT(*) as aggregate_count'` */
+    private array $selectRaws = [];
+
     private ?int $take = null;
     private int $skip = 0;
 
+    /** Registrado só para o teste provar que a linha foi lida sob lock. */
+    private bool $lockedForUpdate = false;
+
     public function __construct(private readonly string $table) {}
+
+    public function lockForUpdate(): self
+    {
+        FakeCapsule::$calls[] = 'lockForUpdate()';
+        $this->lockedForUpdate = true;
+
+        return $this;
+    }
 
     /** Aceita `select('a')` e `select(['a','b'])`, como o builder real. */
     public function select(array|string ...$columns): self
@@ -354,12 +482,53 @@ final class FakeCapsuleQuery
         return $this;
     }
 
-    /**
-     * Aceita `where($col, $value)` e `where($col, $operator, $value)`, como o
-     * builder real — o keyset das varreduras usa a forma de três argumentos.
-     */
-    public function where(string $column, mixed $operatorOrValue, mixed $value = self::NO_VALUE): self
+    /** Não filtra — registrado só para a cadeia observada (`table_schema = database()`). */
+    public function whereRaw(string $sql, array $bindings = []): self
     {
+        FakeCapsule::$calls[] = "whereRaw({$sql})";
+        $this->rawWheres[] = $sql;
+
+        return $this;
+    }
+
+    /** @param array<int,string>|string $columns */
+    public function selectRaw(string $expression, array $bindings = []): self
+    {
+        FakeCapsule::$calls[] = "selectRaw({$expression})";
+        $this->selectRaws[] = $expression;
+
+        return $this;
+    }
+
+    public function groupBy(string ...$columns): self
+    {
+        FakeCapsule::$calls[] = 'groupBy(' . implode(',', $columns) . ')';
+        $this->groupByColumns = $columns;
+
+        return $this;
+    }
+
+    /**
+     * Aceita `where($col, $value)`, `where($col, $operator, $value)` e
+     * `where(Closure)` (grupo `(a OR b)`), como o builder real — o keyset das
+     * varreduras usa a forma de três argumentos, e o filtro de custom field
+     * admin-only usa a forma de closure.
+     */
+    public function where(string|\Closure $column, mixed $operatorOrValue = self::NO_VALUE, mixed $value = self::NO_VALUE): self
+    {
+        if ($column instanceof \Closure) {
+            FakeCapsule::$calls[] = 'where(group)';
+            $group = new FakeCapsuleWhereGroup();
+            $column($group);
+            $this->whereGroups[] = $group;
+
+            return $this;
+        }
+
+        if ($operatorOrValue === self::NO_VALUE) {
+            throw new \RuntimeException("FakeCapsule: where({$column}) requires a value or operator.");
+        }
+
         if ($value === self::NO_VALUE) {
             FakeCapsule::$calls[] = "where({$column})";
             $this->wheres[$column] = $operatorOrValue;
@@ -428,7 +597,7 @@ final class FakeCapsuleQuery
     {
         FakeCapsule::$calls[] = 'first()';
 
-        return $this->get()[0] ?? null;
+        return $this->computeRows()[0] ?? null;
     }
 
     /** @param array<string, mixed> $values */
@@ -466,12 +635,35 @@ final class FakeCapsuleQuery
         return $deleted;
     }
 
-    /** @return array<int, object> linhas com APENAS as colunas projetadas */
-    public function get(): array
+    /**
+     * @return array<int, object>|FakeCollection linhas com APENAS as colunas
+     *     projetadas. Devolve `FakeCollection` (Traversable não-array) quando a
+     *     tabela está em `FakeCapsule::$collectionTables` — reproduz
+     *     `Illuminate\Support\Collection`, que é o que o WHMCS real devolve.
+     */
+    public function get(): array|FakeCollection
     {
         FakeCapsule::$calls[] = 'get()';
 
+        $rows = $this->computeRows();
+
+        return in_array($this->table, FakeCapsule::$collectionTables, true)
+            ? new FakeCollection($rows)
+            : $rows;
+    }
+
+    /** @return array<int, object> */
+    private function computeRows(): array
+    {
+        if ($this->table === 'information_schema.tables') {
+            return $this->informationSchemaRows();
+        }
+
         $rows = $this->matchingRows();
+
+        if ($this->groupByColumns !== []) {
+            return $this->groupedRows($rows);
+        }
 
         foreach (array_reverse($this->orders) as [$column, $direction]) {
             usort($rows, static function (object $a, object $b) use ($column, $direction): int {
@@ -493,15 +685,23 @@ final class FakeCapsuleQuery
             $rows = array_slice($rows, 0, $this->take);
         }
 
-        if ($this->columns === []) {
+        if ($this->columns === [] && $this->selectRaws === []) {
             return array_values($rows);
         }
 
-        // Projeção real: só as colunas pedidas sobrevivem, como no driver.
+        // Projeção real: só as colunas pedidas (+ `selectRaw()`) sobrevivem,
+        // como no driver. `selectRaw()` só entende o padrão
+        // `LEFT(coluna, N) as alias`, único usado em produção.
         return array_values(array_map(function (object $row): object {
             $projected = new \stdClass();
             foreach ($this->columns as $column) {
                 $projected->{$column} = $row->{$column} ?? null;
+            }
+            foreach ($this->selectRaws as $expression) {
+                if (preg_match('/^left\(\s*(\w+)\s*,\s*(\d+)\s*\)\s+as\s+(\w+)$/i', trim($expression), $matches) === 1) {
+                    $value = (string) ($row->{$matches[1]} ?? '');
+                    $projected->{$matches[3]} = mb_substr($value, 0, (int) $matches[2]);
+                }
             }
             return $projected;
         }, $rows));
@@ -549,7 +749,81 @@ final class FakeCapsuleQuery
             );
         }
 
+        foreach ($this->whereGroups as $group) {
+            $rows = array_filter($rows, static fn(object $row): bool => $group->matches($row));
+        }
+
         return array_values($rows);
+    }
+
+    /**
+     * Simula `information_schema.tables` para `CapsuleEngineProbe`: uma linha
+     * sintética por `table_name` pedido, com `engine` de
+     * `FakeCapsule::$tableEngines[$table] ?? FakeCapsule::$defaultEngine`
+     * (default `'InnoDB'`, para não quebrar testes que nunca tocam o assunto).
+     * `table_schema = database()` (`whereRaw`) não filtra — é ignorado de
+     * propósito, o fake não modela múltiplos schemas.
+     *
+     * @return array<int, object>
+     */
+    private function informationSchemaRows(): array
+    {
+        $tableName = $this->wheres['table_name'] ?? null;
+        if (!is_string($tableName) || $tableName === '') {
+            return [];
+        }
+
+        $engine = FakeCapsule::$tableEngines[$tableName] ?? FakeCapsule::$defaultEngine;
+        if ($engine === null || $engine === '') {
+            return [];
+        }
+
+        $row = new \stdClass();
+        $row->table_schema = 'nt_mcp_test';
+        $row->table_name = $tableName;
+        $row->{FakeCapsule::$informationSchemaEngineKey} = $engine;
+
+        return [$row];
+    }
+
+    /**
+     * Agrega `$rows` por `$this->groupByColumns`, aplicando `selectRaw()` do
+     * tipo `'COUNT(*) as <alias>'` como contagem do grupo. Suficiente para o
+     * único uso de produção (`TranslationStatusReader`) — não é um SQL
+     * genérico.
+     *
+     * @param array<int, object> $rows
+     * @return array<int, object>
+     */
+    private function groupedRows(array $rows): array
+    {
+        $groups = [];
+        foreach ($rows as $row) {
+            $keyParts = [];
+            foreach ($this->groupByColumns as $column) {
+                $keyParts[] = (string) ($row->{$column} ?? '');
+            }
+            $key = implode("\0", $keyParts);
+
+            $groups[$key]['row'] ??= $row;
+            $groups[$key]['count'] = ($groups[$key]['count'] ?? 0) + 1;
+        }
+
+        $result = [];
+        foreach ($groups as $group) {
+            $projected = new \stdClass();
+            foreach ($this->groupByColumns as $column) {
+                $projected->{$column} = $group['row']->{$column} ?? null;
+            }
+            foreach ($this->selectRaws as $expression) {
+                if (preg_match('/count\(\*\)\s+as\s+([a-zA-Z_][a-zA-Z0-9_]*)/i', $expression, $matches) === 1) {
+                    $projected->{$matches[1]} = $group['count'];
+                }
+            }
+            $result[] = $projected;
+        }
+
+        return $result;
     }
 
     private static function compareIntegerStrings(string $left, string $right): int
@@ -571,5 +845,78 @@ final class FakeCapsuleQuery
         }
 
         return $leftNegative ? -$comparison : $comparison;
+    }
+}
+
+/**
+ * Reproduz o formato real de `->get()` no WHMCS (`Illuminate\Support\Collection`):
+ * Traversable + Countable, NÃO um array. Usada só pelas tabelas listadas em
+ * `FakeCapsule::$collectionTables`, para provar que código de produção que
+ * aplica `array_map()`/`array_filter()`/`array_slice()` direto sobre o
+ * retorno de `get()` quebra com `TypeError` no ambiente real.
+ *
+ * @implements \IteratorAggregate<int, object>
+ */
+final class FakeCollection implements \IteratorAggregate, \Countable
+{
+    /** @param array<int, object> $rows */
+    public function __construct(private readonly array $rows)
+    {
+    }
+
+    public function getIterator(): \ArrayIterator
+    {
+        return new \ArrayIterator($this->rows);
+    }
+
+    public function count(): int
+    {
+        return count($this->rows);
+    }
+}
+
+/**
+ * Grupo `where(function ($q) { $q->where(...)->orWhereNull(...); })` — só o
+ * subconjunto usado em produção (`DynamicTranslationRepository`, filtro
+ * admin-only de custom field): uma condição `where($col,$val)` inicial,
+ * seguida de `orWhereNull($col)`. Não é um builder genérico.
+ */
+final class FakeCapsuleWhereGroup
+{
+    /** @var array<int, array{bool:string, type:string, column:string, value:mixed}> */
+    private array $conditions = [];
+
+    public function where(string $column, mixed $value): self
+    {
+        $this->conditions[] = ['bool' => 'and', 'type' => 'eq', 'column' => $column, 'value' => $value];
+
+        return $this;
+    }
+
+    public function orWhereNull(string $column): self
+    {
+        $this->conditions[] = ['bool' => 'or', 'type' => 'null', 'column' => $column, 'value' => null];
+
+        return $this;
+    }
+
+    public function matches(object $row): bool
+    {
+        $result = null;
+        foreach ($this->conditions as $condition) {
+            $actual = $row->{$condition['column']} ?? null;
+            $conditionResult = $condition['type'] === 'null'
+                ? $actual === null
+                : $actual == $condition['value'];
+
+            if ($result === null) {
+                $result = $conditionResult;
+                continue;
+            }
+
+            $result = $condition['bool'] === 'or' ? ($result || $conditionResult) : ($result && $conditionResult);
+        }
+
+        return $result ?? true;
     }
 }

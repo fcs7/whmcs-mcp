@@ -29,6 +29,10 @@ use NtMcp\Tools\ServiceTools;
 use NtMcp\Tools\SupportInfoTools;
 use NtMcp\Tools\SystemTools;
 use NtMcp\Tools\TicketTools;
+use NtMcp\Tools\TranslationCatalogExtrasTools;
+use NtMcp\Tools\TranslationCatalogTools;
+use NtMcp\Tools\TranslationContentTools;
+use NtMcp\Tools\TranslationTools;
 use NtMcp\Whmcs\CompatContainer;
 use NtMcp\Whmcs\LocalApiClient;
 use Psr\Http\Message\ResponseInterface;
@@ -61,7 +65,7 @@ use Psr\Log\LoggerInterface;
 final class McpSdkAdapter implements ServerAdapterInterface
 {
     public const SERVER_NAME = 'NT Web WHMCS MCP Server';
-    public const SERVER_VERSION = '2.4.0';
+    public const SERVER_VERSION = '2.8.0';
     public const MAX_BODY_BYTES = 1048576;
     public const SESSION_TTL = 3600;
     public const ELEMENTS_CACHE_FILE = 'mcp_elements.json';
@@ -160,6 +164,22 @@ final class McpSdkAdapter implements ServerAdapterInterface
         // Domínio nt_chips: não usa LocalAPI (não há comando WHMCS para chips),
         // então tem ponte e guard próprios em vez do LocalApiClient.
         $container->set(ChipTools::class, new ChipTools());
+        // Domínio de tradução (Fase 1: e-mail): também não usa LocalAPI (não há
+        // comando de escrita para tblemailtemplates), então tem repositório
+        // Capsule e guard próprios, no mesmo padrão do nt_chips.
+        $container->set(TranslationTools::class, new TranslationTools());
+        // Fase 2 do mesmo domínio (produto/grupo de produto, via
+        // tbldynamic_translations) — repositório e mapa próprios, mesmo
+        // padrão de TranslationTools.
+        $container->set(TranslationCatalogTools::class, new TranslationCatalogTools());
+        // Fase 3 do mesmo domínio (custom field, addon de produto,
+        // departamento de suporte) — classe própria só para não ultrapassar
+        // ~400 linhas em TranslationCatalogTools; mesmo padrão de dado/guard.
+        $container->set(TranslationCatalogExtrasTools::class, new TranslationCatalogExtrasTools());
+        // Fase 4 (última) do mesmo domínio (KB e anúncio) — modelo de
+        // linha-filha (parentid/catid), diferente de tbldynamic_translations;
+        // repositórios próprios (AnnouncementRepository/KnowledgebaseRepository).
+        $container->set(TranslationContentTools::class, new TranslationContentTools());
         $container->set(LoggerInterface::class, $logger);
 
         $server = McpServer::builder()
