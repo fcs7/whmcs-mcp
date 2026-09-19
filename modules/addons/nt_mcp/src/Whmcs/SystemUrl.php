@@ -135,9 +135,12 @@ final class SystemUrl
 
         $folder = null;
 
-        if (class_exists('\App') && method_exists('\App', 'get_admin_folder_name')) {
+        // \App is a facade (__callStatic), so method_exists() is always false
+        // for get_admin_folder_name(); is_callable() honours __callStatic.
+        if (class_exists('\App') && is_callable(['\App', 'get_admin_folder_name'])) {
             try {
-                $folder = \App::get_admin_folder_name();
+                $resolved = \App::get_admin_folder_name();
+                $folder = is_string($resolved) ? $resolved : null;
             } catch (\Throwable $e) {
                 $folder = null;
             }
@@ -145,7 +148,8 @@ final class SystemUrl
 
         if ($folder === null && class_exists('\WHMCS\Admin\AdminServiceProvider') && method_exists('\WHMCS\Admin\AdminServiceProvider', 'getAdminRouteBase')) {
             try {
-                $folder = \WHMCS\Admin\AdminServiceProvider::getAdminRouteBase();
+                $resolved = \WHMCS\Admin\AdminServiceProvider::getAdminRouteBase();
+                $folder = is_string($resolved) ? trim($resolved, '/') : null;
             } catch (\Throwable $e) {
                 $folder = null;
             }
