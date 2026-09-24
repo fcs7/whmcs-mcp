@@ -230,15 +230,10 @@ class BearerAuth
         if ($this->adminValidator !== null) {
             return (bool) ($this->adminValidator)($username);
         }
-        try {
-            return (bool) Capsule::table('tbladmins')
-                ->where('username', $username)
-                ->where('disabled', 0)
-                ->exists();
-        } catch (\Throwable $e) {
-            Diagnostics::report(Diagnostics::CATEGORY_AUTH, 'tbladmins_validation', $e);
-            return false;
-        }
+        // refresh-token-grant (F2): consulta extraída para AdminValidator,
+        // reusada por RefreshTokenService::redeem() (precisa re-checar o
+        // admin a cada rotação de refresh token).
+        return (new AdminValidator())->isActive($username);
     }
 
     /**

@@ -11,8 +11,14 @@ final class ExpiredOAuthTokenCleaner
 {
     public function clean(int $now): int
     {
-        return Capsule::table('mod_nt_mcp_oauth_tokens')
+        $deleted = Capsule::table('mod_nt_mcp_oauth_tokens')
             ->where('expires_at', '<=', $now)
             ->delete();
+
+        $deleted += Capsule::table('mod_nt_mcp_oauth_refresh_tokens')
+            ->where('expires_at', '<=', $now)
+            ->delete();
+
+        return $deleted;
     }
 }
