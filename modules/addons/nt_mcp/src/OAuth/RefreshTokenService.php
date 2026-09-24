@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace NtMcp\OAuth;
 
 use NtMcp\Auth\AdminValidator;
+use NtMcp\Whmcs\ActivityEvent;
 
 use WHMCS\Database\Capsule;
 
@@ -23,6 +24,27 @@ final class RefreshTokenService
 
     /** TTL do refresh token: 30 dias, sliding a cada rotação. */
     private const TTL_SECONDS = 30 * 24 * 60 * 60;
+
+    /**
+     * Janela de graça para reuso aparente logo após o consumo (C1).
+     *
+     * Cenário: o claude.ai dispara 2+ tool calls em paralelo; todas veem o
+     * access token expirado e mandam refresh com o MESMO refresh token. A
+     * primeira request rotaciona com sucesso (used=true, used_at=now); a
+     * segunda, ao rodar `first()` DEPOIS desse update, vê `used=true` e — sem
+     * esta janela — trataria isso como reuso genuíno e revogaria a família
+     * INTEIRA, destruindo o par recém-emitido da primeira request e jogando
+     * o cliente legítimo de volta pra re-autorização. Isso reintroduziria,
+     * de forma intermitente, exatamente o sintoma que este serviço existe
+     * para resolver.
+     *
+     * Dentro desta janela após o consumo, presume-se concorrência de cliente
+     * (nega sem revogar); fora dela — ou `used_at` ausente numa linha legada
+     * pré-migration — presume-se reuso de verdade (revoga a família, defesa
+     * padrão do OAuth 2.1 §6.1). NÃO remover este desvio "simplificando" de
+     * volta para revogar sempre: isso reabre a corrida.
+     */
+    private const REUSE_GRACE_SECONDS = 60;
 
     public function __construct(private readonly AdminValidator $adminValidator = new AdminValidator())
     {
@@ -80,30 +102,38 @@ final class RefreshTokenService
             ->first();
 
         if ($row === null) {
-            return RefreshRedemption::denied('invalid_grant');
+            return RefreshRedemption::denied(ActivityEvent::OAUTH_REFRESH_NOT_FOUND);
         }
 
-        // Reuso: token JÁ consumido sendo apresentado de novo — bug de
-        // cliente ou replay de token roubado. OAuth 2.1 §6.1: revoga a
-        // família inteira (defesa padrão).
+        // Reuso aparente: token JÁ consumido sendo apresentado de novo. Antes
+        // de tratar como roubo, checa a janela de graça (ver
+        // REUSE_GRACE_SECONDS) — pode ser só a corrida de refresh paralelo.
         if ((bool) $row->used) {
+            $usedAt = property_exists($row, 'used_at') ? $row->used_at : null;
+            if ($usedAt !== null && ($now - (int) $usedAt) <= self::REUSE_GRACE_SECONDS) {
+                // Concorrência de cliente, não reuso — não revoga a família.
+                return RefreshRedemption::denied(ActivityEvent::OAUTH_REFRESH_RACE_LOST);
+            }
+
+            // Fora da janela (ou linha legada sem used_at): reuso genuíno.
+            // OAuth 2.1 §6.1: revoga a família inteira (defesa padrão).
             $this->revokeFamily((string) $row->family_id);
             return RefreshRedemption::reuseDetected();
         }
 
         if ((int) $row->expires_at <= $now) {
-            return RefreshRedemption::denied('invalid_grant');
+            return RefreshRedemption::denied(ActivityEvent::OAUTH_REFRESH_EXPIRED);
         }
 
         if ((string) $row->client_id !== $clientId) {
-            return RefreshRedemption::denied('invalid_grant');
+            return RefreshRedemption::denied(ActivityEvent::OAUTH_REFRESH_CLIENT_MISMATCH);
         }
 
         // SECURITY FIX (mesmo padrão H-04 dos codes): consumo atômico.
-        if (!$this->attemptConsume((int) $row->id)) {
+        if (!$this->attemptConsume((int) $row->id, $now)) {
             // Perdeu a corrida contra outra requisição para o MESMO token —
             // não é ladrão, é concorrência. Não revoga a família.
-            return RefreshRedemption::denied('invalid_grant');
+            return RefreshRedemption::denied(ActivityEvent::OAUTH_REFRESH_RACE_LOST);
         }
 
         $adminUser = property_exists($row, 'admin_user') ? trim((string) ($row->admin_user ?? '')) : '';
@@ -115,7 +145,7 @@ final class RefreshTokenService
         // resolve o fallback e falha fechado no uso, como hoje.
         if ($adminUser !== '' && !$this->adminValidator->isActive($adminUser)) {
             $this->revokeFamily((string) $row->family_id);
-            return RefreshRedemption::denied('invalid_grant');
+            return RefreshRedemption::denied(ActivityEvent::OAUTH_REFRESH_ADMIN_INACTIVE);
         }
 
         return RefreshRedemption::ok($clientId, $adminUser !== '' ? $adminUser : null, (string) $row->family_id);
@@ -150,12 +180,20 @@ final class RefreshTokenService
      * corrida real só existe entre dois processos concorrentes, algo que um
      * fake síncrono de banco não reproduz).
      */
-    private function attemptConsume(int $id): bool
+    private function attemptConsume(int $id, int $now): bool
     {
+        $values = ['used' => true];
+        // `used_at` (C1) é coluna lazy (OAuthMigration) — guard igual ao
+        // padrão já usado no projeto para colunas pós-migration, para não
+        // quebrar contra um DB cuja ALTER ainda não rodou.
+        if (Capsule::schema()->hasColumn(self::TABLE, 'used_at')) {
+            $values['used_at'] = $now;
+        }
+
         $affected = Capsule::table(self::TABLE)
             ->where('id', $id)
             ->where('used', false)
-            ->update(['used' => true]);
+            ->update($values);
 
         return $affected > 0;
     }

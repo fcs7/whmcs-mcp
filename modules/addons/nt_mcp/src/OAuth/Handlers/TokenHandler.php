@@ -139,6 +139,9 @@ final class TokenHandler
             Capsule::table('mod_nt_mcp_oauth_tokens')
                 ->where('expires_at', '<', time())
                 ->delete();
+            // C3: a tabela de refresh só era purgada quando um admin clicava
+            // no dashboard. Mesmo try/catch não-crítico do cleanup acima.
+            (new RefreshTokenService())->purgeExpired(time());
         } catch (\Throwable $e) {
             // Non-critical: cleanup failure should not block token issuance
         }
@@ -159,13 +162,17 @@ final class TokenHandler
 
         if ($result->reuseDetected) {
             OAuthHelper::error(400, 'invalid_grant', 'Refresh token reuse detected; the token family has been revoked');
-            ActivityLog::record(ActivityEvent::OAUTH_REFRESH_REUSE_DETECTED);
+            ActivityLog::record($result->deniedEvent ?? ActivityEvent::OAUTH_REFRESH_REUSE_DETECTED);
             return;
         }
 
         if (!$result->ok) {
+            // C2: a resposta HTTP continua o mesmo invalid_grant genérico em
+            // TODOS os motivos — só o Activity Log distingue o motivo real
+            // (único olho de observabilidade neste Plesk). Nunca vaza o
+            // motivo pro cliente.
             OAuthHelper::error(400, 'invalid_grant', 'Invalid, expired, or already used refresh token');
-            ActivityLog::record(ActivityEvent::OAUTH_REFRESH_DENIED);
+            ActivityLog::record($result->deniedEvent ?? ActivityEvent::OAUTH_REFRESH_DENIED);
             return;
         }
 

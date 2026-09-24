@@ -118,8 +118,16 @@ final class OAuthMigration
                     $t->string('family_id', 64);
                     $t->integer('expires_at');
                     $t->boolean('used')->default(false);
+                    $t->integer('used_at')->nullable();
                     $t->timestamp('created_at')->useCurrent();
                     $t->index('family_id');
+                });
+            } elseif (!$schema->hasColumn('mod_nt_mcp_oauth_refresh_tokens', 'used_at')) {
+                // refresh-token-grant (C1): janela de graça pra corrida de
+                // refresh paralelo — sem isso, `redeem()` não distingue
+                // concorrência legítima de reuso de token roubado.
+                $schema->table('mod_nt_mcp_oauth_refresh_tokens', function ($t) {
+                    $t->integer('used_at')->nullable()->after('used');
                 });
             }
             return true;
