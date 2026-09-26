@@ -291,6 +291,6 @@ final class AdminController
         if (!empty($vars['modulelink'])) {
             return $vars['modulelink'];
         }
-        return SystemUrl::resolve() . '/admin/addonmodules.php?module=nt_mcp';
+        return SystemUrl::adminUrl('addonmodules.php?module=nt_mcp');
     }
 }

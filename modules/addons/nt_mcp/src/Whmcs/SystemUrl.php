@@ -14,6 +14,8 @@ namespace NtMcp\Whmcs;
 final class SystemUrl
 {
     private static ?string $cached = null;
+    private static ?string $cachedAdminFolder = null;
+    private static ?\Closure $adminFolderResolver = null;
 
     /**
      * Resolve the WHMCS system URL (e.g. "https://desenv.ntweb.com.br").
@@ -97,7 +99,87 @@ final class SystemUrl
      */
     public static function adminAuthorizeUrl(string $requestId): string
     {
-        return self::resolve() . '/admin/addonmodules.php?module=nt_mcp&authorize=' . urlencode($requestId);
+        return self::adminUrl('addonmodules.php?module=nt_mcp&authorize=' . urlencode($requestId));
+    }
+
+    /**
+     * Build a URL under the WHMCS admin folder, resolved at runtime instead
+     * of hardcoding "/admin/". Production may run a custom admin folder
+     * (WHMCS "Change Admin Folder Name" feature, e.g. "gestor"), and a
+     * hardcoded "/admin/" 404s there.
+     */
+    public static function adminUrl(string $path): string
+    {
+        return self::resolve() . '/' . self::adminFolder() . '/' . ltrim($path, '/');
+    }
+
+    /**
+     * Resolve the WHMCS admin folder name (default "admin", but WHMCS lets
+     * operators rename it). Tries, in order: \App::get_admin_folder_name(),
+     * \WHMCS\Admin\AdminServiceProvider::getAdminRouteBase() (if present),
+     * the $customadminpath global WHMCS defines when it includes
+     * configuration.php, then falls back to "admin". Never reads
+     * configuration.php directly.
+     */
+    public static function adminFolder(): string
+    {
+        if (self::$cachedAdminFolder !== null) {
+            return self::$cachedAdminFolder;
+        }
+
+        if (self::$adminFolderResolver !== null) {
+            $resolved = (self::$adminFolderResolver)();
+            self::$cachedAdminFolder = self::sanitizeAdminFolder(is_string($resolved) ? $resolved : null);
+            return self::$cachedAdminFolder;
+        }
+
+        $folder = null;
+
+        // \App is a facade (__callStatic), so method_exists() is always false
+        // for get_admin_folder_name(); is_callable() honours __callStatic.
+        if (class_exists('\App') && is_callable(['\App', 'get_admin_folder_name'])) {
+            try {
+                $resolved = \App::get_admin_folder_name();
+                $folder = is_string($resolved) ? $resolved : null;
+            } catch (\Throwable $e) {
+                $folder = null;
+            }
+        }
+
+        if ($folder === null && class_exists('\WHMCS\Admin\AdminServiceProvider') && method_exists('\WHMCS\Admin\AdminServiceProvider', 'getAdminRouteBase')) {
+            try {
+                $resolved = \WHMCS\Admin\AdminServiceProvider::getAdminRouteBase();
+                $folder = is_string($resolved) ? trim($resolved, '/') : null;
+            } catch (\Throwable $e) {
+                $folder = null;
+            }
+        }
+
+        if ($folder === null && isset($GLOBALS['customadminpath']) && is_string($GLOBALS['customadminpath'])) {
+            $folder = $GLOBALS['customadminpath'];
+        }
+
+        self::$cachedAdminFolder = self::sanitizeAdminFolder($folder);
+        return self::$cachedAdminFolder;
+    }
+
+    private static function sanitizeAdminFolder(?string $folder): string
+    {
+        if ($folder === null || $folder === '' || !preg_match('/^[A-Za-z0-9_-]+$/', $folder)) {
+            return 'admin';
+        }
+
+        return $folder;
+    }
+
+    /**
+     * Test-only seam: override admin folder resolution with a callable.
+     * Pass null to restore the runtime resolution chain.
+     */
+    public static function setAdminFolderResolverForTesting(?callable $resolver): void
+    {
+        self::$adminFolderResolver = $resolver === null ? null : \Closure::fromCallable($resolver);
+        self::$cachedAdminFolder = null;
     }
 
     /**
@@ -118,5 +200,7 @@ final class SystemUrl
     public static function reset(): void
     {
         self::$cached = null;
+        self::$cachedAdminFolder = null;
+        self::$adminFolderResolver = null;
     }
 }
