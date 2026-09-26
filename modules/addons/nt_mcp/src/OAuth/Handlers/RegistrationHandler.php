@@ -100,7 +100,7 @@ final class RegistrationHandler
             'redirect_uris'              => $redirectUris,
             'client_id_issued_at'        => time(),
             'client_secret_expires_at'   => 0,
-            'grant_types'                => ['authorization_code'],
+            'grant_types'                => ['authorization_code', 'refresh_token'],
             'response_types'             => ['code'],
             'token_endpoint_auth_method' => 'none',
         ], JSON_UNESCAPED_SLASHES);

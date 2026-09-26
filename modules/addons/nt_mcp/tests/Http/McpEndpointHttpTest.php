@@ -612,6 +612,13 @@ final class McpEndpointHttpTest extends TestCase
             . 'return $values[$key] ?? ""; } } } '
             . 'namespace Illuminate\\Database\\Capsule { final class Manager { public static function table(string $table): object { '
             . 'return new class { public function where(mixed ...$args): self { return $this; } public function exists(): bool { return true; } }; } } } '
+            // refresh-token-grant (F2): BearerAuth::validateAdminActive() agora delega para
+            // NtMcp\Auth\AdminValidator, que consulta tbladmins via WHMCS\Database\Capsule (não
+            // Illuminate\Database\Capsule\Manager, único stub que existia aqui) — sem este stub
+            // espelhado, o admin nunca é validado como ativo e toda requisição autenticada cai
+            // em 401. Mesmo comportamento permissivo do stub Illuminate acima.
+            . 'namespace WHMCS\\Database { final class Capsule { public static function table(string $table): object { '
+            . 'return new class { public function where(mixed ...$args): self { return $this; } public function count(): int { return 1; } public function exists(): bool { return true; } }; } } } '
             . 'namespace WHMCS { final class TransientData { private static ?self $instance = null; public static function getInstance(): self { return self::$instance ??= new self(); } '
             . 'public function retrieve(string $key): mixed { $all = is_file(' . $rateFile . ') ? json_decode((string) file_get_contents(' . $rateFile . '), true) : []; return $all[$key] ?? false; } '
             . 'public function store(string $key, string $value, int $ttl): void { $all = is_file(' . $rateFile . ') ? json_decode((string) file_get_contents(' . $rateFile . '), true) : []; '

@@ -89,6 +89,14 @@ final class OAuthMigration
                         $t->integer('last_used_at')->nullable()->after('admin_user');
                     });
                 }
+                // refresh-token-grant (F1): liga um access token à família de
+                // refresh que o emitiu, para que revokeFamily() consiga
+                // revogar ambos no reuso detectado / admin inativo.
+                if (!$schema->hasColumn('mod_nt_mcp_oauth_tokens', 'family_id')) {
+                    $schema->table('mod_nt_mcp_oauth_tokens', function ($t) {
+                        $t->string('family_id', 64)->nullable()->after('last_used_at');
+                    });
+                }
             }
 
             // Add approved_by to codes table (for propagating admin to tokens)
@@ -96,6 +104,30 @@ final class OAuthMigration
                 && !$schema->hasColumn('mod_nt_mcp_oauth_codes', 'approved_by')) {
                 $schema->table('mod_nt_mcp_oauth_codes', function ($t) {
                     $t->string('approved_by', 255)->nullable()->after('used');
+                });
+            }
+
+            // refresh-token-grant (F1): tabela de refresh tokens com rotação
+            // obrigatória (OAuth 2.1 §6.1) — single-use, família revogável.
+            if (!$schema->hasTable('mod_nt_mcp_oauth_refresh_tokens')) {
+                $schema->create('mod_nt_mcp_oauth_refresh_tokens', function ($t) {
+                    $t->increments('id');
+                    $t->string('token_hash', 64)->unique();
+                    $t->string('client_id', 64);
+                    $t->string('admin_user', 255)->nullable();
+                    $t->string('family_id', 64);
+                    $t->integer('expires_at');
+                    $t->boolean('used')->default(false);
+                    $t->integer('used_at')->nullable();
+                    $t->timestamp('created_at')->useCurrent();
+                    $t->index('family_id');
+                });
+            } elseif (!$schema->hasColumn('mod_nt_mcp_oauth_refresh_tokens', 'used_at')) {
+                // refresh-token-grant (C1): janela de graça pra corrida de
+                // refresh paralelo — sem isso, `redeem()` não distingue
+                // concorrência legítima de reuso de token roubado.
+                $schema->table('mod_nt_mcp_oauth_refresh_tokens', function ($t) {
+                    $t->integer('used_at')->nullable()->after('used');
                 });
             }
             return true;

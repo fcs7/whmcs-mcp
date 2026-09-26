@@ -10,6 +10,7 @@ use NtMcp\Whmcs\ActivityLog;
 use NtMcp\Whmcs\AuditMetadata;
 
 use Illuminate\Database\Capsule\Manager as Capsule;
+use NtMcp\OAuth\RefreshTokenService;
 use NtMcp\Security\CsrfProtection;
 use NtMcp\Whmcs\AdminSession;
 use NtMcp\Whmcs\ConfigFlag;
@@ -74,7 +75,20 @@ final class AdminController
                 $tokenId = (int) ($_POST['token_id'] ?? 0);
                 if ($tokenId > 0) {
                     try {
-                        Capsule::table('mod_nt_mcp_oauth_tokens')->where('id', $tokenId)->delete();
+                        // refresh-token-grant (F6): a linha pode pertencer a uma
+                        // família de refresh — ler o family_id ANTES de deletar
+                        // para revogar a família inteira (refresh + access),
+                        // senão o refresh sobrevive ao revoke individual.
+                        $tokenRow = Capsule::table('mod_nt_mcp_oauth_tokens')->where('id', $tokenId)->first();
+                        $familyId = $tokenRow !== null && property_exists($tokenRow, 'family_id')
+                            ? trim((string) ($tokenRow->family_id ?? ''))
+                            : '';
+
+                        if ($familyId !== '') {
+                            (new RefreshTokenService())->revokeFamily($familyId);
+                        } else {
+                            Capsule::table('mod_nt_mcp_oauth_tokens')->where('id', $tokenId)->delete();
+                        }
                         $flashMessage = 'Token OAuth revogado com sucesso.';
                         $flashClass   = 'success';
                         ActivityLog::record(ActivityEvent::ADMIN_OAUTH_TOKEN_REVOKED, AuditMetadata::ids(['id' => $tokenId, 'adminid' => $currentAdminId]));
@@ -106,6 +120,7 @@ final class AdminController
             } elseif (isset($_POST['revoke_all_oauth_tokens'])) {
                 try {
                     $deleted = Capsule::table('mod_nt_mcp_oauth_tokens')->delete();
+                    $deleted += Capsule::table('mod_nt_mcp_oauth_refresh_tokens')->delete();
                     $flashMessage = $deleted . ' token(s) OAuth revogado(s).';
                     $flashClass   = 'success';
                     ActivityLog::record(ActivityEvent::ADMIN_OAUTH_ALL_REVOKED, AuditMetadata::ids(['adminid' => $currentAdminId]));
@@ -120,6 +135,8 @@ final class AdminController
                     try {
                         Capsule::connection()->transaction(function () use ($clientIdToRemove) {
                             Capsule::table('mod_nt_mcp_oauth_tokens')
+                                ->where('client_id', $clientIdToRemove)->delete();
+                            Capsule::table('mod_nt_mcp_oauth_refresh_tokens')
                                 ->where('client_id', $clientIdToRemove)->delete();
                             Capsule::table('mod_nt_mcp_oauth_codes')
                                 ->where('client_id', $clientIdToRemove)->delete();

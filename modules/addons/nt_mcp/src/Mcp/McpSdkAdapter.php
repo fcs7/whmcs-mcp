@@ -65,7 +65,7 @@ use Psr\Log\LoggerInterface;
 final class McpSdkAdapter implements ServerAdapterInterface
 {
     public const SERVER_NAME = 'NT Web WHMCS MCP Server';
-    public const SERVER_VERSION = '2.8.0';
+    public const SERVER_VERSION = '2.9.0';
     public const MAX_BODY_BYTES = 1048576;
     public const SESSION_TTL = 3600;
     public const ELEMENTS_CACHE_FILE = 'mcp_elements.json';
