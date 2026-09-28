@@ -26,6 +26,7 @@ class BearerAuthOAuthTest extends TestCase
     protected function tearDown(): void
     {
         unset($_SERVER['HTTP_AUTHORIZATION']);
+        \WHMCS\Config\Setting::reset();
     }
 
     private function makeAuth(bool $adminActive = true): BearerAuth
@@ -36,6 +37,18 @@ class BearerAuthOAuthTest extends TestCase
         $auth->setAdminValidatorCallable(fn(string $u) => $adminActive);
         $auth->setTokenRevokerCallable(function (int $id): void {});
         return $auth;
+    }
+
+    public function test_unbound_oauth_token_cannot_inherit_configured_fallback(): void
+    {
+        \WHMCS\Config\Setting::$store['nt_mcp_admin_user'] = 'superadmin';
+        $auth = $this->makeAuth();
+        $auth->setOAuthLookupCallable(fn(string $hash) => (object) ['id' => 12, 'admin_user' => null]);
+        $revoked = [];
+        $auth->setTokenRevokerCallable(function (int $id) use (&$revoked): void { $revoked[] = $id; });
+        $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . self::OAUTH_TOKEN;
+        self::assertNull($auth->authenticate());
+        self::assertSame([12], $revoked);
     }
 
     // --- Caminho feliz ---
@@ -53,10 +66,7 @@ class BearerAuthOAuthTest extends TestCase
 
     public function test_valid_oauth_token_denies_when_admin_user_empty_and_no_fallback_configured(): void
     {
-        // SECURITY FIX (WO-7): empty admin_user on the token row falls
-        // through to getFallbackAdmin(), which now fails closed (null)
-        // instead of returning the hardcoded 'admin' superadmin when
-        // nt_mcp_admin_user isn't configured.
+        // OAuth always requires explicit approval binding.
         $auth = $this->makeAuth();
         $row = (object) ['admin_user' => '   ', 'expires_at' => time() + 3600];
         $auth->setOAuthLookupCallable(fn(string $hash) => $row);

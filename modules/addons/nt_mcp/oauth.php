@@ -65,7 +65,10 @@ if ($terminalResponse !== null) {
 }
 
 // Ensure OAuth tables exist (lazy creation)
-OAuthMigration::ensureTables();
+if (!OAuthMigration::ensureTables()) {
+    \NtMcp\OAuth\OAuthHelper::error(503, 'temporarily_unavailable', 'OAuth storage is unavailable');
+    exit;
+}
 
 // Route to appropriate handler
 OAuthRouter::dispatch();

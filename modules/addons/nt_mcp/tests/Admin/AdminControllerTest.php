@@ -11,7 +11,9 @@ use NtMcp\Tests\Support\FakeCapsule;
 use NtMcp\Whmcs\ActivityEvent;
 use NtMcp\Whmcs\SystemUrl;
 use PHPUnit\Framework\TestCase;
+use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
 
+#[RunTestsInSeparateProcesses]
 final class AdminControllerTest extends TestCase
 {
     /** @var array<string, mixed> */
@@ -29,11 +31,15 @@ final class AdminControllerTest extends TestCase
         $this->postBackup = $_POST;
         $this->sessionBackup = $_SESSION ?? [];
 
+        class_alias(\WHMCS\Database\Capsule::class, 'Illuminate\Database\Capsule\Manager');
+        ini_set('error_log', '/dev/null');
         FakeCapsule::reset();
+        FakeCapsule::withRows('tbladmins', [['id' => 1, 'username' => 'reviewer', 'disabled' => 0]]);
         \WHMCS\Config\Setting::reset();
         ActivityLogSpy::start();
         SystemUrl::reset();
-        $_SESSION = [];
+        if (session_status() !== PHP_SESSION_ACTIVE) { session_start(); }
+        $_SESSION = ['adminid' => 1];
         $_POST = [];
         $_SERVER['REQUEST_METHOD'] = 'POST';
         \WHMCS\Config\Setting::setValue('SystemURL', 'https://example.test');
@@ -76,4 +82,26 @@ final class AdminControllerTest extends TestCase
             ActivityEvent::ADMIN_OAUTH_EXPIRED_CLEANED->value
         ));
     }
+    public function test_missing_admin_cannot_regenerate_static_token(): void
+    {
+        unset($_SESSION['adminid']);
+        $_POST = ['_csrf_token' => CsrfProtection::token(), 'regenerate_token' => '1'];
+        ob_start();
+        (new AdminController())->handle([]);
+        $output = ob_get_clean();
+        self::assertStringContainsString('Sessao de administrador invalida', $output);
+        self::assertNull(\WHMCS\Config\Setting::getValue('nt_mcp_bearer_token'));
+    }
+
+    public function test_disabled_admin_cannot_regenerate_static_token(): void
+    {
+        FakeCapsule::withRows('tbladmins', [['id' => 1, 'username' => 'reviewer', 'disabled' => 1]]);
+        $_POST = ['_csrf_token' => CsrfProtection::token(), 'regenerate_token' => '1'];
+        ob_start();
+        (new AdminController())->handle([]);
+        $output = ob_get_clean();
+        self::assertStringContainsString('Nao foi possivel validar o administrador', $output);
+        self::assertNull(\WHMCS\Config\Setting::getValue('nt_mcp_bearer_token'));
+    }
+
 }

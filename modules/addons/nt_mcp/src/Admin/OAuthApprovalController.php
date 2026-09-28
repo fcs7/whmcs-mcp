@@ -11,6 +11,7 @@ use NtMcp\Whmcs\AuditMetadata;
 
 use Illuminate\Database\Capsule\Manager as Capsule;
 use NtMcp\Security\CsrfProtection;
+use NtMcp\OAuth\OAuthTransaction;
 use NtMcp\Whmcs\AdminSession;
 
 /**
@@ -34,7 +35,7 @@ final class OAuthApprovalController
 
         // Layer 2: Explicit admin session check (belt-and-suspenders)
         $adminId = AdminSession::getAdminId();
-        if ($adminId === 0) {
+        if ($adminId <= 0) {
             echo '<div class="alert alert-danger">';
             echo '<strong>Acesso negado.</strong> Sessao de administrador invalida.';
             echo '</div>';
@@ -42,7 +43,7 @@ final class OAuthApprovalController
         }
 
         $requestId = $_GET['authorize'] ?? '';
-        if (!preg_match('/^[a-f0-9]{32}\z/', $requestId)) {
+        if (!is_string($requestId) || !preg_match('/^[a-f0-9]{32}\z/', $requestId)) {
             echo '<div class="alert alert-danger">Request ID invalido.</div>';
             return;
         }
@@ -71,7 +72,12 @@ final class OAuthApprovalController
 
         // Handle POST: admin clicked Approve or Deny
         if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['authorize_action'])) {
-            $this->handleApproval($pending, $clientName, $adminId, $e);
+            try {
+                echo OAuthTransaction::capture(fn() => $this->handleApproval($pending, $clientName, $adminId, $e));
+            } catch (\Throwable $ex) {
+                Diagnostics::report(Diagnostics::CATEGORY_OAUTH, 'approval_transaction', $ex);
+                echo '<div class="alert alert-danger">Nao foi possivel concluir a autorizacao. Tente novamente.</div>';
+            }
             return;
         }
 
@@ -86,16 +92,22 @@ final class OAuthApprovalController
     private function handleApproval(object $pending, string $clientName, int $adminId, \Closure $e): void
     {
         // Layer 3: CSRF validation
-        if (!CsrfProtection::verify($_POST['_csrf_token'] ?? '')) {
+        if (!is_string($_POST['_csrf_token'] ?? null) || !CsrfProtection::verify($_POST['_csrf_token'])) {
             echo '<div class="alert alert-danger">';
             echo 'Token CSRF invalido. Recarregue a pagina e tente novamente.';
             echo '</div>';
             return;
         }
 
+        if (!Capsule::table('mod_nt_mcp_oauth_clients')->where('client_id', $pending->client_id)->first()) {
+            echo '<div class="alert alert-danger">Client OAuth indisponivel.</div>';
+            return;
+        }
+
         // Mark pending request as used (V-04 atomic: WHERE used=0)
         $affected = Capsule::table('mod_nt_mcp_oauth_codes')
             ->where('id', $pending->id)
+            ->where('expires_at', '>', time())
             ->where('used', false)
             ->update(['used' => true]);
 
@@ -115,9 +127,9 @@ final class OAuthApprovalController
                 'error'             => 'access_denied',
                 'error_description' => 'Administrator denied the authorization request',
                 'state'             => $state,
-            ]));
-            $url = $redirectUri . '?' . $params;
-            echo '<script>window.location.href=' . json_encode($url, JSON_UNESCAPED_SLASHES) . ';</script>';
+            ], static fn($value): bool => $value !== null && $value !== ''));
+            $url = $redirectUri . (str_contains($redirectUri, '?') ? '&' : '?') . $params;
+            echo '<script>window.location.href=' . json_encode($url, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_THROW_ON_ERROR) . ';</script>';
             echo '<noscript><div class="alert alert-warning">Autorizacao negada. ';
             echo '<a href="' . $e($url) . '">Clique aqui para continuar</a>.</div></noscript>';
             return;
@@ -127,11 +139,19 @@ final class OAuthApprovalController
         $authCode = bin2hex(random_bytes(32));
 
         // Resolve admin username for per-token binding
-        $adminUsername = 'admin';
         try {
-            $adminUsername = Capsule::table('tbladmins')->where('id', $adminId)->value('username') ?? 'admin';
+            $adminUsername = Capsule::table('tbladmins')
+                ->where('id', $adminId)->where('disabled', 0)->value('username');
+            if (!is_string($adminUsername) || trim($adminUsername) === '') {
+                throw new \RuntimeException('Approving administrator unavailable');
+            }
+            if (!Capsule::schema()->hasColumn('mod_nt_mcp_oauth_codes', 'approved_by')) {
+                throw new \RuntimeException('OAuth approval schema unavailable');
+            }
         } catch (\Throwable $ex) {
             Diagnostics::report(Diagnostics::CATEGORY_ADMIN_LOOKUP, 'tbladmins', $ex);
+            echo '<div class="alert alert-danger">Nao foi possivel validar o administrador. Inicie uma nova autorizacao.</div>';
+            return;
         }
 
         // SECURITY FIX (S2A-01): Store hash, not plaintext
@@ -147,9 +167,7 @@ final class OAuthApprovalController
                 'used'           => false,
                 'created_at'     => date('Y-m-d H:i:s'),
             ];
-            if (Capsule::schema()->hasColumn('mod_nt_mcp_oauth_codes', 'approved_by')) {
-                $codeData['approved_by'] = $adminUsername;
-            }
+            $codeData['approved_by'] = $adminUsername;
             Capsule::table('mod_nt_mcp_oauth_codes')->insert($codeData);
         } catch (\Throwable $dbEx) {
             Diagnostics::report(Diagnostics::CATEGORY_OAUTH, 'authorization_code_insert', $dbEx);
@@ -163,9 +181,9 @@ final class OAuthApprovalController
         $params = http_build_query(array_filter([
             'code'  => $authCode,
             'state' => $state,
-        ]));
-        $url = $redirectUri . '?' . $params;
-        echo '<script>window.location.href=' . json_encode($url, JSON_UNESCAPED_SLASHES) . ';</script>';
+        ], static fn($value): bool => $value !== null && $value !== ''));
+        $url = $redirectUri . (str_contains($redirectUri, '?') ? '&' : '?') . $params;
+        echo '<script>window.location.href=' . json_encode($url, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_THROW_ON_ERROR) . ';</script>';
         echo '<noscript><div class="alert alert-success">Autorizacao aprovada. ';
         echo '<a href="' . $e($url) . '">Clique aqui para continuar</a>.</div></noscript>';
     }

@@ -36,16 +36,25 @@ final class AuthorizationHandler
         $responseType  = $_GET['response_type'] ?? '';
         $codeChallengeMethod = $_GET['code_challenge_method'] ?? '';
 
+        foreach (['client_id' => 64, 'redirect_uri' => 2048, 'code_challenge' => 128,
+            'state' => 255, 'response_type' => 32, 'code_challenge_method' => 16] as $key => $limit) {
+            $value = $_GET[$key] ?? '';
+            if (!is_string($value) || strlen($value) > $limit) {
+                OAuthHelper::error(400, 'invalid_request', 'Invalid authorization parameters');
+                return;
+            }
+        }
+
         if ($responseType !== 'code') {
             OAuthHelper::error(400, 'unsupported_response_type', 'Only response_type=code is supported');
             return;
         }
-        if ($codeChallenge === '') {
+        if (!preg_match('/^[A-Za-z0-9_-]{43}\z/', $codeChallenge)) {
             OAuthHelper::error(400, 'invalid_request', 'code_challenge is required (PKCE)');
             return;
         }
         // V-14 fix: require S256
-        if ($codeChallengeMethod !== '' && $codeChallengeMethod !== 'S256') {
+        if ($codeChallengeMethod !== 'S256') {
             OAuthHelper::error(400, 'invalid_request', 'Only code_challenge_method=S256 is supported');
             return;
         }

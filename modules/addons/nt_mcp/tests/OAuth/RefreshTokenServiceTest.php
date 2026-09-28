@@ -110,11 +110,8 @@ final class RefreshTokenServiceTest extends TestCase
         $this->assertSame(['used' => true, 'used_at' => 1000], FakeCapsule::$mutations[0]['values']);
     }
 
-    public function test_redeem_null_admin_user_does_not_deny(): void
+    public function test_redeem_null_admin_user_denies_and_revokes_family(): void
     {
-        // admin_user null/vazio NÃO nega o redeem (plano F3): BearerAuth tem
-        // fallback próprio; negar aqui mataria por 30 dias uma família cujo
-        // approved_by veio null.
         FakeCapsule::withRows(self::TABLE, [
             [
                 'id' => 1,
@@ -129,7 +126,9 @@ final class RefreshTokenServiceTest extends TestCase
 
         $result = (new RefreshTokenService())->redeem('plain-refresh', 'client1', 1000);
 
-        $this->assertTrue($result->ok);
+        $this->assertFalse($result->ok);
+        $this->assertSame(ActivityEvent::OAUTH_REFRESH_ADMIN_INACTIVE, $result->deniedEvent);
+        $this->assertSame([], FakeCapsule::$rows[self::TABLE]);
         $this->assertNull($result->adminUser);
     }
 

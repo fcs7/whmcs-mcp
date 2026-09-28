@@ -5,11 +5,13 @@ declare(strict_types=1);
 namespace NtMcp\OAuth\Handlers;
 
 use NtMcp\Whmcs\Diagnostics;
+use NtMcp\Auth\AdminValidator;
 use NtMcp\Whmcs\ActivityEvent;
 use NtMcp\Whmcs\ActivityLog;
 
 use Illuminate\Database\Capsule\Manager as Capsule;
 use NtMcp\OAuth\OAuthHelper;
+use NtMcp\OAuth\OAuthTransaction;
 use NtMcp\OAuth\RefreshTokenService;
 use NtMcp\Security\RateLimiter;
 
@@ -43,6 +45,22 @@ final class TokenHandler
             $params = $_POST;
         }
 
+        if (!is_array($params)) {
+            OAuthHelper::error(400, 'invalid_request', 'Expected an object of token parameters');
+            return;
+        }
+        try {
+            echo OAuthTransaction::capture(static function () use ($params): void {
+                self::dispatchGrant($params);
+            });
+        } catch (\Throwable $e) {
+            Diagnostics::report(Diagnostics::CATEGORY_OAUTH, 'token_transaction', $e);
+            OAuthHelper::error(503, 'temporarily_unavailable', 'Token storage is unavailable');
+        }
+    }
+
+    private static function dispatchGrant(array $params): void
+    {
         $grantType = $params['grant_type'] ?? '';
 
         switch ($grantType) {
@@ -66,7 +84,8 @@ final class TokenHandler
         $redirectUri  = $params['redirect_uri'] ?? '';
         $clientId     = $params['client_id'] ?? '';
 
-        if ($code === '' || $codeVerifier === '') {
+        if (!is_string($code) || !is_string($codeVerifier) || !is_string($redirectUri) || !is_string($clientId)
+            || $code === '' || !preg_match('/^[A-Za-z0-9._~-]{43,128}\z/', $codeVerifier)) {
             OAuthHelper::error(400, 'invalid_request', 'code and code_verifier are required');
             ActivityLog::record(ActivityEvent::OAUTH_TOKEN_DENIED);
             return;
@@ -79,20 +98,8 @@ final class TokenHandler
             ->where('expires_at', '>', time())
             ->first();
 
-        if (!$codeRow) {
+        if (!$codeRow || !is_string($codeRow->approved_by ?? null) || trim($codeRow->approved_by) === '') {
             OAuthHelper::error(400, 'invalid_grant', 'Invalid, expired, or already used authorization code');
-            ActivityLog::record(ActivityEvent::OAUTH_TOKEN_DENIED);
-            return;
-        }
-
-        // SECURITY FIX (H-04 -- CRITICAL): Atomic code consumption to prevent replay
-        $affected = Capsule::table('mod_nt_mcp_oauth_codes')
-            ->where('id', $codeRow->id)
-            ->where('used', false)
-            ->update(['used' => true]);
-
-        if ($affected === 0) {
-            OAuthHelper::error(400, 'invalid_grant', 'Authorization code already consumed');
             ActivityLog::record(ActivityEvent::OAUTH_TOKEN_DENIED);
             return;
         }
@@ -115,6 +122,20 @@ final class TokenHandler
         $computedChallenge = rtrim(strtr(base64_encode(hash('sha256', $codeVerifier, true)), '+/', '-_'), '=');
         if (!hash_equals($codeRow->code_challenge, $computedChallenge)) {
             OAuthHelper::error(400, 'invalid_grant', 'PKCE code_verifier verification failed');
+            ActivityLog::record(ActivityEvent::OAUTH_TOKEN_DENIED);
+            return;
+        }
+
+        // SECURITY FIX (H-04 -- CRITICAL): Atomic code consumption to prevent replay
+        $affected = Capsule::table('mod_nt_mcp_oauth_codes')
+            ->where('id', $codeRow->id)
+            ->where('approved_by', $codeRow->approved_by)
+            ->where('expires_at', '>', time())
+            ->where('used', false)
+            ->update(['used' => true]);
+
+        if ($affected === 0) {
+            OAuthHelper::error(400, 'invalid_grant', 'Authorization code already consumed');
             ActivityLog::record(ActivityEvent::OAUTH_TOKEN_DENIED);
             return;
         }
@@ -152,7 +173,7 @@ final class TokenHandler
         $refreshToken = $params['refresh_token'] ?? '';
         $clientId     = $params['client_id'] ?? '';
 
-        if ($refreshToken === '' || $clientId === '') {
+        if (!is_string($refreshToken) || !is_string($clientId) || $refreshToken === '' || $clientId === '') {
             OAuthHelper::error(400, 'invalid_request', 'refresh_token and client_id are required');
             ActivityLog::record(ActivityEvent::OAUTH_REFRESH_DENIED);
             return;
@@ -186,52 +207,35 @@ final class TokenHandler
      */
     private static function issueTokenPair(string $clientId, ?string $adminUser, string $familyId, ActivityEvent $issuedEvent): bool
     {
+        if ($adminUser === null || trim($adminUser) === '' || !(new AdminValidator())->isActive($adminUser)) {
+            OAuthHelper::error(400, 'invalid_grant', 'Approving administrator is unavailable');
+            ActivityLog::record(ActivityEvent::OAUTH_TOKEN_DENIED);
+            return false;
+        }
+
         $accessToken = bin2hex(random_bytes(32));
         $tokenHash   = hash('sha256', $accessToken);
 
-        // SECURITY FIX (F7 -- audit): Wrap token insert in try/catch
-        try {
-            $tokenData = [
-                'token_hash'  => $tokenHash,
-                'client_id'   => $clientId,
-                'expires_at'  => time() + self::ACCESS_TOKEN_TTL,
-                'created_at'  => date('Y-m-d H:i:s'),
-            ];
-            $schema = Capsule::schema();
-            if ($schema->hasColumn('mod_nt_mcp_oauth_tokens', 'admin_user')) {
-                // SECURITY (F-13 fix): Guard against undefined property on pre-migration DBs
-                $tokenData['admin_user'] = $adminUser;
-            }
-            // refresh-token-grant (F4): liga o access token à família de
-            // refresh que o emitiu, para que revokeFamily() consiga revogar
-            // ambos no reuso detectado / admin inativo / revoke individual.
-            if ($schema->hasColumn('mod_nt_mcp_oauth_tokens', 'family_id')) {
-                $tokenData['family_id'] = $familyId;
-            }
-            Capsule::table('mod_nt_mcp_oauth_tokens')->insert($tokenData);
-        } catch (\Throwable $dbEx) {
-            Diagnostics::report(Diagnostics::CATEGORY_OAUTH, 'token_insert', $dbEx);
-            OAuthHelper::error(500, 'server_error', 'Failed to persist access token');
+        // The caller holds OAuthTransaction through grant consumption and
+        // both inserts. Any failure rolls everything back before JSON is sent.
+        $schema = Capsule::schema();
+        if (!$schema->hasColumn('mod_nt_mcp_oauth_tokens', 'admin_user')
+            || !$schema->hasColumn('mod_nt_mcp_oauth_tokens', 'family_id')) {
+            throw new \RuntimeException('OAuth token binding schema unavailable');
+        }
+        if (!Capsule::table('mod_nt_mcp_oauth_clients')->where('client_id', $clientId)->first()) {
+            OAuthHelper::error(400, 'invalid_grant', 'OAuth client is unavailable');
             return false;
         }
-
-        // O insert do refresh precisa do MESMO tratamento do access (SECURITY
-        // FIX F7): sem try/catch, uma falha aqui sobe como exceção não tratada
-        // DEPOIS de o access já estar gravado — 500 sem corpo JSON e um access
-        // token órfão vivo por 4h. Em caso de falha, desfaz o access recém-
-        // inserido para não deixar credencial sem par de renovação.
-        try {
-            $refreshToken = (new RefreshTokenService())->issue($clientId, $adminUser, $familyId, time());
-        } catch (\Throwable $dbEx) {
-            Diagnostics::report(Diagnostics::CATEGORY_OAUTH, 'refresh_token_insert', $dbEx);
-            try {
-                Capsule::table('mod_nt_mcp_oauth_tokens')->where('token_hash', $tokenHash)->delete();
-            } catch (\Throwable $rollbackEx) {
-                Diagnostics::report(Diagnostics::CATEGORY_OAUTH, 'access_token_rollback', $rollbackEx);
-            }
-            OAuthHelper::error(500, 'server_error', 'Failed to persist refresh token');
-            return false;
-        }
+        Capsule::table('mod_nt_mcp_oauth_tokens')->insert([
+            'token_hash' => $tokenHash,
+            'client_id' => $clientId,
+            'expires_at' => time() + self::ACCESS_TOKEN_TTL,
+            'created_at' => date('Y-m-d H:i:s'),
+            'admin_user' => $adminUser,
+            'family_id' => $familyId,
+        ]);
+        $refreshToken = (new RefreshTokenService())->issue($clientId, $adminUser, $familyId, time());
 
         // SECURITY FIX (L-03 -- LOW): Audit logging for token issuance
         ActivityLog::record($issuedEvent);

@@ -99,12 +99,10 @@ if ($clientsRows === '') {
     $clientsRows = '<tr><td colspan="5" class="text-center text-muted">Nenhum client OAuth registrado.</td></tr>';
 }
 
-$revokeAllBtn = $activeCount > 0
-    ? '<form method="post" style="display:inline; margin-left:10px;">'
+$revokeAllBtn = '<form method="post" style="display:inline; margin-left:10px;">'
       . '<input type="hidden" name="_csrf_token" value="' . $escapedCsrf . '">'
       . '<button type="submit" name="revoke_all_oauth_tokens" class="btn btn-xs btn-danger"'
-      . ' onclick="return confirm(\'Revogar TODOS os tokens OAuth?\');">Revogar Todos</button></form>'
-    : '';
+      . ' onclick="return confirm(\'Revogar TODOS os tokens e autorizacoes OAuth pendentes?\');">Revogar Todos</button></form>';
 $cleanExpiredBtn = $expiredCount > 0
     ? '<form method="post" style="display:inline; margin-left:10px;">'
       . '<input type="hidden" name="_csrf_token" value="' . $escapedCsrf . '">'

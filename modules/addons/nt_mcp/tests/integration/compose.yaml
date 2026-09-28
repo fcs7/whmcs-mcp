@@ -1,0 +1,27 @@
+services:
+  db:
+    image: mariadb:11.4
+    environment:
+      MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: '1'
+      MARIADB_DATABASE: nt_mcp_test
+    tmpfs:
+      - /var/lib/mysql
+    healthcheck:
+      test: ['CMD', 'healthcheck.sh', '--connect', '--innodb_initialized']
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    networks: [isolated]
+  tests:
+    build: .
+    environment:
+      NT_MCP_TEST_DB_HOST: db
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ../..:/app:ro
+    networks: [isolated]
+networks:
+  isolated:
+    internal: true

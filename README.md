@@ -235,6 +235,18 @@ Apos clicar Activate, você verá uma tela com:
   - **Configurar** — Alterar usuario admin, renovar token, revogar clientes OAuth
   - **Desativar** — Para desabilitar o addon
 
+### Atualização de segurança 2.9.1
+
+OAuth exige aprovação por administrador ativo e vínculo explícito em cada token.
+Credenciais OAuth antigas sem `admin_user` deixam de autenticar e renovar.
+As quatro tabelas `mod_nt_mcp_oauth_*` devem usar **InnoDB**: emissão,
+aprovação e revogação precisam de transações. A atualização não converte tabelas
+existentes automaticamente; armazenamento incompatível bloqueia a operação.
+
+Antes de publicar, siga o [procedimento de atualização e verificação](docs/security/2026-09-28-production-review.md).
+Ele inclui backup, conferência dos engines, revogação dos tokens/códigos anteriores,
+novas aprovações e verificação dos arquivos/controles HTTP no destino.
+
 ### 4. Configurar discovery OAuth (rewrite rules)
 
 O Claude Code e outros clientes OAuth precisam descobrir o servidor OAuth 2.1 automaticamente via RFC 8414. Para isso, adicione regras ao `.htaccess` na **raiz do WHMCS**.
@@ -418,7 +430,7 @@ Na primeira conexao, o fluxo OAuth inicia automaticamente:
 1. Descobre o servidor OAuth via RFC 8414
 2. Registra um client via Dynamic Client Registration (RFC 7591)
 3. Abre o navegador para autorizacao — aprove no painel admin do WHMCS
-4. Obtem um token OAuth 2.1 com PKCE (S256) valido por 24 horas (renovado automaticamente)
+4. Obtem um token OAuth 2.1 com PKCE (S256) valido por 4 horas (renovado automaticamente por refresh token)
 
 **Metodo alternativo — Token estatico (sem OAuth):**
 

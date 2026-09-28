@@ -10,7 +10,7 @@ use NtMcp\Whmcs\ActivityLog;
 use NtMcp\Whmcs\AuditMetadata;
 
 use Illuminate\Database\Capsule\Manager as Capsule;
-use NtMcp\OAuth\RefreshTokenService;
+use NtMcp\OAuth\OAuthRevocation;
 use NtMcp\Security\CsrfProtection;
 use NtMcp\Whmcs\AdminSession;
 use NtMcp\Whmcs\ConfigFlag;
@@ -33,15 +33,20 @@ final class AdminController
 
         // Auto-detect logged-in admin
         $currentAdminId = AdminSession::getAdminId();
-        $currentAdminName = 'admin';
-        if ($currentAdminId > 0) {
-            try {
-                $currentAdminName = Capsule::table('tbladmins')
-                    ->where('id', $currentAdminId)
-                    ->value('username') ?? 'admin';
-            } catch (\Throwable $ex) {
-                Diagnostics::report(Diagnostics::CATEGORY_ADMIN_LOOKUP, 'tbladmins', $ex);
+        if ($currentAdminId <= 0) {
+            echo '<div class="alert alert-danger">Sessao de administrador invalida.</div>';
+            return;
+        }
+        try {
+            $currentAdminName = Capsule::table('tbladmins')
+                ->where('id', $currentAdminId)->where('disabled', 0)->value('username');
+            if (!is_string($currentAdminName) || trim($currentAdminName) === '') {
+                throw new \RuntimeException('Active administrator unavailable');
             }
+        } catch (\Throwable $ex) {
+            Diagnostics::report(Diagnostics::CATEGORY_ADMIN_LOOKUP, 'tbladmins', $ex);
+            echo '<div class="alert alert-danger">Nao foi possivel validar o administrador.</div>';
+            return;
         }
 
         // Static token metadata
@@ -55,7 +60,7 @@ final class AdminController
             $flashClass     = 'info';
             $flashPlaintext = '';
 
-            $csrfOk = CsrfProtection::verify($_POST['_csrf_token'] ?? '');
+            $csrfOk = is_string($_POST['_csrf_token'] ?? null) && CsrfProtection::verify($_POST['_csrf_token']);
 
             if (!$csrfOk) {
                 $flashMessage = 'Erro: token CSRF invalido. Recarregue a pagina e tente novamente.';
@@ -75,20 +80,7 @@ final class AdminController
                 $tokenId = (int) ($_POST['token_id'] ?? 0);
                 if ($tokenId > 0) {
                     try {
-                        // refresh-token-grant (F6): a linha pode pertencer a uma
-                        // família de refresh — ler o family_id ANTES de deletar
-                        // para revogar a família inteira (refresh + access),
-                        // senão o refresh sobrevive ao revoke individual.
-                        $tokenRow = Capsule::table('mod_nt_mcp_oauth_tokens')->where('id', $tokenId)->first();
-                        $familyId = $tokenRow !== null && property_exists($tokenRow, 'family_id')
-                            ? trim((string) ($tokenRow->family_id ?? ''))
-                            : '';
-
-                        if ($familyId !== '') {
-                            (new RefreshTokenService())->revokeFamily($familyId);
-                        } else {
-                            Capsule::table('mod_nt_mcp_oauth_tokens')->where('id', $tokenId)->delete();
-                        }
+                        OAuthRevocation::token($tokenId);
                         $flashMessage = 'Token OAuth revogado com sucesso.';
                         $flashClass   = 'success';
                         ActivityLog::record(ActivityEvent::ADMIN_OAUTH_TOKEN_REVOKED, AuditMetadata::ids(['id' => $tokenId, 'adminid' => $currentAdminId]));
@@ -119,8 +111,7 @@ final class AdminController
                 }
             } elseif (isset($_POST['revoke_all_oauth_tokens'])) {
                 try {
-                    $deleted = Capsule::table('mod_nt_mcp_oauth_tokens')->delete();
-                    $deleted += Capsule::table('mod_nt_mcp_oauth_refresh_tokens')->delete();
+                    $deleted = OAuthRevocation::all();
                     $flashMessage = $deleted . ' token(s) OAuth revogado(s).';
                     $flashClass   = 'success';
                     ActivityLog::record(ActivityEvent::ADMIN_OAUTH_ALL_REVOKED, AuditMetadata::ids(['adminid' => $currentAdminId]));
@@ -130,19 +121,10 @@ final class AdminController
                     $flashClass   = 'danger';
                 }
             } elseif (isset($_POST['remove_oauth_client'])) {
-                $clientIdToRemove = trim($_POST['client_id_remove'] ?? '');
+                $clientIdToRemove = is_string($_POST['client_id_remove'] ?? null) ? trim($_POST['client_id_remove']) : '';
                 if ($clientIdToRemove !== '') {
                     try {
-                        Capsule::connection()->transaction(function () use ($clientIdToRemove) {
-                            Capsule::table('mod_nt_mcp_oauth_tokens')
-                                ->where('client_id', $clientIdToRemove)->delete();
-                            Capsule::table('mod_nt_mcp_oauth_refresh_tokens')
-                                ->where('client_id', $clientIdToRemove)->delete();
-                            Capsule::table('mod_nt_mcp_oauth_codes')
-                                ->where('client_id', $clientIdToRemove)->delete();
-                            Capsule::table('mod_nt_mcp_oauth_clients')
-                                ->where('client_id', $clientIdToRemove)->delete();
-                        });
+                        OAuthRevocation::client($clientIdToRemove);
                         $flashMessage = 'Client OAuth removido junto com seus tokens.';
                         $flashClass   = 'success';
                         ActivityLog::record(ActivityEvent::ADMIN_OAUTH_CLIENT_REMOVED, AuditMetadata::ids(['adminid' => $currentAdminId]));
