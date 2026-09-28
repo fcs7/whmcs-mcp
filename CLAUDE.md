@@ -61,7 +61,7 @@ npx -y @modelcontextprotocol/inspector --cli --transport http --server-url "http
 
 - `mcp.php` chama `BearerAuth::authenticate()` → retorna admin username vinculado ao token
 - Admin propagado para `Server::run($adminUser)` → usado em todas as LocalAPI calls
-- Fallback chain: per-token admin_user → global `nt_mcp_admin_user` config → fail closed (401)
+- Static-token fallback: per-token admin → global `nt_mcp_admin_user` → 401. OAuth exige vínculo não vazio com o aprovador, sem fallback.
 - Static token: admin lido de `nt_mcp_bearer_token_admin` (tblconfiguration)
 - OAuth token: admin lido de `mod_nt_mcp_oauth_tokens.admin_user` (propagado de `approved_by` na aprovação)
 
@@ -73,7 +73,9 @@ npx -y @modelcontextprotocol/inspector --cli --transport http --server-url "http
 - A aprovação ocorre em `OAuthApprovalController` (via `nt_mcp_output()`), não em oauth.php
 - `addonmodules.php` = output page (`_output()`); `configaddonmods.php` = config page (activate/deactivate)
 - Addon precisa de permissão no role group: Configuration > Addon Modules > NT MCP > Access Control
-- DB tables: `mod_nt_mcp_oauth_clients`, `mod_nt_mcp_oauth_codes`, `mod_nt_mcp_oauth_tokens`
+- DB tables: `mod_nt_mcp_oauth_clients`, `mod_nt_mcp_oauth_codes`, `mod_nt_mcp_oauth_tokens`, `mod_nt_mcp_oauth_refresh_tokens`; todas devem usar InnoDB.
+- `OAuthTransaction` serializa emissão/aprovação/revogação pelo lock dos clients ordenados por id; tokens e redirects só são enviados após commit. Não dividir consumo e emissão em transações separadas.
+- `OAuthRevocation::all()` invalida também pedidos/códigos pendentes. O botão permanece disponível sem access tokens ativos, pois refresh tokens podem sobreviver.
 - DB columns adicionais (migration lazy via hasColumn): `tokens.admin_user`, `tokens.last_used_at`, `codes.approved_by`
 - Admin auto-detect na UI: `$_SESSION['adminid']` → `tbladmins.username` (confiável — cookies admin path-scoped)
 

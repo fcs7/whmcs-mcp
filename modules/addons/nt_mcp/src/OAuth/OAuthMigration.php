@@ -36,7 +36,6 @@ final class OAuthMigration
         if (self::$ensured) {
             return true;
         }
-        self::$ensured = true;
 
         // SECURITY FIX (F-10): Wrap migration — called every OAuth request,
         // so failures must not propagate and break all OAuth endpoints.
@@ -45,6 +44,7 @@ final class OAuthMigration
 
             if (!$schema->hasTable('mod_nt_mcp_oauth_clients')) {
                 $schema->create('mod_nt_mcp_oauth_clients', function ($t) {
+                    $t->engine = 'InnoDB';
                     $t->increments('id');
                     $t->string('client_id', 64)->unique();
                     $t->string('client_name', 255)->nullable();
@@ -55,6 +55,7 @@ final class OAuthMigration
 
             if (!$schema->hasTable('mod_nt_mcp_oauth_codes')) {
                 $schema->create('mod_nt_mcp_oauth_codes', function ($t) {
+                    $t->engine = 'InnoDB';
                     $t->increments('id');
                     $t->string('code', 128)->unique();
                     $t->string('client_id', 64);
@@ -69,12 +70,14 @@ final class OAuthMigration
 
             if (!$schema->hasTable('mod_nt_mcp_oauth_tokens')) {
                 $schema->create('mod_nt_mcp_oauth_tokens', function ($t) {
+                    $t->engine = 'InnoDB';
                     $t->increments('id');
                     $t->string('token_hash', 64)->unique();
                     $t->string('client_id', 64);
                     $t->integer('expires_at');
                     $t->string('admin_user', 255)->nullable();
                     $t->integer('last_used_at')->nullable();
+                    $t->string('family_id', 64)->nullable();
                     $t->timestamp('created_at')->useCurrent();
                 });
             } else {
@@ -111,6 +114,7 @@ final class OAuthMigration
             // obrigatória (OAuth 2.1 §6.1) — single-use, família revogável.
             if (!$schema->hasTable('mod_nt_mcp_oauth_refresh_tokens')) {
                 $schema->create('mod_nt_mcp_oauth_refresh_tokens', function ($t) {
+                    $t->engine = 'InnoDB';
                     $t->increments('id');
                     $t->string('token_hash', 64)->unique();
                     $t->string('client_id', 64);
@@ -130,6 +134,7 @@ final class OAuthMigration
                     $t->integer('used_at')->nullable()->after('used');
                 });
             }
+            self::$ensured = true;
             return true;
         } catch (\Throwable $e) {
             Diagnostics::report(Diagnostics::CATEGORY_MIGRATION, 'oauth_migration', $e);

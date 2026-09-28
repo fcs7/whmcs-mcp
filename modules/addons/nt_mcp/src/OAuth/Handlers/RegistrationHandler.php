@@ -6,6 +6,7 @@ namespace NtMcp\OAuth\Handlers;
 
 use Illuminate\Database\Capsule\Manager as Capsule;
 use NtMcp\OAuth\OAuthHelper;
+use NtMcp\OAuth\RedirectUri;
 use NtMcp\Security\RateLimiter;
 
 /**
@@ -16,9 +17,6 @@ use NtMcp\Security\RateLimiter;
  */
 final class RegistrationHandler
 {
-    // RFC 8252 native app redirect schemes — allowlist fechada.
-    private const NATIVE_APP_SCHEMES = ['cursor', 'vscode'];
-
     public static function handle(): void
     {
         $terminal = (new RateLimiter('nt_mcp_reg_rl_', 20, 3600, 'reg_', 'Too many client registrations. Maximum 20 per hour.'))->enforce();
@@ -42,39 +40,20 @@ final class RegistrationHandler
         }
 
         $redirectUris = $input['redirect_uris'] ?? [];
-        if (empty($redirectUris) || !is_array($redirectUris)) {
+        if (empty($redirectUris) || !is_array($redirectUris) || !array_is_list($redirectUris) || count($redirectUris) > 10) {
             OAuthHelper::error(400, 'invalid_client_metadata', 'redirect_uris is required');
             return;
         }
 
-        // Validate redirect URIs
         foreach ($redirectUris as $uri) {
-            if (!is_string($uri) || $uri === '') {
-                OAuthHelper::error(400, 'invalid_redirect_uri', 'Each redirect_uri must be a non-empty string');
+            if (!RedirectUri::isAllowed($uri)) {
+                OAuthHelper::error(400, 'invalid_redirect_uri', 'Invalid or unsupported redirect_uri');
                 return;
             }
-            $parsed = parse_url($uri);
-            if ($parsed === false || !isset($parsed['scheme']) || !isset($parsed['host'])) {
-                OAuthHelper::error(400, 'invalid_redirect_uri', 'Invalid redirect_uri format: ' . $uri);
-                return;
-            }
-            // Allow http://localhost and http://127.0.0.1 for local development (MCP clients)
-            $isLocalhost   = in_array($parsed['host'], ['localhost', '127.0.0.1', '[::1]'], true);
-            $isHttpsOk     = $parsed['scheme'] === 'https';
-            $isLocalHttpOk = $parsed['scheme'] === 'http' && $isLocalhost;
-            // RFC 8252: allow native app URI schemes for editor/IDE MCP clients (e.g. Cursor)
-            $isNativeAppOk = in_array($parsed['scheme'], self::NATIVE_APP_SCHEMES, true)
-                && $parsed['host'] !== ''
-                && ($parsed['path'] ?? '') === '/oauth/callback';
-            if (!$isHttpsOk && !$isLocalHttpOk && !$isNativeAppOk) {
-                OAuthHelper::error(400, 'invalid_redirect_uri', 'redirect_uri must use HTTPS, localhost, or an allowed native app scheme: ' . $uri);
-                return;
-            }
-            // Reject fragments (OAuth 2.1 requirement)
-            if (isset($parsed['fragment'])) {
-                OAuthHelper::error(400, 'invalid_redirect_uri', 'redirect_uri must not contain a fragment');
-                return;
-            }
+        }
+        if (isset($input['client_name']) && !is_string($input['client_name'])) {
+            OAuthHelper::error(400, 'invalid_client_metadata', 'client_name must be a string');
+            return;
         }
 
         // SECURITY FIX (B3): prefix discriminador facilita auditoria/busca de
@@ -82,7 +61,7 @@ final class RegistrationHandler
         // é VARCHAR(64); "nt-mcp-" (7) + 32 hex = 39 chars, cabe.
         $clientId   = 'nt-mcp-' . bin2hex(random_bytes(16));
         // SECURITY FIX (L-01 -- LOW): Sanitize client_name to prevent stored XSS
-        $clientName = strip_tags($input['client_name'] ?? 'MCP Client');
+        $clientName = substr(strip_tags($input['client_name'] ?? 'MCP Client'), 0, 255);
 
         Capsule::table('mod_nt_mcp_oauth_clients')->insert([
             'client_id'     => $clientId,

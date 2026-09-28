@@ -13,9 +13,8 @@ use WHMCS\Database\Capsule;
  * OAuth 2.1 §6.1 refresh token grant — rotação obrigatória (single-use),
  * família revogável por inteiro no reuso detectado.
  *
- * Toda a lógica testável fica aqui, fora do handler (F4, fora de escopo):
- * os handlers atuais fazem `echo` direto e por isso não têm teste — este
- * serviço não repete esse padrão.
+ * The token handler holds OAuthTransaction across redeem and pair issuance.
+ * Revocation joins that transaction or starts its own serialized operation.
  */
 final class RefreshTokenService
 {
@@ -105,6 +104,10 @@ final class RefreshTokenService
             return RefreshRedemption::denied(ActivityEvent::OAUTH_REFRESH_NOT_FOUND);
         }
 
+        if ((string) $row->client_id !== $clientId) {
+            return RefreshRedemption::denied(ActivityEvent::OAUTH_REFRESH_CLIENT_MISMATCH);
+        }
+
         // Reuso aparente: token JÁ consumido sendo apresentado de novo. Antes
         // de tratar como roubo, checa a janela de graça (ver
         // REUSE_GRACE_SECONDS) — pode ser só a corrida de refresh paralelo.
@@ -125,10 +128,6 @@ final class RefreshTokenService
             return RefreshRedemption::denied(ActivityEvent::OAUTH_REFRESH_EXPIRED);
         }
 
-        if ((string) $row->client_id !== $clientId) {
-            return RefreshRedemption::denied(ActivityEvent::OAUTH_REFRESH_CLIENT_MISMATCH);
-        }
-
         // SECURITY FIX (mesmo padrão H-04 dos codes): consumo atômico.
         if (!$this->attemptConsume((int) $row->id, $now)) {
             // Perdeu a corrida contra outra requisição para o MESMO token —
@@ -138,12 +137,9 @@ final class RefreshTokenService
 
         $adminUser = property_exists($row, 'admin_user') ? trim((string) ($row->admin_user ?? '')) : '';
 
-        // admin_user null/vazio NÃO nega o redeem: BearerAuth tem cadeia de
-        // fallback (per-token → nt_mcp_admin_user global → 401). Negar aqui
-        // mataria por 30 dias uma família legítima cujo approved_by veio
-        // null. O null é propagado para o access token novo; BearerAuth
-        // resolve o fallback e falha fechado no uso, como hoje.
-        if ($adminUser !== '' && !$this->adminValidator->isActive($adminUser)) {
+        // OAuth credentials require the administrator who approved the grant.
+        // Never inherit the global static-token administrator.
+        if ($adminUser === '' || !$this->adminValidator->isActive($adminUser)) {
             $this->revokeFamily((string) $row->family_id);
             return RefreshRedemption::denied(ActivityEvent::OAUTH_REFRESH_ADMIN_INACTIVE);
         }
@@ -158,7 +154,7 @@ final class RefreshTokenService
      */
     public function revokeFamily(string $familyId): void
     {
-        Capsule::connection()->transaction(function () use ($familyId): void {
+        OAuthTransaction::run(function () use ($familyId): void {
             Capsule::table(self::TABLE)->where('family_id', $familyId)->delete();
             Capsule::table(self::TOKENS_TABLE)->where('family_id', $familyId)->delete();
         });

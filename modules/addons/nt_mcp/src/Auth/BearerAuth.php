@@ -153,7 +153,7 @@ class BearerAuth
                 return null;
             }
             $adminUser = property_exists($row, 'admin_user') ? trim((string) ($row->admin_user ?? '')) : '';
-            $resolved = $adminUser !== '' ? $adminUser : $this->getFallbackAdmin();
+            $resolved = $adminUser !== '' ? $adminUser : null;
             // SECURITY FIX (B1): validate admin active; revoke token if orphan.
             if (!$this->validateAdminActive($resolved)) {
                 $tokenId = property_exists($row, 'id') ? (int) $row->id : 0;
@@ -191,7 +191,7 @@ class BearerAuth
             }
 
             $admin = property_exists($row, 'admin_user') ? trim($row->admin_user ?? '') : '';
-            $resolved = $admin !== '' ? $admin : $this->getFallbackAdmin();
+            $resolved = $admin !== '' ? $admin : null;
 
             // SECURITY FIX (B1): orphan-token defense — confirm admin still
             // exists in tbladmins and is not disabled.  If not, revoke the

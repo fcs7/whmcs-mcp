@@ -593,6 +593,11 @@ final class FakeCapsuleQuery
         return $this;
     }
 
+    public function value(string $column): mixed
+    {
+        return $this->first()->{$column} ?? null;
+    }
+
     public function first(): ?object
     {
         FakeCapsule::$calls[] = 'first()';
@@ -601,6 +606,13 @@ final class FakeCapsuleQuery
     }
 
     /** @param array<string, mixed> $values */
+    public function insert(array $values): bool
+    {
+        FakeCapsule::$calls[] = 'insert()';
+        FakeCapsule::$mutations[] = ['verb' => 'INSERT', 'table' => $this->table, 'values' => $values];
+        return true;
+    }
+
     public function insertGetId(array $values): int
     {
         FakeCapsule::$calls[] = 'insertGetId()';
